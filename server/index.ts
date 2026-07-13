@@ -43,6 +43,7 @@ function err(res: Response, code: number, message: string): void {
 function publicSettings(): PublicSettings {
   return {
     notifications: db.settings.notifications,
+    sounds: db.settings.sounds,
     linearConfigured: !!(db.settings.linearApiToken && db.settings.linearApiToken.trim()),
   };
 }
@@ -154,6 +155,7 @@ app.get('/api/settings', (req: Request, res: Response) => res.json(publicSetting
 
 app.patch('/api/settings', (req: Request, res: Response) => {
   if ('notifications' in req.body) db.settings.notifications = !!req.body.notifications;
+  if ('sounds' in req.body) db.settings.sounds = !!req.body.sounds;
   // The Linear token is a secret: accept it here (trimmed) but never echo it back.
   if ('linearApiToken' in req.body) db.settings.linearApiToken = String(req.body.linearApiToken || '').trim();
   save();

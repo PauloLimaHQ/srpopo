@@ -7,6 +7,7 @@
 
 export interface Settings {
   notifications: boolean;
+  sounds: boolean;
   // Linear personal API key, used to import issues. A secret: it lives only in
   // db.json and is never returned to the board (see PublicSettings).
   linearApiToken: string;
@@ -17,6 +18,7 @@ export interface Settings {
 // without ever holding the secret.
 export interface PublicSettings {
   notifications: boolean;
+  sounds: boolean;
   linearConfigured: boolean;
 }
 
