@@ -23,6 +23,8 @@ test('store: settings default to notifications + sounds on and are backfilled', 
   assert.strictEqual(store.db.settings.sounds, true, 'sounds default on');
   assert.strictEqual(store.DEFAULT_SETTINGS.notifications, true, 'DEFAULT_SETTINGS is exported');
   assert.strictEqual(store.DEFAULT_SETTINGS.sounds, true, 'sounds default is exported');
+  assert.strictEqual(store.db.settings.maxParallelSessions, 3, 'maxParallelSessions defaults to 3');
+  assert.strictEqual(store.DEFAULT_SETTINGS.maxParallelSessions, 3, 'maxParallelSessions default is exported');
 });
 
 test('server modules load without throwing', () => {
@@ -35,8 +37,20 @@ test('server modules load without throwing', () => {
     require('../server/groomer');
     require('../server/github');
     require('../server/linear');
+    require('../server/plugins');
     require('../server/index');
   });
+});
+
+test('plugins: catalog lists Linear and sanitize keeps only known ids', () => {
+  const plugins = require('../server/plugins');
+  const ids = plugins.catalog().map((p: { id: string }) => p.id);
+  assert.ok(ids.includes('linear'), 'Linear is in the marketplace catalog');
+  assert.ok(plugins.isKnown('linear'), 'isKnown recognizes a catalog id');
+  assert.strictEqual(plugins.isKnown('nope'), false, 'isKnown rejects unknown ids');
+  assert.deepStrictEqual(plugins.sanitize(['linear', 'bogus']), ['linear'], 'unknown ids dropped');
+  assert.deepStrictEqual(plugins.sanitize('not-an-array'), [], 'non-array yields []');
+  assert.deepStrictEqual(plugins.sanitize(['linear', 'linear']), ['linear'], 'ids deduped');
 });
 
 test('github: module exports prForTask and a pure parsePrList helper', () => {
@@ -218,6 +232,12 @@ test('runner: mergeAllowedTools dedupes across sources and add-ons layer in', ()
   assert.ok(value.includes('Bash(gh:*)'), 'gh is auto-approved for the PR add-on');
   assert.ok(value.includes('Bash(git push:*)'), 'git push is auto-approved for the PR add-on');
   assert.ok(value.includes('Bash(npm:*)'), 'package-manager defaults are still present');
+});
+
+test('runner: runningCount tracks isRunning and starts at zero', () => {
+  const runner = require('../server/runner');
+  assert.strictEqual(runner.runningCount(), 0, 'no tasks running at module load');
+  assert.strictEqual(runner.isRunning('nonexistent'), false);
 });
 
 test('runner: promptPermissions wires the approval MCP bridge (and skips it on bypass)', () => {
