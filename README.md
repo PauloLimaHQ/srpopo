@@ -85,7 +85,7 @@ the background when the window is closed.
 
 1. **📁 Repos** — register the local git repositories you work in.
 2. **＋ New Task** — pick a repo, write the prompt, and choose:
-   - **Model** — account default / sonnet / opus / haiku
+   - **Model** — account default / sonnet / opus / haiku / fable
    - **Permissions** — `acceptEdits` (recommended), bypass-all, or plan-only
    - **Worktree** — run isolated on branch `srpopo/<task>`
 3. **Dispatch** — drag the card into **Running** (or hit *Create & Run*). Sr. Popo
