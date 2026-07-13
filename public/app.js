@@ -11,9 +11,12 @@
     personas: [],     // catalog of expert personas (from /api/personas)
     plugins: [],      // marketplace catalog (from /api/plugins)
     settings: { notifications: true, sounds: true, maxParallelSessions: 3, installedPlugins: [] }, // user preferences (from /api/settings)
-    filters: { search: '', repoIds: new Set() }, // board filters (project + text)
+    filters: { search: '' }, // board filters (free-text only — repo scope comes from state.view)
+    view: { mode: 'super' }, // { mode: 'super' } | { mode: 'workspace', repoId }
     prByTask: new Map(), // taskId -> 'loading' | { pr, reason } from /api/tasks/:id/pr
     repoBranchByTask: new Map(), // taskId -> 'loading' | repo's live current branch (non-worktree tasks only)
+    repoBranchByRepo: new Map(), // repoId -> 'loading' | repo's live current branch (Super View / workspace header)
+    worktreesByRepo: new Map(), // repoId -> 'loading' | [ WorktreeInfo ] from /api/repos/:id/worktrees
     permissions: new Map(), // taskId -> [ pending tool-approval requests ]
   };
 
@@ -162,11 +165,10 @@
   }
 
   // ---------- filters ----------
-  // A task is shown when it matches every active filter: an optional set of
-  // repos (project) and a free-text query over its title / repo / prompt.
+  // Inside a workspace there is only one repo in scope (state.view.repoId), so
+  // the only filter left to apply is the free-text search over title/repo/prompt.
   function taskMatchesFilters(t) {
     const f = state.filters;
-    if (f.repoIds.size && !f.repoIds.has(t.repoId)) return false;
     if (f.search) {
       const hay = `${t.title} ${t.repoName} ${t.prompt || ''}`.toLowerCase();
       if (!hay.includes(f.search)) return false;
@@ -174,73 +176,50 @@
     return true;
   }
 
-  const filtersActive = () => state.filters.repoIds.size > 0 || !!state.filters.search;
-
-  // A stable per-repo accent so each project reads as the same color everywhere.
-  function repoHue(id) {
-    let h = 0;
-    for (const c of String(id)) h = (h * 31 + c.charCodeAt(0)) % 360;
-    return h;
-  }
+  const filtersActive = () => !!state.filters.search;
 
   const FILTER_KEY = 'srpopo.filters';
   function saveFilters() {
     try {
-      localStorage.setItem(FILTER_KEY, JSON.stringify({
-        search: state.filters.search,
-        repoIds: [...state.filters.repoIds],
-      }));
+      localStorage.setItem(FILTER_KEY, JSON.stringify({ search: state.filters.search }));
     } catch { /* storage unavailable — non-fatal */ }
   }
   function loadFilters() {
     try {
       const f = JSON.parse(localStorage.getItem(FILTER_KEY)) || {};
       state.filters.search = (f.search || '').toLowerCase();
-      state.filters.repoIds = new Set(f.repoIds || []);
     } catch { /* ignore malformed storage */ }
   }
 
   function onFiltersChanged() {
     saveFilters();
-    renderFilters();
     renderBoard();
   }
 
-  function renderFilters() {
-    // Drop any selected repos that no longer exist so the state can't get stuck.
-    const known = new Set(state.repos.map((r) => r.id));
-    for (const id of [...state.filters.repoIds]) if (!known.has(id)) state.filters.repoIds.delete(id);
-
-    const counts = new Map();
-    for (const t of state.tasks.values()) counts.set(t.repoId, (counts.get(t.repoId) || 0) + 1);
-
-    $('#filter-repos').innerHTML = state.repos.map((r) => {
-      const active = state.filters.repoIds.has(r.id);
-      const n = counts.get(r.id) || 0;
-      return `<button class="filter-pill ${active ? 'active' : ''}" data-repo="${esc(r.id)}" title="${esc(r.path)}">
-          <span class="filter-pill-dot" style="background:hsl(${repoHue(r.id)} 60% 60%)"></span>
-          <span class="filter-pill-name">${esc(r.name)}</span>
-          <span class="filter-pill-count">${n}</span>
-        </button>`;
-    }).join('');
-
-    updateFilterMeta();
+  // Tasks scoped to the workspace currently open (empty outside a workspace).
+  function tasksForRepo(repoId) {
+    return [...state.tasks.values()].filter((t) => t.repoId === repoId);
   }
 
   function updateFilterMeta() {
-    const all = [...state.tasks.values()];
+    const all = tasksForRepo(state.view.repoId);
     const shown = all.filter(taskMatchesFilters).length;
     $('#filter-count').textContent = filtersActive() ? `${shown} of ${all.length}` : `${all.length} tasks`;
     $('#filter-clear').classList.toggle('hidden', !filtersActive());
   }
 
   // ---------- board ----------
+  // The single choke point every "something changed" handler calls. Outside a
+  // workspace there's no board to draw — refresh the Super View instead so its
+  // per-repo stats (graph, live badge, task count) stay live.
   function renderBoard() {
+    if (state.view.mode !== 'workspace') { renderSuperView(); return; }
     updateFilterMeta();
     const board = $('#board');
     board.innerHTML = '';
+    const repoTasks = tasksForRepo(state.view.repoId);
     for (const col of COLUMNS) {
-      const tasks = [...state.tasks.values()]
+      const tasks = repoTasks
         .filter((t) => COLUMN_OF_STATUS[t.status] === col.key)
         .filter(taskMatchesFilters)
         .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
@@ -283,6 +262,172 @@
       board.appendChild(colEl);
     }
   }
+
+  // ---------- workspaces / super view ----------
+  const VIEW_KEY = 'srpopo.view';
+  function saveView() {
+    try { localStorage.setItem(VIEW_KEY, JSON.stringify(state.view)); } catch { /* storage unavailable — non-fatal */ }
+  }
+  // Falls back to the Super View if nothing was saved, or the saved repo no
+  // longer exists (e.g. it was removed since the last visit).
+  function loadView() {
+    try {
+      const v = JSON.parse(localStorage.getItem(VIEW_KEY));
+      if (v && v.mode === 'workspace' && state.repos.some((r) => r.id === v.repoId)) {
+        return { mode: 'workspace', repoId: v.repoId };
+      }
+    } catch { /* ignore malformed storage */ }
+    return { mode: 'super' };
+  }
+
+  function setView(view) {
+    state.view = view;
+    saveView();
+    renderView();
+  }
+  const enterWorkspace = (repoId) => setView({ mode: 'workspace', repoId });
+  const exitWorkspace = () => setView({ mode: 'super' });
+  // The workspace open when a New Task / Brief / Linear modal is launched, so
+  // those flows default their repo <select> to it instead of the last-used repo.
+  const currentWorkspaceRepoId = () => (state.view.mode === 'workspace' ? state.view.repoId : null);
+
+  // Toggles the Super View / workspace board and re-renders whichever is now visible.
+  function renderView() {
+    const isSuper = state.view.mode === 'super';
+    $('#super-view').classList.toggle('hidden', !isSuper);
+    $('#board').classList.toggle('hidden', isSuper);
+    $('#workspace-header').classList.toggle('hidden', isSuper);
+    $('#filterbar').classList.toggle('hidden', isSuper);
+    if (isSuper) renderSuperView();
+    else { renderWorkspaceHeader(); renderBoard(); }
+  }
+
+  // Live lookup of a repo's current branch, cached like refreshRepoBranchForTask
+  // — used by both the Super View cards and the workspace header chip.
+  async function refreshRepoBranchCard(repoId, force) {
+    if (!force && state.repoBranchByRepo.has(repoId)) return;
+    state.repoBranchByRepo.set(repoId, 'loading');
+    let branch = null;
+    try { ({ branch } = await api('GET', `/api/repos/${repoId}/branch`)); } catch { /* stays null */ }
+    state.repoBranchByRepo.set(repoId, branch);
+    if (state.view.mode === 'super') renderSuperView();
+    else if (state.view.mode === 'workspace' && state.view.repoId === repoId) renderWorkspaceHeader();
+  }
+
+  // Live worktree list for a repo (ground truth from git, not stale task.worktreePath
+  // values) — feeds the Super View's worktree count and the workspace popover.
+  async function refreshRepoWorktreesCard(repoId, force) {
+    if (!force && state.worktreesByRepo.has(repoId)) return;
+    state.worktreesByRepo.set(repoId, 'loading');
+    let worktrees = [];
+    try { ({ worktrees } = await api('GET', `/api/repos/${repoId}/worktrees`)); } catch { /* stays [] */ }
+    state.worktreesByRepo.set(repoId, worktrees);
+    if (state.view.mode === 'super') renderSuperView();
+    if (!$('#modal-workspace').classList.contains('hidden') && state.view.repoId === repoId) renderWorkspaceWorktreeList(repoId);
+  }
+
+  // A dependency-free "graph": a stacked bar whose segments are proportional
+  // (via flex-grow) to a repo's task counts per column.
+  function workspaceGraphHtml(tasks) {
+    if (!tasks.length) return `<div class="workspace-graph empty"></div>`;
+    const counts = new Map();
+    for (const t of tasks) {
+      const col = COLUMN_OF_STATUS[t.status];
+      counts.set(col, (counts.get(col) || 0) + 1);
+    }
+    const segs = COLUMNS.filter((c) => counts.get(c.key)).map((c) =>
+      `<span class="workspace-graph-seg" style="background:${c.dot};flex:${counts.get(c.key)} 0 0" title="${esc(c.label)}: ${counts.get(c.key)}"></span>`
+    ).join('');
+    return `<div class="workspace-graph">${segs}</div>`;
+  }
+
+  function workspaceCardHtml(r) {
+    const tasks = tasksForRepo(r.id);
+    const liveCount = tasks.filter(isLive).length;
+    const branch = state.repoBranchByRepo.get(r.id);
+    const wt = state.worktreesByRepo.get(r.id);
+    const wtCount = Array.isArray(wt) ? wt.length : null;
+    return `
+      <div class="workspace-card" data-repo="${esc(r.id)}" title="${esc(r.path)}">
+        <div class="workspace-card-head">
+          <span class="workspace-card-name">${esc(r.name)}</span>
+          ${liveCount ? `<span class="chip running-badge"><span class="spinner"></span>${liveCount} live</span>` : ''}
+        </div>
+        ${workspaceGraphHtml(tasks)}
+        <div class="workspace-card-foot">
+          ${branch && branch !== 'loading' ? `<span class="chip">${icon('git-branch')} ${esc(branch)}</span>` : ''}
+          <span class="chip">${wtCount == null ? '…' : wtCount} worktree${wtCount === 1 ? '' : 's'}</span>
+          <span class="chip">${tasks.length} task${tasks.length === 1 ? '' : 's'}</span>
+        </div>
+      </div>`;
+  }
+
+  function renderSuperView() {
+    const el = $('#super-view');
+    if (!state.repos.length) {
+      el.innerHTML = `
+        <div class="workspace-empty">
+          <p>No repositories yet.</p>
+          <button class="btn primary" id="super-view-add-repo">${icon('plus')} Add a repository</button>
+        </div>`;
+      $('#super-view-add-repo').addEventListener('click', openReposModal);
+      return;
+    }
+    el.innerHTML = `<div class="workspace-grid">${state.repos.map(workspaceCardHtml).join('')}</div>`;
+    el.querySelectorAll('.workspace-card').forEach((card) => {
+      card.addEventListener('click', () => enterWorkspace(card.dataset.repo));
+    });
+    for (const r of state.repos) {
+      refreshRepoBranchCard(r.id);
+      refreshRepoWorktreesCard(r.id);
+    }
+  }
+
+  function renderWorkspaceHeader() {
+    const repo = state.repos.find((r) => r.id === state.view.repoId);
+    if (!repo) return;
+    $('#workspace-title').textContent = repo.name;
+    refreshRepoBranchCard(repo.id);
+    const branch = state.repoBranchByRepo.get(repo.id);
+    $('#workspace-branch-chip').innerHTML = branch && branch !== 'loading'
+      ? `<span class="chip">${icon('git-branch')} ${esc(branch)}</span>` : '';
+  }
+
+  function renderWorkspaceWorktreeList(repoId) {
+    const list = state.worktreesByRepo.get(repoId);
+    const el = $('#workspace-worktree-list');
+    if (!Array.isArray(list)) { el.innerHTML = '<div class="muted">Loading…</div>'; return; }
+    if (!list.length) { el.innerHTML = '<div class="muted">No live worktrees.</div>'; return; }
+    el.innerHTML = list.map((w) => `
+      <div class="worktree-row">
+        <span class="worktree-dot ${w.dirty ? 'dirty' : 'clean'}" title="${w.dirty ? 'Uncommitted changes' : 'Clean'}"></span>
+        <span class="worktree-branch">${esc(w.branch || '(detached)')}</span>
+        ${w.taskId
+          ? `<span class="chip worktree-task-link" data-task-link="${esc(w.taskId)}">${esc(w.taskTitle)} · ${esc(w.taskStatus)}</span>`
+          : '<span class="muted">no task</span>'}
+      </div>`).join('');
+  }
+
+  function openWorkspacePopover() {
+    const repo = state.repos.find((r) => r.id === state.view.repoId);
+    if (!repo) return;
+    $('#workspace-modal-title').textContent = repo.name;
+    $('#workspace-info-path').textContent = repo.path;
+    $('#workspace-info-name').textContent = repo.name;
+    const branch = state.repoBranchByRepo.get(repo.id);
+    $('#workspace-info-branch').textContent = branch && branch !== 'loading' ? branch : '…';
+    renderWorkspaceWorktreeList(repo.id);
+    $('#modal-workspace').classList.remove('hidden');
+    refreshRepoWorktreesCard(repo.id, true);
+  }
+
+  $('#workspace-back').addEventListener('click', exitWorkspace);
+  $('#workspace-info').addEventListener('click', openWorkspacePopover);
+  $('#workspace-modal-close').addEventListener('click', () => $('#modal-workspace').classList.add('hidden'));
+  $('#workspace-worktree-list').addEventListener('click', (e) => {
+    const id = e.target.closest('[data-task-link]')?.dataset.taskLink;
+    if (id) { $('#modal-workspace').classList.add('hidden'); openDrawer(id); }
+  });
 
   function renderCard(t) {
     const el = document.createElement('div');
@@ -1146,6 +1291,7 @@
     initPersonaPicker(task ? (task.personas || []) : (last.personas || []));
     $('#task-repo-field').classList.toggle('hidden', !!task);
     if (task) $('#task-repo').value = task.repoId;
+    else if (currentWorkspaceRepoId()) $('#task-repo').value = currentWorkspaceRepoId();
     // Restore the last-used repo if it still exists in the current list.
     else if (last.repoId && state.repos.some((r) => r.id === last.repoId)) $('#task-repo').value = last.repoId;
     refreshRepoBranchHint($('#task-repo').value, $('#task-repo-branch'));
@@ -1260,7 +1406,8 @@
     $('#brief-text').value = '';
     $('#brief-branch').value = '';
     $('#brief-model').value = last.model || 'default';
-    if (last.repoId && state.repos.some((r) => r.id === last.repoId)) $('#brief-repo').value = last.repoId;
+    if (currentWorkspaceRepoId()) $('#brief-repo').value = currentWorkspaceRepoId();
+    else if (last.repoId && state.repos.some((r) => r.id === last.repoId)) $('#brief-repo').value = last.repoId;
     refreshRepoBranchHint($('#brief-repo').value, $('#brief-repo-branch'));
     $('#modal-brief').classList.remove('hidden');
     $('#brief-text').focus();
@@ -1320,7 +1467,8 @@
     $('#linear-issue-id').value = '';
     $('#linear-branch').value = '';
     $('#linear-model').value = last.model || 'default';
-    if (last.repoId && state.repos.some((r) => r.id === last.repoId)) $('#linear-repo').value = last.repoId;
+    if (currentWorkspaceRepoId()) $('#linear-repo').value = currentWorkspaceRepoId();
+    else if (last.repoId && state.repos.some((r) => r.id === last.repoId)) $('#linear-repo').value = last.repoId;
     refreshRepoBranchHint($('#linear-repo').value, $('#linear-repo-branch'));
     linearSelectedId = null;
     $('#linear-issue-list').innerHTML = '';
@@ -1738,14 +1886,6 @@
   }
 
   // ---------- filter bar wiring ----------
-  $('#filter-repos').addEventListener('click', (e) => {
-    const pill = e.target.closest('.filter-pill');
-    if (!pill) return;
-    const id = pill.dataset.repo;
-    if (state.filters.repoIds.has(id)) state.filters.repoIds.delete(id);
-    else state.filters.repoIds.add(id);
-    onFiltersChanged();
-  });
   $('#filter-search').addEventListener('input', (e) => {
     state.filters.search = e.target.value.trim().toLowerCase();
     saveFilters();
@@ -1753,7 +1893,6 @@
   });
   $('#filter-clear').addEventListener('click', () => {
     state.filters.search = '';
-    state.filters.repoIds.clear();
     $('#filter-search').value = '';
     onFiltersChanged();
   });
@@ -1778,6 +1917,7 @@
       { label: 'Brief an Idea', hint: 'Groom a rough idea into a task', icon: 'lightbulb', run: () => openBriefModal() },
       { label: 'Create Task from Linear', hint: 'Import an assigned issue', icon: 'linear', run: () => openLinearModal() },
       { label: 'Repositories', hint: 'Add or manage repos', icon: 'folder', run: () => openReposModal() },
+      { label: 'Super View', hint: 'Back to the all-workspaces home screen', icon: 'arrow-left', run: () => exitWorkspace() },
       { label: 'Settings', hint: 'Notifications, sounds, Linear key', icon: 'settings', kbd: `${MOD},`, run: () => openSettingsModal() },
       { label: 'Toggle Theme', hint: `Currently ${THEME_LABEL[currentTheme()]}`, icon: 'sun-moon', run: () => $('#btn-theme').click() },
       { label: 'Filter Tasks', hint: 'Jump to the filter box', icon: 'search', kbd: '/', run: () => $('#filter-search').focus() },
@@ -1973,7 +2113,9 @@
         refreshRepoSelect();
         refreshBriefRepoSelect();
         refreshLinearRepoSelect();
-        renderFilters();
+        // Fall back to the Super View if the workspace's own repo was just removed.
+        if (state.view.mode === 'workspace' && !state.repos.some((r) => r.id === state.view.repoId)) exitWorkspace();
+        else renderView();
       } else if (msg.type === 'log' && msg.taskId === state.openTaskId) {
         appendEvent(msg.event);
       } else if (msg.type === 'permission') {
@@ -2047,8 +2189,8 @@
       if (settings) state.settings = settings;
       loadFilters();
       $('#filter-search').value = state.filters.search;
-      renderFilters();
-      renderBoard();
+      state.view = loadView();
+      renderView();
       handleHashDeeplink();
     } catch (e) { toast(`Failed to load state: ${e.message}`); }
 
