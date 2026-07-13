@@ -14,7 +14,7 @@ fs.mkdirSync(LOGS_DIR, { recursive: true });
 
 // User-level preferences, persisted alongside repos/tasks in db.json. New keys
 // added here get their default backfilled on load, so old db.json files upgrade.
-const DEFAULT_SETTINGS: Settings = { notifications: true };
+const DEFAULT_SETTINGS: Settings = { notifications: true, linearApiToken: '' };
 
 let db: Db = { repos: [], tasks: [], settings: { ...DEFAULT_SETTINGS } };
 if (fs.existsSync(DB_PATH)) {

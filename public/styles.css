@@ -567,6 +567,45 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--a
 .repo-list .repo-name { font-weight: 600; }
 .repo-list .repo-path { color: var(--text-dim); font-family: var(--mono); font-size: 11px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* ── linear import ── */
+.linear-note {
+  font-size: 12px; color: var(--text-dim);
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: 9px;
+  padding: 10px 12px;
+}
+.linkish {
+  background: none; border: none; padding: 0; width: auto;
+  color: var(--accent); font: inherit; cursor: pointer; text-decoration: underline;
+}
+.linear-browse { display: flex; flex-direction: column; gap: 6px; }
+.linear-browse-head {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 12px; color: var(--text-dim);
+}
+.linear-browse-head .btn { padding: 4px 8px; }
+.linear-issue-list {
+  display: flex; flex-direction: column; gap: 4px;
+  max-height: 220px; overflow-y: auto;
+  border: 1px solid var(--border); border-radius: 10px; padding: 6px;
+  background: var(--bg-card);
+}
+.linear-issue-list:empty { display: none; }
+.linear-loading { padding: 6px; }
+.linear-issue {
+  display: flex; align-items: center; gap: 8px; text-align: left; width: 100%;
+  background: transparent; border: 1px solid transparent; border-radius: 8px;
+  padding: 7px 9px; cursor: pointer; color: var(--text); font-size: 12px;
+  transition: background .1s, border-color .1s;
+}
+.linear-issue:hover { background: var(--bg-hover); }
+.linear-issue.selected { border-color: var(--accent); background: var(--accent-soft); }
+.linear-issue-id { font-family: var(--mono); font-size: 11px; color: var(--accent); flex: none; }
+.linear-issue-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.linear-settings-actions { justify-content: flex-start; }
+.linear-settings-actions .btn { flex: none; }
+.chip.linear-chip { color: var(--accent); text-decoration: none; }
+.chip.linear-chip:hover { border-color: var(--accent); }
+
 /* ── toasts ── */
 .toasts { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 100; display: flex; flex-direction: column; gap: 8px; }
 .toast {
