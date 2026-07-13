@@ -19,10 +19,21 @@
   "keywords": [
     "claude-code",
     "claude",
+    "anthropic",
+    "ai-agents",
+    "agent-orchestration",
+    "coding-agent",
+    "ai-coding-assistant",
+    "parallel-agents",
     "orchestrator",
     "kanban",
+    "kanban-board",
     "electron",
-    "developer-tools"
+    "desktop-app",
+    "developer-tools",
+    "local-first",
+    "git-worktree",
+    "llm"
   ],
   "author": "Paulo Lima <pflima92@gmail.com>",
   "license": "MIT",
