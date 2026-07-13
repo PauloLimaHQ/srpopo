@@ -1,45 +1,136 @@
+<div align="center">
+
+<img src="docs/hero.png" alt="Sr. Popo — your local Claude Code orchestrator" width="820">
+
 # 🧞 Sr. Popo
 
-A local orchestrator hub for **Claude Code** tasks across all your repositories.
-Queue tasks on a Kanban board, drag them to **Running** to dispatch, and watch live
-session logs — tool calls, subagents, cost — from one place.
+**Run many Claude Code sessions in parallel — from one calm Kanban board.**
 
-Runs entirely on your machine and uses your **Claude subscription** (it spawns the
-`claude` CLI with your existing login — no API key is ever used; `ANTHROPIC_API_KEY`
-is explicitly stripped from task environments).
+Queue prompts against your own git repos, drag them to **Running** to dispatch, and
+watch each `claude` CLI session stream live: tool calls, subagents, cost, and the
+final diff. It runs entirely on your machine and drives your existing **Claude
+subscription** — never an API key.
 
-Sr. Popo is a native **macOS desktop app** (Electron). It lives in the **menu bar
-(tray)** — click the lamp icon to show/hide the board, and it keeps running in the
-background so your tasks aren't interrupted when you close the window.
+[![Release](https://img.shields.io/github/v/release/PauloLimaHQ/srpopo?label=download&color=orange)](https://github.com/PauloLimaHQ/srpopo/releases/latest)
+[![CI](https://github.com/PauloLimaHQ/srpopo/actions/workflows/ci.yml/badge.svg)](https://github.com/PauloLimaHQ/srpopo/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
+![Platform: macOS · Windows](https://img.shields.io/badge/platform-macOS%20%C2%B7%20Windows-lightgrey)
 
-## Requirements
+</div>
 
-- Node.js 18+
-- [Claude Code CLI](https://claude.com/claude-code) installed and logged in (`claude` on your PATH)
-- git
+## Download
 
-## Run (development)
+Grab the latest installer from the **[Releases page →](https://github.com/PauloLimaHQ/srpopo/releases/latest)**
+
+| Platform | File |
+|---|---|
+| **macOS** (Apple Silicon + Intel) | `Sr.Popo-*.dmg` |
+| **Windows** (x64) | `Sr.Popo-Setup-*.exe` |
+
+Builds are **unsigned** for now, so your OS will warn on first launch:
+
+- **macOS** — right-click the app → **Open** to bypass Gatekeeper (once).
+- **Windows** — on the SmartScreen prompt, choose **More info → Run anyway**.
+
+> **Prefer to run from source?** See [Develop](#develop) below.
+
+### Before you start
+
+You need the **[Claude Code CLI](https://claude.com/claude-code)** installed and
+logged in — Sr. Popo drives it. Check with:
+
+```bash
+claude --version   # must be on your PATH
+```
+
+That's it. On first launch, open **📁 Repos**, add a local git repository, and you're
+ready to queue a task.
+
+## What it is
+
+Sr. Popo is a **local orchestrator hub for Claude Code**. Instead of babysitting one
+terminal at a time, you line up prompts on a board, dispatch as many as you like, and
+review the results calmly — each one an independent, isolated `claude` session.
+
+It's a native **macOS/Windows desktop app** (Electron) that lives in your **menu bar /
+tray** — click the lamp icon to show or hide the board; it keeps your tasks running in
+the background when the window is closed.
+
+## Features
+
+- **Kanban board** — `Backlog → Ready → Running → Review → Done`, drag a card to
+  Running to dispatch.
+- **Live session stream** — every prompt, assistant message, and tool call with
+  input/output, **subagents** grouped and tracked live, plus duration, turns, and cost.
+- **Runs in parallel** — dispatch many tasks at once; each is its own `claude` process.
+- **Your subscription, not an API key** — `ANTHROPIC_API_KEY` is stripped from every
+  spawned task, so runs always use your Claude login.
+- **Isolated worktrees** — optionally run each task on its own `srpopo/<slug>` branch in
+  a dedicated git worktree, so parallel work never collides.
+- **Ask-before-running permissions** — a task can prompt you (Allow / Deny) before it
+  runs any tool it wasn't pre-authorized for, instead of silently failing.
+- **Add-ons** — opt-in per-task behaviors like *self code review* and *open a PR*
+  (`gh pr create`) at the end of a run.
+- **Brief an Idea** — hand it a rough idea; a read-only grooming session explores the
+  repo and rewrites it into a well-formed, self-contained task prompt.
+- **Follow-ups** — finished tasks keep their session; type in the composer to resume
+  with full context (`claude --resume`).
+- **GitHub PRs in the drawer** — surfaces a task's pull request when there is one.
+- **Light & dark theming**, native OS notifications, and an inline SVG icon set (no
+  icon font, no network fetch).
+- **Local-first & dependency-light** — binds `127.0.0.1` only, data stays per-user on
+  your machine, and `express` is the only runtime dependency (no frontend framework).
+
+## How it works
+
+1. **📁 Repos** — register the local git repositories you work in.
+2. **＋ New Task** — pick a repo, write the prompt, and choose:
+   - **Model** — account default / sonnet / opus / haiku
+   - **Permissions** — `acceptEdits` (recommended), bypass-all, or plan-only
+   - **Worktree** — run isolated on branch `srpopo/<task>`
+3. **Dispatch** — drag the card into **Running** (or hit *Create & Run*). Sr. Popo
+   spawns `claude -p --output-format stream-json` in the repo/worktree and streams
+   everything live.
+4. **Review** — successful runs land in **Review**; failures show there with a red
+   badge. Click any card for the full session timeline and final cost/turns.
+5. **Follow-up** — resume a finished task from the composer, or drag it back to Running.
+6. **Done** — when you're happy, drag to Done, then *Remove worktree* / *Archive*. Merge
+   the `srpopo/*` branch however you normally would.
+
+## Develop
+
+Requirements: **Node.js 18+**, **git**, and the Claude Code CLI (above).
 
 ```bash
 npm install
-npm start          # compiles TypeScript (tsc) then launches the Electron app
+npm start          # compiles TypeScript (tsc), then launches the Electron app (port 7777 in dev)
 ```
 
-The embedded server binds to `127.0.0.1` (port `7777` in dev, a free port when
-packaged). To run the plain web server instead (no desktop shell) — this runs the
-TypeScript directly with [`tsx`](https://tsx.is), no build step needed:
+Run the plain web server instead of the desktop shell — this runs the TypeScript
+directly with [`tsx`](https://tsx.is), no build step:
 
 ```bash
 npm run server     # http://localhost:7777
 npm run server:dev # same, with watch reload
 ```
 
-Options: `CLAUDE_BIN=/path/to/claude npm start`
+Point at a specific CLI with `CLAUDE_BIN=/path/to/claude npm start`.
 
-The Node-side code (`server/`, `electron/`, `tests/`) is **TypeScript**; the
-browser UI in `public/` stays vanilla JS with no build step.
+The Node-side code (`server/`, `electron/`, `tests/`) is **TypeScript**; the browser UI
+in `public/` stays vanilla JS with **no build step**.
 
-## Build
+### Quality gates
+
+```bash
+npm run typecheck  # tsc --noEmit
+npm run lint       # ESLint (flat config)
+npm test           # node:test smoke suite, via tsx
+```
+
+Run all three before proposing a change is done — CI re-runs them and packages the app
+on macOS + Windows.
+
+### Build installers locally
 
 ```bash
 npm run dist:mac   # → release/  macOS .dmg + .zip (arm64 + x64)
@@ -47,115 +138,43 @@ npm run dist:win   # → release/  Windows .exe installer + .zip (x64)
 npm run pack       # unpacked app for quick local testing
 ```
 
-Output lands in `release/`. Builds are **unsigned** for now (open-source tool):
+### Cutting a release
 
-- **macOS** — on first launch right-click the app → **Open** to bypass Gatekeeper.
-- **Windows** — SmartScreen may warn on an unsigned installer; choose *More info →
-  Run anyway*.
+Releases are automated by `.github/workflows/release.yml`: bump `version` in
+`package.json`, tag it, and **publish a GitHub Release** for that tag — the workflow
+builds the unsigned macOS + Windows installers and attaches them to the release (which
+is exactly what the [Download](#download) links above point to).
 
-To sign/notarize later, add credentials to `package.json > build.mac` / `build.win`.
+## Where data lives
 
-## Type-check, lint & test
+- **macOS** — `~/Library/Application Support/Sr. Popo/data` (`db.json` + `logs/`)
+- Per-task worktrees — `~/.srpopo/worktrees/`
 
-```bash
-npm run typecheck  # tsc --noEmit (type-check only)
-npm run lint       # ESLint (flat config in eslint.config.js — TS + public/ JS)
-npm test           # node:test smoke suite (tests/), run through tsx
-npm run build      # tsc → compile server/ + electron/ to dist/
-```
-
-## Continuous integration & releases
-
-GitHub Actions drive CI and releases (see `.github/workflows/`):
-
-- **CI** (`ci.yml`) — on every push/PR to `main`: installs deps, runs `lint` and
-  `test`, and packages the app on macOS + Windows to verify it builds.
-- **Release** (`release.yml`) — when you **publish a GitHub Release**, it builds the
-  unsigned macOS and Windows installers and attaches them to that release. You can
-  also trigger it manually (**workflow_dispatch**) to build installers as workflow
-  artifacts without cutting a release.
-
-To cut a release: bump `version` in `package.json`, tag it, and publish a GitHub
-Release for that tag — the workflow uploads the installers automatically.
-
-## Menu bar / tray
-
-- The custom lamp icon sits in the macOS menu bar (a template image, so it adapts
-  to light/dark).
-- **Click** it to toggle the window. **Right-click** for *Open Sr. Popo*,
-  *Open in Browser*, and *Quit*.
-- Closing the window hides it to the tray (the app keeps running). Use tray →
-  *Quit* (or ⌘Q while focused) to fully exit, which also stops any live `claude`
-  processes.
-
-Data lives in `~/Library/Application Support/Sr. Popo/data` (`db.json` + `logs/`).
-
-## How it works
-
-1. **📁 Repos** — register the local git repositories you work in.
-2. **＋ New Task** — pick a repo, write the prompt, choose:
-   - **Model**: account default / sonnet / opus / haiku
-   - **Permissions**: `acceptEdits` (recommended), bypass-all, plan-only
-   - **Worktree**: run isolated in `~/.srpopo/worktrees/<repo>--<task>` on branch `srpopo/<task>`
-3. **Dispatch** — drag the card into the **Running** column (or hit *Create & Run*).
-   Sr. Popo spawns `claude -p --output-format stream-json` in the repo/worktree and
-   streams everything live.
-4. **Review** — successful runs land in **Review**; failures show in the same column
-   with a red badge. Click any card for the full session timeline: prompts, assistant
-   messages, every tool call with input/output, **subagents** grouped and tracked
-   live, and the final result with duration/turns/cost.
-5. **Follow-up** — finished tasks keep their session. Type in the composer at the
-   bottom of the detail panel (or drag the card back to Running) and Claude resumes
-   with full context (`--resume`).
-6. When you're happy, drag to **Done**, then *Remove worktree* / *Archive* from the
-   detail panel. Merge the `srpopo/*` branch however you normally would.
-
-Run as many tasks in parallel as you like — each is an independent `claude` process.
-
-## Board columns
-
-| Column | Meaning |
-|---|---|
-| Backlog | Ideas / not ready |
-| Ready | Configured, waiting for dispatch |
-| Running | Live `claude` process (spinner, elapsed time, active subagent count, stop button) |
-| Review | Finished — check the diff/log (failures show here with a FAILED badge) |
-| Done | Accepted |
-
-## Storage
-
-- `data/db.json` — repos + tasks
-- `data/logs/<taskId>.ndjson` — full session event log per task (append-only, survives restarts)
-- `~/.srpopo/worktrees/` — task worktrees
+Nothing leaves your machine. There is no auth layer because the server binds to
+localhost only — that binding *is* the security boundary.
 
 ## Architecture
 
-- `server/index.ts` — Express API + static UI (binds to 127.0.0.1 only)
-- `server/runner.ts` — spawns/kills `claude` CLI processes, parses the stream-json session feed
-- `server/git.ts` — worktree lifecycle
+- `server/index.ts` — Express API + static UI host (binds `127.0.0.1` only)
+- `server/runner.ts` — spawns/kills `claude`, parses the `stream-json` session feed
+- `server/git.ts` — worktree lifecycle · `server/github.ts` — read-only PR lookup
 - `server/bus.ts` — SSE fan-out for live board + timeline updates
-- `server/addons.ts` — catalog of opt-in task behaviors (self-review, open a PR, …)
-- `public/` — dependency-free vanilla JS UI (no build step)
+- `server/addons.ts` — catalog of opt-in task behaviors
+- `public/` — dependency-free vanilla-JS UI (no build step)
 
-The Node-side is TypeScript (`tsx` in dev, `tsc` → `dist/` for builds); `public/`
-is served static as-is.
-
-For the full architecture map, invariants, and conventions, see [`CLAUDE.md`](./CLAUDE.md) —
-it's the guide Claude Code (and contributors) follow when working in this repo.
+The Node-side is TypeScript (`tsx` in dev, `tsc` → `dist/` for builds). For the full
+map, invariants, and conventions, see **[`CLAUDE.md`](./CLAUDE.md)** — the guide Claude
+Code and contributors follow when working in this repo.
 
 ## Contributing
 
-Sr. Popo is open source (MIT) and built to be maintained with Claude Code itself.
+Sr. Popo is open source and built to be maintained with Claude Code itself.
 
-- [`CONTRIBUTING.md`](./CONTRIBUTING.md) — dev setup, workflow, commit/PR style.
+- [`CONTRIBUTING.md`](./CONTRIBUTING.md) — dev setup, workflow, commit/PR style
 - [`CLAUDE.md`](./CLAUDE.md) — architecture, invariants, and the Claude-driven
-  maintenance loop (register this repo in Sr. Popo, dispatch changes in a worktree,
-  self-review, open a PR).
-- [`SECURITY.md`](./SECURITY.md) — design guarantees and how to report a vulnerability.
-- [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md) — community expectations.
-
-Every change is gated on `npm run typecheck && npm run lint && npm test`; CI re-runs all three and packages the
-app on macOS + Windows.
+  maintenance loop
+- [`SECURITY.md`](./SECURITY.md) — design guarantees and how to report a vulnerability
+- [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md) — community expectations
 
 ## License
 
