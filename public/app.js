@@ -7,10 +7,14 @@
     repos: [],
     tasks: new Map(), // id -> task
     openTaskId: null, // task shown in drawer
+    addons: [],       // catalog of optional task behaviors (from /api/addons)
+    personas: [],     // catalog of expert personas (from /api/personas)
+    filters: { search: '', repoIds: new Set() }, // board filters (project + text)
   };
 
   const COLUMNS = [
     { key: 'backlog', label: 'Backlog', dot: '#8b93a8' },
+    { key: 'grooming', label: 'Grooming', dot: '#e879c9' },
     { key: 'ready', label: 'Ready', dot: '#60a5fa' },
     { key: 'running', label: 'Running', dot: '#e0a93e' },
     { key: 'review', label: 'Review', dot: '#8b7cf6' },
@@ -18,9 +22,12 @@
   ];
   // failed tasks are surfaced in the Review column with a FAILED badge
   const COLUMN_OF_STATUS = {
-    backlog: 'backlog', ready: 'ready', running: 'running',
+    backlog: 'backlog', grooming: 'grooming', ready: 'ready', running: 'running',
     review: 'review', failed: 'review', done: 'done',
   };
+  // Live states run a claude child process — cards can't be dragged/edited and
+  // show a spinner + stop button instead.
+  const isLive = (t) => t.status === 'running' || t.status === 'grooming';
 
   const $ = (sel) => document.querySelector(sel);
 
@@ -58,13 +65,88 @@
     return fmtDuration(Date.now() - new Date(iso).getTime());
   }
 
+  // ---------- filters ----------
+  // A task is shown when it matches every active filter: an optional set of
+  // repos (project) and a free-text query over its title / repo / prompt.
+  function taskMatchesFilters(t) {
+    const f = state.filters;
+    if (f.repoIds.size && !f.repoIds.has(t.repoId)) return false;
+    if (f.search) {
+      const hay = `${t.title} ${t.repoName} ${t.prompt || ''}`.toLowerCase();
+      if (!hay.includes(f.search)) return false;
+    }
+    return true;
+  }
+
+  const filtersActive = () => state.filters.repoIds.size > 0 || !!state.filters.search;
+
+  // A stable per-repo accent so each project reads as the same color everywhere.
+  function repoHue(id) {
+    let h = 0;
+    for (const c of String(id)) h = (h * 31 + c.charCodeAt(0)) % 360;
+    return h;
+  }
+
+  const FILTER_KEY = 'srpopo.filters';
+  function saveFilters() {
+    try {
+      localStorage.setItem(FILTER_KEY, JSON.stringify({
+        search: state.filters.search,
+        repoIds: [...state.filters.repoIds],
+      }));
+    } catch { /* storage unavailable — non-fatal */ }
+  }
+  function loadFilters() {
+    try {
+      const f = JSON.parse(localStorage.getItem(FILTER_KEY)) || {};
+      state.filters.search = (f.search || '').toLowerCase();
+      state.filters.repoIds = new Set(f.repoIds || []);
+    } catch { /* ignore malformed storage */ }
+  }
+
+  function onFiltersChanged() {
+    saveFilters();
+    renderFilters();
+    renderBoard();
+  }
+
+  function renderFilters() {
+    // Drop any selected repos that no longer exist so the state can't get stuck.
+    const known = new Set(state.repos.map((r) => r.id));
+    for (const id of [...state.filters.repoIds]) if (!known.has(id)) state.filters.repoIds.delete(id);
+
+    const counts = new Map();
+    for (const t of state.tasks.values()) counts.set(t.repoId, (counts.get(t.repoId) || 0) + 1);
+
+    $('#filter-repos').innerHTML = state.repos.map((r) => {
+      const active = state.filters.repoIds.has(r.id);
+      const n = counts.get(r.id) || 0;
+      return `<button class="filter-pill ${active ? 'active' : ''}" data-repo="${esc(r.id)}" title="${esc(r.path)}">
+          <span class="filter-pill-dot" style="background:hsl(${repoHue(r.id)} 60% 60%)"></span>
+          <span class="filter-pill-name">${esc(r.name)}</span>
+          <span class="filter-pill-count">${n}</span>
+        </button>`;
+    }).join('');
+
+    updateFilterMeta();
+  }
+
+  function updateFilterMeta() {
+    const all = [...state.tasks.values()];
+    const shown = all.filter(taskMatchesFilters).length;
+    $('#filter-count').textContent = filtersActive() ? `${shown} of ${all.length}` : `${all.length} tasks`;
+    $('#filter-clear').classList.toggle('hidden', !filtersActive());
+  }
+
   // ---------- board ----------
   function renderBoard() {
+    updateFilterMeta();
     const board = $('#board');
     board.innerHTML = '';
     for (const col of COLUMNS) {
       const tasks = [...state.tasks.values()]
         .filter((t) => COLUMN_OF_STATUS[t.status] === col.key)
+        .filter(taskMatchesFilters)
         .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
 
       const colEl = document.createElement('div');
@@ -80,7 +162,9 @@
       const body = colEl.querySelector('.column-body');
 
       if (!tasks.length) {
-        const hint = col.key === 'running' ? 'drag a card here to dispatch' : 'empty';
+        const hint = filtersActive() ? 'no matches'
+          : col.key === 'running' ? 'drag a card here to dispatch'
+          : col.key === 'grooming' ? 'brief an idea to fill this' : 'empty';
         body.innerHTML = `<div class="column-empty">${hint}</div>`;
       }
       for (const t of tasks) body.appendChild(renderCard(t));
@@ -98,15 +182,22 @@
 
   function renderCard(t) {
     const el = document.createElement('div');
-    el.className = `card ${t.status === 'running' ? 'running' : ''} ${t.status === 'failed' ? 'failed' : ''}`;
-    el.draggable = t.status !== 'running';
+    el.className = `card ${t.status === 'running' ? 'running' : ''} ${t.status === 'grooming' ? 'grooming' : ''} ${t.status === 'failed' ? 'failed' : ''}`;
+    el.draggable = !isLive(t);
     el.dataset.id = t.id;
 
     const chips = [
       `<span class="chip repo">${esc(t.repoName)}</span>`,
       `<span class="chip model">${esc(t.model === 'default' ? (t.resolvedModel || 'default') : t.model)}</span>`,
     ];
+    if (t.status === 'grooming') chips.push(`<span class="chip grooming-chip" title="Grooming a rough idea into a task prompt">💡 grooming</span>`);
     if (t.useWorktree) chips.push(`<span class="chip worktree" title="${esc(t.worktreePath || 'worktree on dispatch')}">🌿 ${esc(t.branch || 'worktree')}</span>`);
+    if (t.addons && t.addons.includes('pull_request')) chips.push(`<span class="chip addon-chip" title="Opens a pull request when finished">⇢ PR</span>`);
+    if (t.addons && t.addons.includes('code_review')) chips.push(`<span class="chip addon-chip" title="Self code-reviews and fixes issues before finishing">🔍 review</span>`);
+    (t.personas || []).forEach((pid) => {
+      const p = state.personas.find((x) => x.id === pid);
+      chips.push(`<span class="chip persona-chip" title="${esc(p ? p.hint : 'persona')}">🎭 ${esc(p ? p.label : pid)}</span>`);
+    });
     if (t.costUsd > 0) chips.push(`<span class="chip cost">$${t.costUsd.toFixed(2)}</span>`);
     if (t.status === 'failed') chips.push(`<span class="chip badge-failed">FAILED</span>`);
     if (t.lastOutcome === 'stopped') chips.push(`<span class="chip badge-stopped">stopped</span>`);
@@ -115,10 +206,11 @@
     }
 
     let statusRow = '';
-    if (t.status === 'running') {
+    if (isLive(t)) {
       statusRow = `
         <div class="card-status">
           <span class="spinner"></span>
+          ${t.status === 'grooming' ? '<span class="live-label">grooming</span>' : ''}
           <span class="elapsed" data-start="${esc(t.startedAt)}">${elapsedSince(t.startedAt)}</span>
           <button class="btn icon danger card-stop" data-action="stop" title="Stop run">■</button>
         </div>`;
@@ -154,6 +246,8 @@
   async function onDrop(taskId, colKey) {
     const t = state.tasks.get(taskId);
     if (!t || COLUMN_OF_STATUS[t.status] === colKey) return;
+    // Grooming is entered only via "Brief an Idea", never by dragging a card in.
+    if (colKey === 'grooming') return;
     try {
       if (colKey === 'running') {
         if (t.status === 'backlog' || t.status === 'ready') {
@@ -214,16 +308,38 @@
     if (t.numTurns != null) meta.push(`<span class="chip">${t.numTurns} turns</span>`);
     $('#drawer-meta').innerHTML = meta.join('');
 
+    // The prompt block — always visible, even for a task that never ran. Briefed
+    // tasks show the original idea and, once groomed, the resulting prompt too.
+    const promptEl = $('#drawer-prompt');
+    const blocks = [];
+    if (t.brief) {
+      const ideaTag = t.status === 'grooming' ? 'IDEA — GROOMING…' : 'IDEA';
+      blocks.push(`<div class="tag">${ideaTag}</div><div class="drawer-prompt-body">${esc(t.brief)}</div>`);
+      if (t.prompt && t.prompt !== t.brief) {
+        blocks.push(`<div class="tag">GROOMED PROMPT</div><div class="drawer-prompt-body">${esc(t.prompt)}</div>`);
+      }
+    } else if (t.prompt) {
+      blocks.push(`<div class="tag">ORIGINAL PROMPT</div><div class="drawer-prompt-body">${esc(t.prompt)}</div>`);
+    }
+    if (blocks.length) {
+      promptEl.classList.remove('hidden');
+      promptEl.innerHTML = blocks.join('');
+    } else {
+      promptEl.classList.add('hidden');
+      promptEl.innerHTML = '';
+    }
+
     const actions = [];
-    if (t.status === 'running') {
+    if (isLive(t)) {
       actions.push(`<button class="btn danger" data-act="stop">■ Stop</button>`);
     } else {
       if (t.status === 'backlog' || t.status === 'ready') actions.push(`<button class="btn primary" data-act="dispatch">▶ Run</button>`);
+      actions.push(`<button class="btn ghost" data-act="edit">✎ Edit</button>`);
       actions.push(`<button class="btn ghost" data-act="archive">Archive</button>`);
     }
     if (t.worktreePath) {
       actions.push(`<button class="btn ghost" data-act="copy-wt" title="${esc(t.worktreePath)}">Copy worktree path</button>`);
-      if (t.status !== 'running') actions.push(`<button class="btn ghost danger" data-act="rm-wt">Remove worktree</button>`);
+      if (!isLive(t)) actions.push(`<button class="btn ghost danger" data-act="rm-wt">Remove worktree</button>`);
     }
     const box = $('#drawer-actions');
     box.innerHTML = actions.join('');
@@ -232,6 +348,7 @@
       if (!act) return;
       try {
         if (act === 'stop') await api('POST', `/api/tasks/${t.id}/stop`);
+        if (act === 'edit') { openTaskModal(t); return; }
         if (act === 'dispatch') await api('POST', `/api/tasks/${t.id}/dispatch`);
         if (act === 'archive') { await api('POST', `/api/tasks/${t.id}/archive`); closeDrawer(); }
         if (act === 'copy-wt') { await navigator.clipboard.writeText(t.worktreePath); toast('Worktree path copied', 'info'); }
@@ -239,11 +356,11 @@
       } catch (err) { toast(err.message); }
     };
 
-    const canFollowup = t.status !== 'running' && !!t.sessionId;
+    const canFollowup = !isLive(t) && !!t.sessionId;
     $('#followup-input').disabled = !canFollowup;
     $('#followup-send').disabled = !canFollowup;
-    $('#followup-input').placeholder = t.status === 'running'
-      ? 'Task is running…'
+    $('#followup-input').placeholder = isLive(t)
+      ? (t.status === 'grooming' ? 'Grooming the idea…' : 'Task is running…')
       : t.sessionId ? 'Send a follow-up to this session…' : 'Run the task first to start a session';
   }
 
@@ -278,9 +395,10 @@
   function appendEvent(ev) {
     const type = ev.type;
     if (type === 'prompt') {
+      const tag = ev.groom ? 'GROOMING' : ev.resume ? 'FOLLOW-UP' : 'PROMPT';
       addHtml(containerFor(ev), `
         <div class="ev-prompt">
-          <span class="tag">${ev.resume ? 'FOLLOW-UP' : 'PROMPT'} · run ${ev.run || 1}</span>${esc(ev.text)}
+          <span class="tag">${tag} · run ${ev.run || 1}</span>${esc(ev.text)}
         </div>`);
     } else if (type === 'system' && ev.subtype === 'init') {
       addHtml(containerFor(ev), `<div class="ev-meta">⚡ session started · ${esc(ev.model || '')} · ${esc((ev.session_id || '').slice(0, 8))}</div>`);
@@ -441,40 +559,302 @@
       : '<option value="">No repos yet — add one first</option>';
   }
 
-  function openTaskModal() {
+  // Optional task behaviors — checkboxes derived from the /api/addons catalog.
+  // These render below the worktree toggle inside the "Extra behavior" section.
+  function renderAddonOptions(selected = []) {
+    const chosen = new Set(selected);
+    $('#task-addon-list').innerHTML = state.addons.map((a) => `
+      <label class="check addon">
+        <input type="checkbox" data-addon="${esc(a.id)}" ${chosen.has(a.id) ? 'checked' : ''} />
+        <span class="addon-text">
+          <span class="addon-label">${esc(a.label)}</span>
+          ${a.hint ? `<span class="addon-hint">${esc(a.hint)}</span>` : ''}
+        </span>
+      </label>`).join('');
+  }
+
+  function selectedAddons() {
+    return [...document.querySelectorAll('#task-addons input[data-addon]:checked')]
+      .map((el) => el.dataset.addon);
+  }
+
+  // Expert personas — a compact, Claude-style multi-select instead of a wall of
+  // checkboxes. Selected personas show as removable chips; more are added from a
+  // searchable, keyboard-navigable popover. A selected persona is prepended to
+  // the prompt as a role preamble at dispatch.
+  const personaPicker = {
+    selected: new Set(), // chosen persona ids
+    activeIndex: 0,      // highlighted option within the currently filtered list
+  };
+
+  // Seed the picker when the modal opens (create or edit); keep only known ids.
+  function initPersonaPicker(selected = []) {
+    const known = new Set(state.personas.map((p) => p.id));
+    personaPicker.selected = new Set(selected.filter((id) => known.has(id)));
+    closePersonaMenu();
+    renderPersonaChips();
+  }
+
+  // Selected ids in catalog order — matches how the server sanitizes them.
+  function selectedPersonas() {
+    return state.personas.filter((p) => personaPicker.selected.has(p.id)).map((p) => p.id);
+  }
+
+  function renderPersonaChips() {
+    const box = $('#task-persona-chips');
+    const ids = selectedPersonas();
+    if (!ids.length) {
+      box.innerHTML = '<span class="persona-empty">No persona — Claude works as itself.</span>';
+      return;
+    }
+    box.innerHTML = ids.map((id) => {
+      const p = state.personas.find((x) => x.id === id);
+      const label = p ? p.label : id;
+      return `<span class="persona-tag" role="listitem">
+          <span class="persona-tag-label">🎭 ${esc(label)}</span>
+          <button type="button" class="persona-tag-x" data-remove="${esc(id)}"
+                  title="Remove ${esc(label)}" aria-label="Remove ${esc(label)}">✕</button>
+        </span>`;
+    }).join('');
+  }
+
+  function personaMenuOpen() {
+    return !$('#task-persona-menu').classList.contains('hidden');
+  }
+
+  // Catalog filtered by the search box (matches label or hint).
+  function visiblePersonas() {
+    const q = $('#task-persona-search').value.trim().toLowerCase();
+    if (!q) return state.personas;
+    return state.personas.filter((p) =>
+      p.label.toLowerCase().includes(q) || (p.hint || '').toLowerCase().includes(q));
+  }
+
+  function renderPersonaMenu() {
+    const list = $('#task-persona-options');
+    const opts = visiblePersonas();
+    if (personaPicker.activeIndex > opts.length - 1) personaPicker.activeIndex = opts.length - 1;
+    if (personaPicker.activeIndex < 0) personaPicker.activeIndex = 0;
+    // Point the combobox at the highlighted option for screen readers.
+    const active = opts[personaPicker.activeIndex];
+    $('#task-persona-search').setAttribute('aria-activedescendant', active ? `persona-opt-${active.id}` : '');
+    if (!opts.length) {
+      list.innerHTML = '<div class="persona-none">No matching persona</div>';
+      return;
+    }
+    list.innerHTML = opts.map((p, i) => {
+      const on = personaPicker.selected.has(p.id);
+      const active = i === personaPicker.activeIndex;
+      return `<div class="persona-option${on ? ' on' : ''}${active ? ' active' : ''}"
+          role="option" id="persona-opt-${esc(p.id)}" aria-selected="${on}"
+          data-persona="${esc(p.id)}">
+          <span class="persona-check" aria-hidden="true">${on ? '✓' : ''}</span>
+          <span class="addon-text">
+            <span class="addon-label">${esc(p.label)}</span>
+            ${p.hint ? `<span class="addon-hint">${esc(p.hint)}</span>` : ''}
+          </span>
+        </div>`;
+    }).join('');
+  }
+
+  function scrollActiveOptionIntoView() {
+    const el = $('#task-persona-options').querySelector('.persona-option.active');
+    if (el) el.scrollIntoView({ block: 'nearest' });
+  }
+
+  function openPersonaMenu() {
+    $('#task-persona-menu').classList.remove('hidden');
+    $('#task-persona-add').setAttribute('aria-expanded', 'true');
+    $('#task-persona-search').value = '';
+    personaPicker.activeIndex = 0;
+    renderPersonaMenu();
+    $('#task-persona-search').focus();
+    $('#task-persona-menu').scrollIntoView({ block: 'nearest' });
+  }
+
+  function closePersonaMenu() {
+    $('#task-persona-menu').classList.add('hidden');
+    $('#task-persona-add').setAttribute('aria-expanded', 'false');
+  }
+
+  function togglePersona(id) {
+    if (personaPicker.selected.has(id)) personaPicker.selected.delete(id);
+    else personaPicker.selected.add(id);
+    renderPersonaChips();
+    renderPersonaMenu();
+  }
+
+  // --- persona picker wiring (elements are static, so wire once) ---
+  $('#task-persona-add').addEventListener('click', () => {
+    if (personaMenuOpen()) { closePersonaMenu(); $('#task-persona-add').focus(); }
+    else openPersonaMenu();
+  });
+  $('#task-persona-chips').addEventListener('click', (e) => {
+    const id = e.target.closest('[data-remove]')?.dataset.remove;
+    if (id) togglePersona(id);
+  });
+  $('#task-persona-options').addEventListener('click', (e) => {
+    const id = e.target.closest('[data-persona]')?.dataset.persona;
+    if (id) { togglePersona(id); $('#task-persona-search').focus(); }
+  });
+  $('#task-persona-search').addEventListener('input', () => {
+    personaPicker.activeIndex = 0;
+    renderPersonaMenu();
+  });
+  $('#task-persona-search').addEventListener('keydown', (e) => {
+    const opts = visiblePersonas();
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      personaPicker.activeIndex = Math.min(opts.length - 1, personaPicker.activeIndex + 1);
+      renderPersonaMenu(); scrollActiveOptionIntoView();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      personaPicker.activeIndex = Math.max(0, personaPicker.activeIndex - 1);
+      renderPersonaMenu(); scrollActiveOptionIntoView();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      const p = opts[personaPicker.activeIndex];
+      if (p) togglePersona(p.id);
+    } else if (e.key === 'Escape') {
+      // Close just the menu — don't let the global handler dismiss the modal.
+      e.preventDefault(); e.stopPropagation();
+      closePersonaMenu(); $('#task-persona-add').focus();
+    }
+  });
+  // Click anywhere outside the picker closes the menu.
+  document.addEventListener('click', (e) => {
+    if (personaMenuOpen() && !e.target.closest('.persona-picker')) closePersonaMenu();
+  });
+
+  // Remember the settings used on the last created task so a new task defaults
+  // to them instead of the hardcoded defaults — no need to re-pick every time.
+  const LAST_USED_KEY = 'srpopo.lastTaskSettings';
+  function loadLastUsed() {
+    try { return JSON.parse(localStorage.getItem(LAST_USED_KEY)) || {}; }
+    catch { return {}; }
+  }
+  function saveLastUsed(fields, repoId) {
+    try {
+      localStorage.setItem(LAST_USED_KEY, JSON.stringify({
+        model: fields.model,
+        permissionMode: fields.permissionMode,
+        allowedTools: fields.allowedTools,
+        useWorktree: fields.useWorktree,
+        addons: fields.addons,
+        personas: fields.personas,
+        repoId,
+      }));
+    } catch { /* storage unavailable — non-fatal */ }
+  }
+
+  // null => create mode; a task => edit that task.
+  let editingTaskId = null;
+
+  function openTaskModal(task = null) {
+    editingTaskId = task ? task.id : null;
+    // In create mode, seed the form from the last task the user created.
+    const last = task ? {} : loadLastUsed();
     refreshRepoSelect();
-    $('#task-title').value = '';
-    $('#task-prompt').value = '';
+    $('#task-title').value = task ? task.title : '';
+    $('#task-prompt').value = task ? task.prompt : '';
+    $('#task-model').value = task ? (task.model || 'default') : (last.model || 'default');
+    $('#task-perm').value = task ? (task.permissionMode || 'acceptEdits') : (last.permissionMode || 'acceptEdits');
+    $('#task-allowed-tools').value = task ? (task.allowedTools || '') : (last.allowedTools || '');
+    $('#task-worktree').checked = task ? !!task.useWorktree : (last.useWorktree ?? true);
+    // A materialized worktree can't be toggled off; the repo can't move after creation.
+    $('#task-worktree').disabled = !!(task && task.worktreePath);
+    renderAddonOptions(task ? (task.addons || []) : (last.addons || []));
+    initPersonaPicker(task ? (task.personas || []) : (last.personas || []));
+    $('#task-repo-field').classList.toggle('hidden', !!task);
+    if (task) $('#task-repo').value = task.repoId;
+    // Restore the last-used repo if it still exists in the current list.
+    else if (last.repoId && state.repos.some((r) => r.id === last.repoId)) $('#task-repo').value = last.repoId;
+
+    $('#task-modal-title').textContent = task ? 'Edit Task' : 'New Task';
+    $('#task-create').textContent = task ? 'Save' : 'Create in Backlog';
+    $('#task-create-run').textContent = task ? 'Save & Run ▶' : 'Create & Run ▶';
+
     $('#modal-task').classList.remove('hidden');
     $('#task-title').focus();
   }
 
-  async function createTask(run) {
-    const repoId = $('#task-repo').value;
-    if (!repoId) { toast('Add a repository first'); return; }
-    const payload = {
-      repoId,
-      title: $('#task-title').value.trim(),
-      prompt: $('#task-prompt').value.trim(),
+  async function saveTask(run) {
+    const title = $('#task-title').value.trim();
+    const prompt = $('#task-prompt').value.trim();
+    if (!title || !prompt) { toast('Title and prompt are required'); return; }
+    const fields = {
+      title,
+      prompt,
       model: $('#task-model').value,
       permissionMode: $('#task-perm').value,
+      allowedTools: $('#task-allowed-tools').value,
       useWorktree: $('#task-worktree').checked,
-      status: run ? 'ready' : 'backlog',
+      addons: selectedAddons(),
+      personas: selectedPersonas(),
     };
-    if (!payload.title || !payload.prompt) { toast('Title and prompt are required'); return; }
     try {
-      const task = await api('POST', '/api/tasks', payload);
+      let task;
+      if (editingTaskId) {
+        task = await api('PATCH', `/api/tasks/${editingTaskId}`, fields);
+      } else {
+        const repoId = $('#task-repo').value;
+        if (!repoId) { toast('Add a repository first'); return; }
+        task = await api('POST', '/api/tasks', { ...fields, repoId, status: run ? 'ready' : 'backlog' });
+        saveLastUsed(fields, repoId);
+      }
       $('#modal-task').classList.add('hidden');
       if (run) await api('POST', `/api/tasks/${task.id}/dispatch`);
     } catch (e) { toast(e.message); }
   }
 
-  $('#btn-new-task').addEventListener('click', openTaskModal);
+  $('#btn-new-task').addEventListener('click', () => openTaskModal());
   $('#task-cancel').addEventListener('click', () => $('#modal-task').classList.add('hidden'));
-  $('#task-create').addEventListener('click', () => createTask(false));
-  $('#task-create-run').addEventListener('click', () => createTask(true));
+  $('#task-create').addEventListener('click', () => saveTask(false));
+  $('#task-create-run').addEventListener('click', () => saveTask(true));
   $('#task-add-repo').addEventListener('click', () => {
     $('#modal-task').classList.add('hidden');
+    openReposModal();
+  });
+
+  // ---------- brief an idea (grooming) ----------
+  function refreshBriefRepoSelect() {
+    const sel = $('#brief-repo');
+    sel.innerHTML = state.repos.length
+      ? state.repos.map((r) => `<option value="${r.id}">${esc(r.name)} — ${esc(r.path)}</option>`).join('')
+      : '<option value="">No repos yet — add one first</option>';
+  }
+
+  function openBriefModal() {
+    refreshBriefRepoSelect();
+    const last = loadLastUsed();
+    $('#brief-text').value = '';
+    $('#brief-model').value = last.model || 'default';
+    if (last.repoId && state.repos.some((r) => r.id === last.repoId)) $('#brief-repo').value = last.repoId;
+    $('#modal-brief').classList.remove('hidden');
+    $('#brief-text').focus();
+  }
+
+  async function submitBrief() {
+    const brief = $('#brief-text').value.trim();
+    const repoId = $('#brief-repo').value;
+    if (!brief) { toast('Describe your idea first'); return; }
+    if (!repoId) { toast('Add a repository first'); return; }
+    try {
+      const task = await api('POST', '/api/briefs', { brief, repoId, model: $('#brief-model').value });
+      $('#modal-brief').classList.add('hidden');
+      toast('Grooming your idea into a task…', 'info');
+      openDrawer(task.id);
+    } catch (e) { toast(e.message); }
+  }
+
+  $('#btn-brief').addEventListener('click', openBriefModal);
+  $('#brief-cancel').addEventListener('click', () => $('#modal-brief').classList.add('hidden'));
+  $('#brief-submit').addEventListener('click', submitBrief);
+  $('#brief-text').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submitBrief();
+  });
+  $('#brief-add-repo').addEventListener('click', () => {
+    $('#modal-brief').classList.add('hidden');
     openReposModal();
   });
 
@@ -525,6 +905,35 @@
     });
   }
 
+  // ---------- filter bar wiring ----------
+  $('#filter-repos').addEventListener('click', (e) => {
+    const pill = e.target.closest('.filter-pill');
+    if (!pill) return;
+    const id = pill.dataset.repo;
+    if (state.filters.repoIds.has(id)) state.filters.repoIds.delete(id);
+    else state.filters.repoIds.add(id);
+    onFiltersChanged();
+  });
+  $('#filter-search').addEventListener('input', (e) => {
+    state.filters.search = e.target.value.trim().toLowerCase();
+    saveFilters();
+    renderBoard();
+  });
+  $('#filter-clear').addEventListener('click', () => {
+    state.filters.search = '';
+    state.filters.repoIds.clear();
+    $('#filter-search').value = '';
+    onFiltersChanged();
+  });
+  // Press "/" to jump to the filter box (unless already typing somewhere).
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== '/' || e.metaKey || e.ctrlKey || e.altKey) return;
+    const tag = (e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+    e.preventDefault();
+    $('#filter-search').focus();
+  });
+
   // ---------- drawer close ----------
   $('#drawer-close').addEventListener('click', closeDrawer);
   $('#drawer-overlay').addEventListener('click', closeDrawer);
@@ -551,6 +960,8 @@
         state.repos = msg.repos;
         renderRepoList();
         refreshRepoSelect();
+        refreshBriefRepoSelect();
+        renderFilters();
       } else if (msg.type === 'log' && msg.taskId === state.openTaskId) {
         appendEvent(msg.event);
       }
@@ -560,14 +971,34 @@
     };
   }
 
+  // ---------- deep links (#task/<id>) ----------
+  // Lets the native tray menu open a specific task in the drawer.
+  function handleHashDeeplink() {
+    const m = location.hash.match(/^#task\/([a-z0-9]+)$/i);
+    if (m && state.tasks.has(m[1])) openDrawer(m[1]);
+  }
+  window.addEventListener('hashchange', handleHashDeeplink);
+
   // ---------- boot ----------
   async function boot() {
     try {
       const { repos, tasks } = await api('GET', '/api/state');
       state.repos = repos;
       state.tasks = new Map(tasks.map((t) => [t.id, t]));
+      loadFilters();
+      $('#filter-search').value = state.filters.search;
+      renderFilters();
       renderBoard();
+      handleHashDeeplink();
     } catch (e) { toast(`Failed to load state: ${e.message}`); }
+
+    try {
+      state.addons = await api('GET', '/api/addons');
+    } catch { state.addons = []; }
+
+    try {
+      state.personas = await api('GET', '/api/personas');
+    } catch { state.personas = []; }
 
     try {
       const h = await api('GET', '/api/health');

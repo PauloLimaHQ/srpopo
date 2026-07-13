@@ -3,6 +3,7 @@ const readline = require('readline');
 
 const { db, save, now, appendLog } = require('./store');
 const { broadcast } = require('./bus');
+const groomer = require('./groomer');
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
 
@@ -35,36 +36,49 @@ function record(task, event) {
   broadcast({ type: 'log', taskId: task.id, event });
 }
 
+// Normalize a free-text allow-list into a clean comma-joined string for
+// `--allowedTools`. Patterns may contain spaces (e.g. `Bash(npm run lint:*)`),
+// so we split only on commas and newlines — never spaces.
+function normalizeAllowedTools(value) {
+  if (typeof value !== 'string') return '';
+  const list = value
+    .split(/[,\n]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return list.join(',').slice(0, 2000);
+}
+
 function buildArgs(task, resume) {
   const args = ['-p', '--output-format', 'stream-json', '--verbose'];
   if (task.model && task.model !== 'default') args.push('--model', task.model);
   if (task.permissionMode === 'bypassPermissions') args.push('--dangerously-skip-permissions');
   else if (task.permissionMode && task.permissionMode !== 'default') args.push('--permission-mode', task.permissionMode);
+  const allow = normalizeAllowedTools(task.allowedTools);
+  if (allow) args.push('--allowedTools', allow);
   if (resume && task.sessionId) args.push('--resume', task.sessionId);
   return args;
 }
 
+// Read-only args for a grooming session: it explores the repo to write a better
+// prompt but must never modify it. Only the safe research tools are auto-approved
+// in this headless run, so any write tool is denied.
+function groomArgs(task) {
+  const args = ['-p', '--output-format', 'stream-json', '--verbose'];
+  if (task.model && task.model !== 'default') args.push('--model', task.model);
+  args.push('--allowedTools', 'Read,Grep,Glob,Bash(git log:*),Bash(git diff:*),Bash(git show:*)');
+  return args;
+}
+
 /**
- * Dispatch a task: spawn `claude -p` in the task's working directory and
- * stream its NDJSON output into the task log + SSE bus.
- * `prompt` is the text sent on stdin; `resume` continues an existing session.
+ * Spawn `claude -p` for a task and stream its NDJSON output into the task log +
+ * SSE bus. Shared by dispatch (running) and groom (grooming): the caller sets
+ * the task's starting fields and provides `resolveExit`, which decides the final
+ * status once the process exits (the process error/cleanup path is handled here).
  */
-function dispatch(task, prompt, { resume = false } = {}) {
+function launch(task, { args, workDir, prompt, promptEvent, resolveExit }) {
   if (running.has(task.id)) throw new Error('Task is already running');
 
-  const workDir = task.worktreePath || task.repoPath;
-  const args = buildArgs(task, resume);
-
-  task.status = 'running';
-  task.startedAt = now();
-  task.finishedAt = null;
-  task.lastOutcome = null;
-  task.lastError = null;
-  task.runCount = (task.runCount || 0) + 1;
-  task.activeSubagents = 0;
-  emitTask(task);
-
-  record(task, { type: 'prompt', text: prompt, resume, run: task.runCount });
+  record(task, promptEvent);
 
   const child = spawn(CLAUDE_BIN, args, {
     cwd: workDir,
@@ -148,29 +162,128 @@ function dispatch(task, prompt, { resume = false } = {}) {
     running.delete(task.id);
     task.finishedAt = now();
     task.activeSubagents = 0;
-
-    if (signal || child.wasStopped) {
-      task.status = 'ready';
-      task.lastOutcome = 'stopped';
-      task.lastError = 'Stopped by user';
-      record(task, { type: 'proc', text: 'Run stopped by user' });
-    } else if (sawResult && !sawResult.is_error) {
-      task.status = 'review';
-      task.lastOutcome = 'success';
-      record(task, { type: 'proc', text: `Run finished (exit ${code})` });
-    } else {
-      task.status = 'failed';
-      task.lastOutcome = 'error';
-      task.lastError =
-        (sawResult && (sawResult.result || sawResult.subtype)) ||
-        stderrTail.trim().split('\n').pop() ||
-        `claude exited with code ${code}`;
-      record(task, { type: 'proc', text: `Run failed (exit ${code}): ${task.lastError}` });
-    }
+    resolveExit({ code, signal, stopped: !!child.wasStopped, sawResult, stderrTail });
     emitTask(task);
   });
 
   return task;
+}
+
+/**
+ * Dispatch a task: spawn `claude -p` in the task's working directory and
+ * stream its NDJSON output into the task log + SSE bus.
+ * `prompt` is the text sent on stdin; `resume` continues an existing session.
+ */
+function dispatch(task, prompt, { resume = false } = {}) {
+  if (running.has(task.id)) throw new Error('Task is already running');
+
+  task.status = 'running';
+  task.startedAt = now();
+  task.finishedAt = null;
+  task.lastOutcome = null;
+  task.lastError = null;
+  task.runCount = (task.runCount || 0) + 1;
+  task.activeSubagents = 0;
+  emitTask(task);
+
+  return launch(task, {
+    args: buildArgs(task, resume),
+    workDir: task.worktreePath || task.repoPath,
+    prompt,
+    promptEvent: { type: 'prompt', text: prompt, resume, run: task.runCount },
+    resolveExit: ({ code, signal, stopped, sawResult, stderrTail }) => {
+      if (signal || stopped) {
+        task.status = 'ready';
+        task.lastOutcome = 'stopped';
+        task.lastError = 'Stopped by user';
+        record(task, { type: 'proc', text: 'Run stopped by user' });
+      } else if (sawResult && !sawResult.is_error) {
+        task.status = 'review';
+        task.lastOutcome = 'success';
+        record(task, { type: 'proc', text: `Run finished (exit ${code})` });
+      } else {
+        task.status = 'failed';
+        task.lastOutcome = 'error';
+        task.lastError =
+          (sawResult && (sawResult.result || sawResult.subtype)) ||
+          stderrTail.trim().split('\n').pop() ||
+          `claude exited with code ${code}`;
+        record(task, { type: 'proc', text: `Run failed (exit ${code}): ${task.lastError}` });
+      }
+    },
+  });
+}
+
+/**
+ * Groom a task: run a short, read-only `claude -p` session in the repo that
+ * rewrites the rough `brief` into a well-structured prompt. On success the task
+ * moves to `ready` with the groomed title/prompt; the `grooming` status (like
+ * `running`) is entered only here, never via the API.
+ */
+function groom(task, brief) {
+  if (running.has(task.id)) throw new Error('Task is already running');
+
+  task.status = 'grooming';
+  task.startedAt = now();
+  task.finishedAt = null;
+  task.lastOutcome = null;
+  task.lastError = null;
+  task.runCount = (task.runCount || 0) + 1;
+  task.activeSubagents = 0;
+  emitTask(task);
+
+  const prompt = groomer.metaPrompt(brief);
+
+  return launch(task, {
+    args: groomArgs(task),
+    workDir: task.repoPath, // grooming is read-only exploration; never a worktree
+    prompt,
+    promptEvent: { type: 'prompt', text: prompt, groom: true, run: task.runCount },
+    resolveExit: ({ code, signal, stopped, sawResult, stderrTail }) => {
+      // The grooming session is an internal, read-only planning session; the task
+      // must never resume it (a resume would run with edit perms in the main repo,
+      // not a worktree). Drop its session id so dispatch always starts fresh.
+      task.sessionId = null;
+
+      if (signal || stopped) {
+        // Park a stopped grooming session in backlog with the rough idea intact.
+        task.status = 'backlog';
+        task.lastOutcome = 'stopped';
+        task.lastError = 'Grooming stopped by user';
+        record(task, { type: 'proc', text: 'Grooming stopped by user' });
+        return;
+      }
+      const succeeded = sawResult && !sawResult.is_error;
+      const resultText = succeeded && typeof sawResult.result === 'string' ? sawResult.result : '';
+      const spec = succeeded ? groomer.parseResult(resultText) : null;
+      if (spec || (succeeded && resultText.trim())) {
+        // Drop the grooming run metrics so a groomed task reads as "not yet run"
+        // (the grooming cost stays on costUsd as a real spend).
+        task.numTurns = null;
+        task.durationMs = null;
+        task.status = 'ready';
+        task.lastOutcome = 'groomed';
+      }
+      if (spec) {
+        task.title = spec.title || task.title;
+        task.prompt = spec.prompt;
+        record(task, { type: 'proc', text: 'Groomed the idea into a ready task' });
+      } else if (succeeded && resultText.trim()) {
+        // Session finished but we couldn't parse a structured spec — keep the
+        // full text as the prompt so nothing is lost, and still move to Ready.
+        task.prompt = resultText.trim();
+        record(task, { type: 'proc', text: 'Grooming finished (kept unstructured output as the prompt)' });
+      } else {
+        task.status = 'failed';
+        task.lastOutcome = 'error';
+        task.lastError =
+          (sawResult && (sawResult.result || sawResult.subtype)) ||
+          stderrTail.trim().split('\n').pop() ||
+          `claude exited with code ${code}`;
+        record(task, { type: 'proc', text: `Grooming failed (exit ${code}): ${task.lastError}` });
+      }
+    },
+  });
 }
 
 function stop(taskId) {
@@ -188,4 +301,4 @@ function stopAll() {
   for (const [taskId] of running) stop(taskId);
 }
 
-module.exports = { dispatch, stop, stopAll, isRunning, CLAUDE_BIN };
+module.exports = { dispatch, groom, stop, stopAll, isRunning, buildArgs, normalizeAllowedTools, CLAUDE_BIN };

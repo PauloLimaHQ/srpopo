@@ -1,0 +1,62 @@
+name: 🐞 Bug report
+description: Something in Sr. Popo isn't working as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug! Please **do not** include real prompt/task content or
+        anything sensitive. For security issues, see SECURITY.md instead of filing here.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and what you expected instead.
+      placeholder: When I drag a card to Running, ...
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Add repo ...
+        2. Create task with ...
+        3. Dispatch ...
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: How are you running Sr. Popo?
+      options:
+        - Electron desktop app (npm start / installer)
+        - Web server only (npm run server)
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS & version
+      placeholder: macOS 15.3 (arm64) / Windows 11
+    validations:
+      required: true
+  - type: input
+    id: node
+    attributes:
+      label: Node.js version
+      placeholder: v20.11.0
+    validations:
+      required: true
+  - type: input
+    id: claude
+    attributes:
+      label: Claude CLI version
+      description: Output of `claude --version`
+      placeholder: 1.x.x
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Console output or the task timeline error. Redact anything sensitive.
+      render: shell

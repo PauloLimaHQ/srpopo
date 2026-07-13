@@ -1,0 +1,67 @@
+name: Release
+
+# Build installers whenever a GitHub Release is published, and attach the
+# artifacts to that release. Builds are UNSIGNED for now (open-source tool).
+on:
+  release:
+    types: [published]
+  # Allow building installers on demand without publishing a release.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            name: macOS
+            build: npm run dist:mac
+          - os: windows-latest
+            name: Windows
+            build: npm run dist:win
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Build installers (unsigned)
+        run: ${{ matrix.build }}
+        env:
+          # Disable macOS code signing — unsigned builds for now.
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Keep every build's output available on the workflow run, even for
+      # manual (workflow_dispatch) runs that have no release to attach to.
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: srpopo-${{ matrix.name }}
+          path: |
+            release/*.dmg
+            release/*.exe
+            release/*.zip
+          if-no-files-found: warn
+
+      - name: Attach to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/*.dmg
+            release/*.exe
+            release/*.zip
+            release/*.blockmap
+            release/latest*.yml

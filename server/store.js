@@ -19,9 +19,10 @@ if (fs.existsSync(DB_PATH)) {
   }
 }
 
-// Any task marked running when the server starts is an orphan from a previous run.
+// Any task marked running/grooming when the server starts is an orphan from a
+// previous run — its child claude process died with the server.
 for (const t of db.tasks) {
-  if (t.status === 'running') {
+  if (t.status === 'running' || t.status === 'grooming') {
     t.status = 'failed';
     t.lastOutcome = 'error';
     t.lastError = 'Server restarted while task was running';

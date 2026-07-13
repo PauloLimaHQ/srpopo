@@ -1,0 +1,34 @@
+name: 💡 Feature request
+description: Suggest an improvement to Sr. Popo
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Sr. Popo aims to stay **simple, local-first, and dependency-light**. Ideas that
+        fit that spirit are the easiest to land.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Describe the pain point or missing capability, not just the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like Sr. Popo to do?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Fit check
+      options:
+        - label: This keeps the app local-first (no data leaves the machine)
+        - label: This does not add a heavy runtime dependency or a UI build step

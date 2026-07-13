@@ -7,24 +7,43 @@
     "start": "electron .",
     "server": "node server/index.js",
     "server:dev": "node --watch server/index.js",
+    "lint": "eslint .",
+    "test": "node --test",
     "dist": "electron-builder --mac",
+    "dist:win": "electron-builder --win",
+    "dist:mac": "electron-builder --mac",
     "pack": "electron-builder --dir"
   },
   "keywords": [
     "claude-code",
+    "claude",
     "orchestrator",
     "kanban",
-    "electron"
+    "electron",
+    "developer-tools"
   ],
-  "author": "Paulo",
+  "author": "Paulo Lima <pflima92@gmail.com>",
   "license": "MIT",
+  "homepage": "https://github.com/PauloLimaHQ/srpopo#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PauloLimaHQ/srpopo.git"
+  },
+  "bugs": {
+    "url": "https://github.com/PauloLimaHQ/srpopo/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "type": "commonjs",
   "dependencies": {
     "express": "^4.21.2"
   },
   "devDependencies": {
     "electron": "^43.1.0",
-    "electron-builder": "^26.15.3"
+    "electron-builder": "^26.15.3",
+    "eslint": "^9.18.0",
+    "globals": "^15.14.0"
   },
   "build": {
     "appId": "com.pauloperego.srpopo",
@@ -71,6 +90,28 @@
     },
     "dmg": {
       "title": "Sr. Popo ${version}"
+    },
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
     }
   }
 }

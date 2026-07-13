@@ -12,6 +12,8 @@ app.setName('Sr. Popo');
 process.env.SRPOPO_DATA_DIR = path.join(app.getPath('userData'), 'data');
 
 const server = require('../server/index');
+const store = require('../server/store'); // read live task state for the tray
+const bus = require('../server/bus'); // task/log events → refresh the tray menu
 
 const isDev = !app.isPackaged;
 
@@ -82,16 +84,66 @@ function showWindow() {
   if (process.platform === 'darwin') app.dock.show();
 }
 
-function createTray() {
-  const trayIcon = nativeImage.createFromPath(
-    path.join(__dirname, '..', 'assets', 'trayTemplate.png')
-  );
-  trayIcon.setTemplateImage(true); // adapts to light/dark menu bar automatically
+// Show the board and jump straight to a task's drawer via the #task/<id> deep
+// link the renderer understands. Waits for the page if it's still loading.
+function openTask(taskId) {
+  showWindow();
+  if (!mainWindow) return;
+  const go = () =>
+    mainWindow.webContents
+      .executeJavaScript(
+        `location.hash = ${JSON.stringify('#task/' + taskId)};` +
+          `window.dispatchEvent(new HashChangeEvent('hashchange'));`
+      )
+      .catch(() => {}); // renderer may not be ready; the retry below covers it
+  if (mainWindow.webContents.isLoading()) {
+    mainWindow.webContents.once('did-finish-load', go);
+  } else {
+    go();
+  }
+}
 
-  tray = new Tray(trayIcon);
-  tray.setToolTip('Sr. Popo');
+// Human-friendly elapsed time since an ISO timestamp, e.g. "3m 20s".
+function formatElapsed(startedAt) {
+  if (!startedAt) return '';
+  const secs = Math.max(0, Math.round((Date.now() - new Date(startedAt).getTime()) / 1000));
+  if (secs < 60) return `${secs}s`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ${secs % 60}s`;
+  const hrs = Math.floor(mins / 60);
+  return `${hrs}h ${mins % 60}m`;
+}
+
+function runningTasks() {
+  return store.db.tasks.filter((t) => t.status === 'running' && !t.archived);
+}
+
+// Rebuild the tray context menu from the current set of running tasks so the
+// list (and each task's elapsed time) stays live in the menu bar.
+function refreshTray() {
+  if (!tray) return;
+  const running = runningTasks();
+
+  const items = [];
+  if (running.length) {
+    items.push({ label: `Running (${running.length})`, enabled: false });
+    for (const t of running) {
+      const bits = [t.repoName, formatElapsed(t.startedAt)];
+      if (t.activeSubagents > 0) {
+        bits.push(`${t.activeSubagents} subagent${t.activeSubagents > 1 ? 's' : ''}`);
+      }
+      items.push({
+        label: `  ${t.title}  —  ${bits.filter(Boolean).join(' · ')}`,
+        click: () => openTask(t.id),
+      });
+    }
+  } else {
+    items.push({ label: 'No tasks running', enabled: false });
+  }
 
   const menu = Menu.buildFromTemplate([
+    ...items,
+    { type: 'separator' },
     { label: 'Open Sr. Popo', click: () => showWindow() },
     {
       label: 'Open in Browser',
@@ -108,6 +160,37 @@ function createTray() {
     },
   ]);
   tray.setContextMenu(menu);
+
+  tray.setToolTip(
+    running.length
+      ? `Sr. Popo — ${running.length} task${running.length > 1 ? 's' : ''} running`
+      : 'Sr. Popo'
+  );
+  // Mirror the count on the mac dock icon.
+  if (process.platform === 'darwin' && app.dock) {
+    app.dock.setBadge(running.length ? String(running.length) : '');
+  }
+}
+
+function createTray() {
+  // Full-color Sr. Popo logo in the menu bar (@2x is picked up automatically on
+  // retina). Not a template image, so the brand colors show through as-is.
+  const trayIcon = nativeImage.createFromPath(
+    path.join(__dirname, '..', 'assets', 'tray.png')
+  );
+
+  tray = new Tray(trayIcon);
+  refreshTray();
+
+  // Rebuild on task lifecycle changes (log spam is ignored so we don't thrash).
+  bus.subscribe((msg) => {
+    if (msg && (msg.type === 'task' || msg.type === 'task-removed')) refreshTray();
+  });
+
+  // Keep elapsed times ticking, but only while something is actually running.
+  setInterval(() => {
+    if (runningTasks().length) refreshTray();
+  }, 1000);
 
   // Click the tray icon to toggle the window.
   tray.on('click', () => {

@@ -7,6 +7,9 @@ const { db, save, id, now, readLog, getTask, getRepo } = require('./store');
 const { broadcast, sse } = require('./bus');
 const git = require('./git');
 const runner = require('./runner');
+const addons = require('./addons');
+const personas = require('./personas');
+const groomer = require('./groomer');
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -49,6 +52,12 @@ app.get('/api/state', (req, res) => {
 });
 
 app.get('/api/events', (req, res) => sse(req, res));
+
+// Catalog of optional task behaviors the UI renders as checkboxes.
+app.get('/api/addons', (req, res) => res.json(addons.catalog()));
+
+// Catalog of expert personas the UI renders as selectable role checkboxes.
+app.get('/api/personas', (req, res) => res.json(personas.catalog()));
 
 // ---------- repos ----------
 
@@ -99,11 +108,14 @@ app.post('/api/tasks', (req, res) => {
     repoId: repo.id,
     repoName: repo.name,
     repoPath: repo.path,
+    addons: addons.sanitize(req.body.addons),
+    personas: personas.sanitize(req.body.personas),
     useWorktree: !!useWorktree,
     worktreePath: null,
     branch: null,
     model: model || 'default',
     permissionMode: permissionMode || 'acceptEdits',
+    allowedTools: runner.normalizeAllowedTools(req.body.allowedTools),
     status: status === 'ready' ? 'ready' : 'backlog',
     sessionId: null,
     resolvedModel: null,
@@ -126,15 +138,84 @@ app.post('/api/tasks', (req, res) => {
   res.json(task);
 });
 
+// ---------- briefs (idea grooming) ----------
+
+// "Brief an Idea": turn a rough one-line idea into a groomed, ready-to-run task.
+// Creates the task in the `grooming` state and kicks off a short, read-only
+// Claude session in the repo that rewrites the idea into a well-structured
+// prompt; when it finishes the task moves to `ready`. Like dispatch, the
+// grooming state is entered only here — never via PATCH /api/tasks/:id.
+app.post('/api/briefs', (req, res) => {
+  const brief = String(req.body.brief || '').trim();
+  if (!brief) return err(res, 400, 'brief is required');
+  const repo = getRepo(req.body.repoId);
+  if (!repo) return err(res, 400, 'Unknown repo');
+
+  const task = {
+    id: id(),
+    title: groomer.deriveTitle(brief),
+    prompt: brief, // the rough idea, until grooming rewrites it
+    brief, // the original idea, preserved even after grooming
+    repoId: repo.id,
+    repoName: repo.name,
+    repoPath: repo.path,
+    addons: [],
+    personas: [],
+    useWorktree: true,
+    worktreePath: null,
+    branch: null,
+    model: req.body.model || 'default',
+    permissionMode: 'acceptEdits',
+    allowedTools: '',
+    status: 'grooming',
+    sessionId: null,
+    resolvedModel: null,
+    costUsd: 0,
+    numTurns: null,
+    durationMs: null,
+    runCount: 0,
+    activeSubagents: 0,
+    lastOutcome: null,
+    lastError: null,
+    archived: false,
+    createdAt: now(),
+    updatedAt: now(),
+    startedAt: null,
+    finishedAt: null,
+  };
+  db.tasks.push(task);
+  save();
+  broadcast({ type: 'task', task });
+
+  try {
+    runner.groom(task, brief);
+    res.json(task);
+  } catch (e) {
+    task.status = 'backlog';
+    task.lastOutcome = 'error';
+    task.lastError = e.message;
+    task.updatedAt = now();
+    save();
+    broadcast({ type: 'task', task });
+    err(res, 500, e.message);
+  }
+});
+
 app.patch('/api/tasks/:id', (req, res) => {
   const task = getTask(req.params.id);
   if (!task) return err(res, 404, 'Task not found');
   if (runner.isRunning(task.id)) return err(res, 409, 'Task is running; stop it first');
 
-  const allowed = ['title', 'prompt', 'model', 'permissionMode', 'useWorktree', 'status'];
+  const allowed = ['title', 'prompt', 'model', 'permissionMode', 'allowedTools', 'useWorktree', 'status', 'addons', 'personas'];
   for (const key of allowed) {
     if (key in req.body) {
-      if (key === 'status') {
+      if (key === 'addons') {
+        task.addons = addons.sanitize(req.body.addons);
+      } else if (key === 'allowedTools') {
+        task.allowedTools = runner.normalizeAllowedTools(req.body.allowedTools);
+      } else if (key === 'personas') {
+        task.personas = personas.sanitize(req.body.personas);
+      } else if (key === 'status') {
         const target = req.body.status;
         if (!['backlog', 'ready', 'review', 'done', 'failed'].includes(target)) {
           return err(res, 400, `Cannot set status to "${target}" directly (use /dispatch to run)`);
@@ -169,7 +250,10 @@ app.post('/api/tasks/:id/dispatch', async (req, res) => {
     if (followUp && task.sessionId) {
       runner.dispatch(task, followUp, { resume: true });
     } else {
-      runner.dispatch(task, task.prompt, { resume: false });
+      // Fresh run of the task prompt — frame it with any selected personas up
+      // front, then fold in any selected add-on behaviors at the end.
+      const framed = personas.preambleFor(task.personas) + task.prompt + addons.instructionsFor(task.addons);
+      runner.dispatch(task, framed, { resume: false });
     }
     res.json(task);
   } catch (e) {

@@ -34,16 +34,42 @@ npm run server     # http://localhost:7777
 
 Options: `CLAUDE_BIN=/path/to/claude npm start`
 
-## Build a Mac app
+## Build
 
 ```bash
-npm run dist       # → release/  (.dmg + .zip, arm64 + x64)
-npm run pack       # unpacked .app for quick local testing
+npm run dist:mac   # → release/  macOS .dmg + .zip (arm64 + x64)
+npm run dist:win   # → release/  Windows .exe installer + .zip (x64)
+npm run pack       # unpacked app for quick local testing
 ```
 
-Output lands in `release/`. The build is unsigned by default — on first launch
-right-click the app → **Open** to bypass Gatekeeper, or add signing/notarization
-credentials to `package.json > build.mac`.
+Output lands in `release/`. Builds are **unsigned** for now (open-source tool):
+
+- **macOS** — on first launch right-click the app → **Open** to bypass Gatekeeper.
+- **Windows** — SmartScreen may warn on an unsigned installer; choose *More info →
+  Run anyway*.
+
+To sign/notarize later, add credentials to `package.json > build.mac` / `build.win`.
+
+## Lint & test
+
+```bash
+npm run lint       # ESLint (flat config in eslint.config.js)
+npm test           # node --test smoke suite (tests/)
+```
+
+## Continuous integration & releases
+
+GitHub Actions drive CI and releases (see `.github/workflows/`):
+
+- **CI** (`ci.yml`) — on every push/PR to `main`: installs deps, runs `lint` and
+  `test`, and packages the app on macOS + Windows to verify it builds.
+- **Release** (`release.yml`) — when you **publish a GitHub Release**, it builds the
+  unsigned macOS and Windows installers and attaches them to that release. You can
+  also trigger it manually (**workflow_dispatch**) to build installers as workflow
+  artifacts without cutting a release.
+
+To cut a release: bump `version` in `package.json`, tag it, and publish a GitHub
+Release for that tag — the workflow uploads the installers automatically.
 
 ## Menu bar / tray
 
@@ -101,4 +127,26 @@ Run as many tasks in parallel as you like — each is an independent `claude` pr
 - `server/runner.js` — spawns/kills `claude` CLI processes, parses the stream-json session feed
 - `server/git.js` — worktree lifecycle
 - `server/bus.js` — SSE fan-out for live board + timeline updates
+- `server/addons.js` — catalog of opt-in task behaviors (self-review, open a PR, …)
 - `public/` — dependency-free vanilla JS UI
+
+For the full architecture map, invariants, and conventions, see [`CLAUDE.md`](./CLAUDE.md) —
+it's the guide Claude Code (and contributors) follow when working in this repo.
+
+## Contributing
+
+Sr. Popo is open source (MIT) and built to be maintained with Claude Code itself.
+
+- [`CONTRIBUTING.md`](./CONTRIBUTING.md) — dev setup, workflow, commit/PR style.
+- [`CLAUDE.md`](./CLAUDE.md) — architecture, invariants, and the Claude-driven
+  maintenance loop (register this repo in Sr. Popo, dispatch changes in a worktree,
+  self-review, open a PR).
+- [`SECURITY.md`](./SECURITY.md) — design guarantees and how to report a vulnerability.
+- [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md) — community expectations.
+
+Every change is gated on `npm run lint && npm test`; CI re-runs both and packages the
+app on macOS + Windows.
+
+## License
+
+[MIT](./LICENSE) © Paulo Lima

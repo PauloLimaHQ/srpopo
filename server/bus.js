@@ -7,6 +7,13 @@ function broadcast(msg) {
   bus.emit('message', msg);
 }
 
+// Subscribe to broadcast messages (e.g. the Electron tray). Returns an
+// unsubscribe function. Keeps the raw EventEmitter internal to this module.
+function subscribe(listener) {
+  bus.on('message', listener);
+  return () => bus.off('message', listener);
+}
+
 // Attaches an SSE stream to an express response.
 function sse(req, res) {
   res.writeHead(200, {
@@ -28,4 +35,4 @@ function sse(req, res) {
   });
 }
 
-module.exports = { broadcast, sse };
+module.exports = { broadcast, subscribe, sse };
