@@ -9,9 +9,10 @@ import type { AddressInfo } from 'net';
 import { db, save, id, now, readLog, getTask, getRepo } from './store';
 import { broadcast, sse } from './bus';
 import { appRoot } from './paths';
-import type { Task } from './types';
+import type { Task, Attachment } from './types';
 import * as git from './git';
 import * as runner from './runner';
+import * as attachments from './attachments';
 import * as addons from './addons';
 import * as permissions from './permissions';
 import * as personas from './personas';
@@ -135,6 +136,7 @@ app.post('/api/tasks', (req: Request, res: Response) => {
     repoPath: repo.path,
     addons: addons.sanitize(req.body.addons),
     personas: personas.sanitize(req.body.personas),
+    attachments: [],
     useWorktree: !!useWorktree,
     worktreePath: null,
     branch: null,
@@ -265,6 +267,57 @@ app.patch('/api/tasks/:id', (req: Request, res: Response) => {
   res.json(task);
 });
 
+// ---------- attachments ----------
+
+// Upload one file for a task. The raw bytes are the request body (route-scoped
+// express.raw, so the global JSON parser is untouched); the original filename
+// rides in the X-Filename header and is sanitized to a safe basename before it
+// touches disk. Blocked while the task is live, mirroring the PATCH guard.
+app.post(
+  '/api/tasks/:id/attachments',
+  express.raw({ type: 'application/octet-stream', limit: '25mb' }),
+  (req: Request, res: Response) => {
+    const task = getTask(req.params.id);
+    if (!task) return err(res, 404, 'Task not found');
+    if (task.status === 'running' || task.status === 'grooming') {
+      return err(res, 409, 'Task is running; stop it first');
+    }
+    const header = req.header('X-Filename');
+    if (!header) return err(res, 400, 'X-Filename header is required');
+    // The client percent-encodes the name so non-ASCII survives the header.
+    let rawName = header;
+    try { rawName = decodeURIComponent(header); } catch { /* keep the raw header */ }
+    const bytes = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    if (!bytes.length) return err(res, 400, 'Empty upload');
+
+    const { name, size } = attachments.write(task.id, rawName, bytes);
+    const entry: Attachment = { name, size, addedAt: now() };
+    task.attachments = task.attachments || [];
+    task.attachments.push(entry);
+    task.updatedAt = now();
+    save();
+    broadcast({ type: 'task', task });
+    res.json(task);
+  },
+);
+
+// Delete one of a task's attachments. The :name param is re-sanitized so it
+// can't reach outside the task's attachment dir.
+app.delete('/api/tasks/:id/attachments/:name', (req: Request, res: Response) => {
+  const task = getTask(req.params.id);
+  if (!task) return err(res, 404, 'Task not found');
+  if (task.status === 'running' || task.status === 'grooming') {
+    return err(res, 409, 'Task is running; stop it first');
+  }
+  const name = attachments.sanitizeName(req.params.name);
+  attachments.remove(task.id, name);
+  task.attachments = (task.attachments || []).filter((a) => a.name !== name);
+  task.updatedAt = now();
+  save();
+  broadcast({ type: 'task', task });
+  res.json(task);
+});
+
 app.post('/api/tasks/:id/dispatch', async (req: Request, res: Response) => {
   const task = getTask(req.params.id);
   if (!task) return err(res, 404, 'Task not found');
@@ -283,7 +336,15 @@ app.post('/api/tasks/:id/dispatch', async (req: Request, res: Response) => {
     } else {
       // Fresh run of the task prompt — frame it with any selected personas up
       // front, then fold in any selected add-on behaviors at the end.
-      const framed = personas.preambleFor(task.personas) + task.prompt + addons.instructionsFor(task.addons);
+      let framed = personas.preambleFor(task.personas) + task.prompt + addons.instructionsFor(task.addons);
+      // List any attached files by absolute path so the session can Read them.
+      if (task.attachments?.length) {
+        const paths = attachments.listPaths(task.id, task.attachments.map((a) => a.name));
+        if (paths.length) {
+          framed += '\n\n## Attached files\nThe user attached these files for this task. Read them as needed:\n' +
+            paths.map((p) => `- ${p}`).join('\n');
+        }
+      }
       runner.dispatch(task, framed, { resume: false });
     }
     res.json(task);
@@ -347,6 +408,9 @@ app.post('/api/tasks/:id/archive', (req: Request, res: Response) => {
   if (runner.isRunning(task.id)) return err(res, 409, 'Stop the task before archiving');
   task.archived = true;
   task.updatedAt = now();
+  // The task is gone from the board; drop its uploaded files too. Absent dir is fine.
+  attachments.removeDir(task.id);
+  task.attachments = [];
   save();
   broadcast({ type: 'task-removed', taskId: task.id });
   res.json({ ok: true });
