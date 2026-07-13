@@ -501,6 +501,10 @@
       if (e.target.closest('[data-action="stop"]')) { stopTask(t.id); return; }
       openDrawer(t.id);
     });
+    el.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      openContextMenu(t, e.clientX, e.clientY);
+    });
     return el;
   }
 
@@ -734,6 +738,90 @@
     });
   }
 
+  // The per-task action set shared by the drawer's action row and the card's
+  // right-click menu, so the two can never drift out of sync. Each action owns
+  // its label/icon/class plus the async handler that performs it.
+  function taskCoreActions(t) {
+    const actions = [];
+    if (isLive(t)) {
+      actions.push({ id: 'stop', label: 'Stop', icon: 'square', cls: 'danger',
+        run: () => api('POST', `/api/tasks/${t.id}/stop`) });
+    } else {
+      if (t.status === 'backlog' || t.status === 'ready') {
+        actions.push({ id: 'dispatch', label: 'Run', icon: 'play', cls: 'primary',
+          run: () => api('POST', `/api/tasks/${t.id}/dispatch`) });
+      }
+      actions.push({ id: 'edit', label: 'Edit', icon: 'pencil', cls: 'ghost',
+        run: () => { openTaskModal(t); } });
+      actions.push({ id: 'archive', label: 'Archive', cls: 'ghost',
+        run: async () => {
+          await api('POST', `/api/tasks/${t.id}/archive`);
+          if (state.openTaskId === t.id) closeDrawer();
+        } });
+    }
+    if (t.worktreePath) {
+      actions.push({ id: 'copy-wt', label: 'Copy worktree path', cls: 'ghost', title: t.worktreePath,
+        run: async () => { await navigator.clipboard.writeText(t.worktreePath); toast('Worktree path copied', 'info'); } });
+      if (!isLive(t)) {
+        actions.push({ id: 'rm-wt', label: 'Remove worktree', cls: 'ghost danger',
+          run: async () => { await api('POST', `/api/tasks/${t.id}/worktree/remove`); toast('Worktree removed', 'info'); } });
+      }
+    }
+    return actions;
+  }
+
+  // Adds the two actions only reachable via drag-and-drop today (dropping a
+  // finished card on Running/Done) so the context menu offers them directly.
+  function taskContextMenuActions(t) {
+    const actions = taskCoreActions(t);
+    if (!isLive(t) && t.sessionId) {
+      actions.push({ id: 'followup', label: 'Follow-up', icon: 'play', cls: 'ghost',
+        run: () => { openFollowupModal(t); } });
+    }
+    if (!isLive(t) && t.status !== 'done') {
+      actions.push({ id: 'move-done', label: 'Move to Done', icon: 'check', cls: 'ghost',
+        run: () => moveToDone(t) });
+    }
+    return actions;
+  }
+
+  // ---------- card context menu ----------
+  function closeContextMenu() {
+    $('#context-menu').classList.add('hidden');
+  }
+
+  function openContextMenu(t, x, y) {
+    const actions = taskContextMenuActions(t);
+    const menu = $('#context-menu');
+    menu.innerHTML = actions.map((a) =>
+      `<button class="context-menu-item${a.cls && a.cls.includes('danger') ? ' danger' : ''}" data-act="${a.id}"${a.title ? ` title="${esc(a.title)}"` : ''}>${a.icon ? icon(a.icon) : ''}<span>${esc(a.label)}</span></button>`
+    ).join('');
+    menu.classList.remove('hidden');
+    menu.style.left = `${x}px`;
+    menu.style.top = `${y}px`;
+    const rect = menu.getBoundingClientRect();
+    const maxX = window.innerWidth - rect.width - 6;
+    const maxY = window.innerHeight - rect.height - 6;
+    menu.style.left = `${Math.max(6, Math.min(x, maxX))}px`;
+    menu.style.top = `${Math.max(6, Math.min(y, maxY))}px`;
+    menu.onclick = async (e) => {
+      const act = e.target.closest('[data-act]')?.dataset.act;
+      const action = actions.find((a) => a.id === act);
+      closeContextMenu();
+      if (!action) return;
+      try { await action.run(); } catch (err) { toast(err.message); }
+    };
+  }
+
+  // Click anywhere outside the menu, or right-click elsewhere, closes it — only
+  // one context menu is ever open at a time.
+  document.addEventListener('click', (e) => {
+    if (!$('#context-menu').classList.contains('hidden') && !e.target.closest('#context-menu')) closeContextMenu();
+  });
+  document.addEventListener('contextmenu', (e) => {
+    if (!e.target.closest('.card')) closeContextMenu();
+  });
+
   function renderDrawerHead(t) {
     $('#drawer-title').textContent = t.title;
     const meta = [
@@ -784,31 +872,16 @@
       promptEl.innerHTML = '';
     }
 
-    const actions = [];
-    if (isLive(t)) {
-      actions.push(`<button class="btn danger" data-act="stop">${icon('square')} Stop</button>`);
-    } else {
-      if (t.status === 'backlog' || t.status === 'ready') actions.push(`<button class="btn primary" data-act="dispatch">${icon('play')} Run</button>`);
-      actions.push(`<button class="btn ghost" data-act="edit">${icon('pencil')} Edit</button>`);
-      actions.push(`<button class="btn ghost" data-act="archive">Archive</button>`);
-    }
-    if (t.worktreePath) {
-      actions.push(`<button class="btn ghost" data-act="copy-wt" title="${esc(t.worktreePath)}">Copy worktree path</button>`);
-      if (!isLive(t)) actions.push(`<button class="btn ghost danger" data-act="rm-wt">Remove worktree</button>`);
-    }
+    const actions = taskCoreActions(t);
     const box = $('#drawer-actions');
-    box.innerHTML = actions.join('');
+    box.innerHTML = actions.map((a) =>
+      `<button class="btn ${a.cls}" data-act="${a.id}"${a.title ? ` title="${esc(a.title)}"` : ''}>${a.icon ? icon(a.icon) + ' ' : ''}${esc(a.label)}</button>`
+    ).join('');
     box.onclick = async (e) => {
       const act = e.target.closest('[data-act]')?.dataset.act;
-      if (!act) return;
-      try {
-        if (act === 'stop') await api('POST', `/api/tasks/${t.id}/stop`);
-        if (act === 'edit') { openTaskModal(t); return; }
-        if (act === 'dispatch') await api('POST', `/api/tasks/${t.id}/dispatch`);
-        if (act === 'archive') { await api('POST', `/api/tasks/${t.id}/archive`); closeDrawer(); }
-        if (act === 'copy-wt') { await navigator.clipboard.writeText(t.worktreePath); toast('Worktree path copied', 'info'); }
-        if (act === 'rm-wt') { await api('POST', `/api/tasks/${t.id}/worktree/remove`); toast('Worktree removed', 'info'); }
-      } catch (err) { toast(err.message); }
+      const action = actions.find((a) => a.id === act);
+      if (!action) return;
+      try { await action.run(); } catch (err) { toast(err.message); }
     };
 
     const canFollowup = !isLive(t) && !!t.sessionId;
@@ -2185,6 +2258,7 @@
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       closeDrawer();
+      closeContextMenu();
       document.querySelectorAll('.modal').forEach((m) => m.classList.add('hidden'));
     }
   });

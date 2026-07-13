@@ -747,6 +747,23 @@ a.chip.pr:hover { border-color: currentColor; }
 }
 .palette-footer .kbd { margin-right: 3px; }
 
+/* ── right-click context menu on task cards ── */
+.context-menu {
+  position: fixed; z-index: 70; min-width: 190px;
+  background: var(--bg-raised); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: var(--shadow-menu); padding: 6px; overflow: hidden;
+  animation: menu-in .12s ease;
+}
+.context-menu-item {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 8px 10px; border: none; background: none; border-radius: 7px;
+  font: inherit; font-size: 13px; color: var(--text); text-align: left; cursor: pointer;
+}
+.context-menu-item:hover { background: var(--bg-hover); }
+.context-menu-item .icon { width: 15px; height: 15px; flex: none; color: var(--text-dim); }
+.context-menu-item.danger { color: var(--red); }
+.context-menu-item.danger:hover { background: var(--red-soft); }
+
 /* ── keyboard shortcut hints, shared by the palette and the help modal ── */
 .kbd {
   display: inline-flex; align-items: center; justify-content: center;
