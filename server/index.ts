@@ -19,6 +19,7 @@ import * as personas from './personas';
 import * as groomer from './groomer';
 import * as github from './github';
 import * as linear from './linear';
+import * as plugins from './plugins';
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -46,7 +47,22 @@ function publicSettings(): PublicSettings {
     notifications: db.settings.notifications,
     sounds: db.settings.sounds,
     linearConfigured: !!(db.settings.linearApiToken && db.settings.linearApiToken.trim()),
+    maxParallelSessions: db.settings.maxParallelSessions,
+    installedPlugins: plugins.sanitize(db.settings.installedPlugins),
   };
+}
+
+// True once dispatched runs + grooming sessions together hit the configured
+// cap — checked right before spawning a new `claude` child so headless runs
+// fail fast with a clear message instead of silently piling up and starving
+// each other of CPU / hitting subscription rate limits.
+function atCapacity(): boolean {
+  return runner.runningCount() >= (db.settings.maxParallelSessions || 1);
+}
+
+function capacityError(): string {
+  return `Max parallel sessions reached (${runner.runningCount()}/${db.settings.maxParallelSessions} running). ` +
+    'Stop a running task or raise the limit in Settings.';
 }
 
 // Map a linear.ts failure reason to an HTTP status + user-facing message.
@@ -79,6 +95,7 @@ function startGrooming(repo: Repo, brief: string, model: unknown, extra?: Partia
     personas: [],
     useWorktree: true,
     worktreePath: null,
+    branchName: null,
     branch: null,
     model: (model as string) || 'default',
     permissionMode: 'acceptEdits',
@@ -159,6 +176,16 @@ app.patch('/api/settings', (req: Request, res: Response) => {
   if ('sounds' in req.body) db.settings.sounds = !!req.body.sounds;
   // The Linear token is a secret: accept it here (trimmed) but never echo it back.
   if ('linearApiToken' in req.body) db.settings.linearApiToken = String(req.body.linearApiToken || '').trim();
+  if ('maxParallelSessions' in req.body) {
+    const n = Math.trunc(Number(req.body.maxParallelSessions));
+    if (!Number.isFinite(n) || n < 1 || n > 20) {
+      return err(res, 400, 'maxParallelSessions must be a whole number between 1 and 20');
+    }
+    db.settings.maxParallelSessions = n;
+  }
+  // Marketplace: the board sends the full desired set of installed plugin ids;
+  // unknown ids are dropped so only real plugins can be toggled on.
+  if ('installedPlugins' in req.body) db.settings.installedPlugins = plugins.sanitize(req.body.installedPlugins);
   save();
   const settings = publicSettings();
   broadcast({ type: 'settings', settings });
@@ -170,6 +197,12 @@ app.get('/api/addons', (req: Request, res: Response) => res.json(addons.catalog(
 
 // Catalog of expert personas the UI renders as selectable role checkboxes.
 app.get('/api/personas', (req: Request, res: Response) => res.json(personas.catalog()));
+
+// Marketplace catalog. `installed` is the current set so the UI can render each
+// plugin as installed/available; installing/uninstalling goes through PATCH
+// /api/settings (installedPlugins), keeping settings' single writer.
+app.get('/api/plugins', (req: Request, res: Response) =>
+  res.json({ plugins: plugins.catalog(), installed: plugins.sanitize(db.settings.installedPlugins) }));
 
 // ---------- repos ----------
 
@@ -184,7 +217,7 @@ app.post('/api/repos', async (req: Request, res: Response) => {
   const repo = {
     id: id(),
     path: repoPath,
-    name: path.basename(repoPath),
+    name: await git.displayName(repoPath),
     branch: await git.currentBranch(repoPath),
     addedAt: now(),
   };
@@ -192,6 +225,15 @@ app.post('/api/repos', async (req: Request, res: Response) => {
   save();
   broadcast({ type: 'repos', repos: db.repos });
   res.json(repo);
+});
+
+// Live lookup of the repo's current checked-out branch — refreshed on demand
+// (e.g. when the New Task / Brief modals open) rather than the snapshot taken
+// when the repo was added, which can go stale as the user switches branches.
+app.get('/api/repos/:id/branch', async (req: Request, res: Response) => {
+  const repo = db.repos.find((r) => r.id === req.params.id);
+  if (!repo) return err(res, 404, 'Repo not found');
+  res.json({ branch: await git.currentBranch(repo.path) });
 });
 
 app.delete('/api/repos/:id', (req: Request, res: Response) => {
@@ -225,6 +267,7 @@ app.post('/api/tasks', (req: Request, res: Response) => {
     attachments: [],
     useWorktree: !!useWorktree,
     worktreePath: null,
+    branchName: req.body.branchName ? String(req.body.branchName).trim() : null,
     branch: null,
     model: model || 'default',
     permissionMode: permissionMode || 'acceptEdits',
@@ -266,9 +309,11 @@ app.post('/api/briefs', (req: Request, res: Response) => {
   if (!brief) return err(res, 400, 'brief is required');
   const repo = getRepo(req.body.repoId);
   if (!repo) return err(res, 400, 'Unknown repo');
+  if (atCapacity()) return err(res, 409, capacityError());
 
   try {
-    res.json(startGrooming(repo, brief, req.body.model));
+    const branchName = req.body.branchName ? String(req.body.branchName).trim() : null;
+    res.json(startGrooming(repo, brief, req.body.model, { branchName }));
   } catch (e) {
     err(res, 500, (e as Error).message);
   }
@@ -293,14 +338,22 @@ app.post('/api/linear/briefs', async (req: Request, res: Response) => {
   if (!repo) return err(res, 400, 'Unknown repo');
   const issueId = String(req.body.issueId || '').trim();
   if (!issueId) return err(res, 400, 'issueId is required');
+  if (atCapacity()) return err(res, 409, capacityError());
 
   const result = await linear.getIssue(issueId);
   if (!result.ok) return linearFail(res, result.reason);
 
   const brief = linear.briefFromIssue(result.issue);
+  // Default the branch to the issue's own identifier (e.g. "abc-123") so it
+  // matches whatever convention the team already uses in Linear/GitHub; an
+  // explicit branchName from the caller still wins.
+  const branchName = req.body.branchName
+    ? String(req.body.branchName).trim()
+    : slugify(result.issue.identifier);
   try {
     res.json(startGrooming(repo, brief, req.body.model, {
       linearIssue: { identifier: result.issue.identifier, url: result.issue.url },
+      branchName,
     }));
   } catch (e) {
     err(res, 500, (e as Error).message);
@@ -312,7 +365,7 @@ app.patch('/api/tasks/:id', (req: Request, res: Response) => {
   if (!task) return err(res, 404, 'Task not found');
   if (runner.isRunning(task.id)) return err(res, 409, 'Task is running; stop it first');
 
-  const allowed = ['title', 'prompt', 'model', 'permissionMode', 'allowedTools', 'promptPermissions', 'useWorktree', 'status', 'addons', 'personas'] as const;
+  const allowed = ['title', 'prompt', 'model', 'permissionMode', 'allowedTools', 'promptPermissions', 'useWorktree', 'branchName', 'status', 'addons', 'personas'] as const;
   for (const key of allowed) {
     if (key in req.body) {
       if (key === 'addons') {
@@ -331,6 +384,9 @@ app.patch('/api/tasks/:id', (req: Request, res: Response) => {
         task.status = target;
       } else if (key === 'useWorktree' && task.worktreePath) {
         // worktree already materialized; ignore toggle
+      } else if (key === 'branchName') {
+        // Branch is fixed once the worktree is materialized; ignore edits after that.
+        if (!task.worktreePath) task.branchName = req.body.branchName ? String(req.body.branchName).trim() : null;
       } else {
         (task as unknown as Record<string, unknown>)[key] = req.body[key];
       }
@@ -397,10 +453,11 @@ app.post('/api/tasks/:id/dispatch', async (req: Request, res: Response) => {
   const task = getTask(req.params.id);
   if (!task) return err(res, 404, 'Task not found');
   if (runner.isRunning(task.id)) return err(res, 409, 'Task is already running');
+  if (atCapacity()) return err(res, 409, capacityError());
 
   try {
     if (task.useWorktree && !task.worktreePath) {
-      const { wtPath, branch } = await git.addWorktree(task.repoPath, task.id, slugify(task.title));
+      const { wtPath, branch } = await git.addWorktree(task.repoPath, task.id, slugify(task.title), task.branchName);
       task.worktreePath = wtPath;
       task.branch = branch;
       save();
@@ -529,6 +586,25 @@ app.get('/api/tasks/:id/worktree/status', async (req: Request, res: Response) =>
   res.json((await git.worktreeStatus(task.worktreePath)) || {});
 });
 
+// Repos added before "org/repo" naming existed only have a bare directory name
+// (no "/"). Best-effort upgrade them from their `origin` remote on boot so
+// older db.json files pick up the new label without a manual re-add.
+async function backfillRepoNames(): Promise<void> {
+  let changed = false;
+  for (const repo of db.repos) {
+    if (repo.name.includes('/')) continue;
+    const name = await git.displayName(repo.path);
+    if (name !== repo.name) {
+      repo.name = name;
+      changed = true;
+    }
+  }
+  if (changed) {
+    save();
+    broadcast({ type: 'repos', repos: db.repos });
+  }
+}
+
 // ---------- boot ----------
 
 /**
@@ -543,6 +619,7 @@ function start(port: string | number = process.env.PORT || 7777): Promise<{ serv
       // Tell the runner where the permission bridge should POST approval requests.
       runner.setBaseUrl(url);
       resolve({ server, port: actual, url });
+      backfillRepoNames();
     });
     server.on('error', reject);
   });

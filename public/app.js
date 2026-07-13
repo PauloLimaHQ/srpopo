@@ -9,9 +9,11 @@
     openTaskId: null, // task shown in drawer
     addons: [],       // catalog of optional task behaviors (from /api/addons)
     personas: [],     // catalog of expert personas (from /api/personas)
-    settings: { notifications: true, sounds: true }, // user preferences (from /api/settings)
+    plugins: [],      // marketplace catalog (from /api/plugins)
+    settings: { notifications: true, sounds: true, maxParallelSessions: 3, installedPlugins: [] }, // user preferences (from /api/settings)
     filters: { search: '', repoIds: new Set() }, // board filters (project + text)
     prByTask: new Map(), // taskId -> 'loading' | { pr, reason } from /api/tasks/:id/pr
+    repoBranchByTask: new Map(), // taskId -> 'loading' | repo's live current branch (non-worktree tasks only)
     permissions: new Map(), // taskId -> [ pending tool-approval requests ]
   };
 
@@ -243,6 +245,14 @@
         .filter(taskMatchesFilters)
         .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
 
+      // The running column's count doubles as a live view of the parallel-session
+      // cap (dispatched runs + grooming share the same claude-process budget —
+      // see runner.runningCount), so a user can tell at a glance why a dispatch
+      // was rejected without opening Settings.
+      const max = state.settings.maxParallelSessions;
+      const liveCount = [...state.tasks.values()].filter(isLive).length;
+      const countLabel = col.key === 'running' && max ? `${liveCount}/${max}` : tasks.length;
+
       const colEl = document.createElement('div');
       colEl.className = 'column';
       colEl.dataset.col = col.key;
@@ -250,7 +260,7 @@
         <div class="column-head">
           <span class="dot" style="background:${col.dot}"></span>
           ${col.label}
-          <span class="count">${tasks.length}</span>
+          <span class="count" ${col.key === 'running' && max ? `title="${liveCount} of ${max} parallel sessions in use (running + grooming)"` : ''}>${countLabel}</span>
         </div>
         <div class="column-body"></div>`;
       const body = colEl.querySelector('.column-body');
@@ -285,7 +295,7 @@
       `<span class="chip model">${esc(t.model === 'default' ? (t.resolvedModel || 'default') : t.model)}</span>`,
     ];
     if (t.status === 'grooming') chips.push(`<span class="chip grooming-chip" title="Grooming a rough idea into a task prompt">${icon('lightbulb')} grooming</span>`);
-    if (t.useWorktree) chips.push(`<span class="chip worktree" title="${esc(t.worktreePath || 'worktree on dispatch')}">${icon('git-branch')} ${esc(t.branch || 'worktree')}</span>`);
+    if (t.useWorktree) chips.push(`<span class="chip worktree" title="${esc(t.worktreePath || 'worktree on dispatch')}">${icon('git-branch')} ${esc(t.branch || t.branchName || 'worktree')}</span>`);
     if (t.addons && t.addons.includes('pull_request')) chips.push(`<span class="chip addon-chip" title="Opens a pull request when finished">${icon('git-pull-request')} PR</span>`);
     if (t.addons && t.addons.includes('code_review')) chips.push(`<span class="chip addon-chip" title="Self code-reviews and fixes issues before finishing">${icon('search')} review</span>`);
     (t.personas || []).forEach((pid) => {
@@ -383,6 +393,7 @@
       renderDrawerHead(task);
       renderPermissionPrompts(taskId);
       if (task.branch) refreshPr(task.id, true); // lazily fetch the PR when the drawer opens
+      if (!task.useWorktree) refreshRepoBranchForTask(task.id);
       $('#timeline').innerHTML = '';
       for (const ev of events) appendEvent(ev);
       scrollTimeline();
@@ -480,7 +491,13 @@
     if (t.linearIssue && t.linearIssue.identifier) {
       meta.push(`<a class="chip linear-chip" href="${esc(t.linearIssue.url)}" target="_blank" rel="noopener" title="Open in Linear">${icon('linear')} ${esc(t.linearIssue.identifier)}</a>`);
     }
-    if (t.worktreePath) meta.push(`<span class="chip worktree" title="${esc(t.worktreePath)}">${icon('git-branch')} ${esc(t.branch)}</span>`);
+    if (t.worktreePath) {
+      meta.push(`<span class="chip worktree" title="${esc(t.worktreePath)}">${icon('git-branch')} ${esc(t.branch)}</span>`);
+    } else if (t.useWorktree && t.branchName) {
+      meta.push(`<span class="chip worktree" title="Branch is created on dispatch">${icon('git-branch')} ${esc(t.branchName)} (planned)</span>`);
+    } else if (!t.useWorktree) {
+      meta.push(repoBranchChipHtml(t));
+    }
     if (t.sessionId) meta.push(`<span class="chip" title="session id">${esc(t.sessionId.slice(0, 8))}…</span>`);
     if (t.costUsd > 0) meta.push(`<span class="chip cost">$${t.costUsd.toFixed(2)} total</span>`);
     if (t.numTurns != null) meta.push(`<span class="chip">${t.numTurns} turns</span>`);
@@ -599,6 +616,29 @@
       res = { pr: null, reason: 'error' };
     }
     state.prByTask.set(taskId, res);
+    if (state.openTaskId === taskId) renderDrawerHead(state.tasks.get(taskId) || task);
+  }
+
+  // For a task that runs directly against the repo (no worktree), show the
+  // repo's live current branch — that's whatever branch the run will actually
+  // affect, and it can drift from the snapshot taken when the repo was added.
+  function repoBranchChipHtml(t) {
+    const res = state.repoBranchByTask.get(t.id);
+    if (res === undefined || res === 'loading') {
+      return `<span class="chip" title="Looking up the repo's current branch…">branch …</span>`;
+    }
+    if (!res) return '';
+    return `<span class="chip" title="This task runs directly on the repo's checked-out branch">${icon('git-branch')} ${esc(res)}</span>`;
+  }
+
+  async function refreshRepoBranchForTask(taskId) {
+    const task = state.tasks.get(taskId);
+    if (!task || task.useWorktree) return;
+    state.repoBranchByTask.set(taskId, 'loading');
+    if (state.openTaskId === taskId) renderDrawerHead(task);
+    let branch = null;
+    try { ({ branch } = await api('GET', `/api/repos/${task.repoId}/branch`)); } catch { /* stays null */ }
+    state.repoBranchByTask.set(taskId, branch);
     if (state.openTaskId === taskId) renderDrawerHead(state.tasks.get(taskId) || task);
   }
 
@@ -803,6 +843,20 @@
     sel.innerHTML = state.repos.length
       ? state.repos.map((r) => `<option value="${r.id}">${esc(r.name)} — ${esc(r.path)}</option>`).join('')
       : '<option value="">No repos yet — add one first</option>';
+  }
+
+  // Show the repo's live current branch (not the stale snapshot taken when it
+  // was added) next to a repo <select>, so the user knows what a non-worktree
+  // task would run against. `hintEl` is a <span> updated in place; a repo with
+  // no branch (detached HEAD, lookup failure) clears the hint quietly.
+  async function refreshRepoBranchHint(repoId, hintEl) {
+    if (!repoId) { hintEl.textContent = ''; return; }
+    try {
+      const { branch } = await api('GET', `/api/repos/${repoId}/branch`);
+      hintEl.textContent = branch ? `Repo is currently on ${branch}` : '';
+    } catch {
+      hintEl.textContent = '';
+    }
   }
 
   // Optional task behaviors — checkboxes derived from the /api/addons catalog.
@@ -1085,12 +1139,16 @@
     $('#task-worktree').checked = task ? !!task.useWorktree : (last.useWorktree ?? true);
     // A materialized worktree can't be toggled off; the repo can't move after creation.
     $('#task-worktree').disabled = !!(task && task.worktreePath);
+    $('#task-branch').value = task ? (task.branchName || '') : '';
+    // The branch is fixed once the worktree is materialized.
+    $('#task-branch').disabled = !!(task && task.worktreePath);
     renderAddonOptions(task ? (task.addons || []) : (last.addons || []));
     initPersonaPicker(task ? (task.personas || []) : (last.personas || []));
     $('#task-repo-field').classList.toggle('hidden', !!task);
     if (task) $('#task-repo').value = task.repoId;
     // Restore the last-used repo if it still exists in the current list.
     else if (last.repoId && state.repos.some((r) => r.id === last.repoId)) $('#task-repo').value = last.repoId;
+    refreshRepoBranchHint($('#task-repo').value, $('#task-repo-branch'));
 
     $('#task-modal-title').textContent = task ? 'Edit Task' : 'New Task';
     $('#task-create').textContent = task ? 'Save' : 'Create in Backlog';
@@ -1112,6 +1170,7 @@
       allowedTools: $('#task-allowed-tools').value,
       promptPermissions: $('#task-prompt-permissions').checked,
       useWorktree: $('#task-worktree').checked,
+      branchName: $('#task-branch').value.trim(),
       addons: selectedAddons(),
       personas: selectedPersonas(),
     };
@@ -1144,6 +1203,9 @@
   $('#task-add-repo').addEventListener('click', () => {
     $('#modal-task').classList.add('hidden');
     openReposModal();
+  });
+  $('#task-repo').addEventListener('change', () => {
+    refreshRepoBranchHint($('#task-repo').value, $('#task-repo-branch'));
   });
 
   // ---------- attachments (picker + drag-and-drop) ----------
@@ -1196,8 +1258,10 @@
     refreshBriefRepoSelect();
     const last = loadLastUsed();
     $('#brief-text').value = '';
+    $('#brief-branch').value = '';
     $('#brief-model').value = last.model || 'default';
     if (last.repoId && state.repos.some((r) => r.id === last.repoId)) $('#brief-repo').value = last.repoId;
+    refreshRepoBranchHint($('#brief-repo').value, $('#brief-repo-branch'));
     $('#modal-brief').classList.remove('hidden');
     $('#brief-text').focus();
   }
@@ -1208,7 +1272,9 @@
     if (!brief) { toast('Describe your idea first'); return; }
     if (!repoId) { toast('Add a repository first'); return; }
     try {
-      const task = await api('POST', '/api/briefs', { brief, repoId, model: $('#brief-model').value });
+      const task = await api('POST', '/api/briefs', {
+        brief, repoId, model: $('#brief-model').value, branchName: $('#brief-branch').value.trim(),
+      });
       $('#modal-brief').classList.add('hidden');
       toast('Grooming your idea into a task…', 'info');
       openDrawer(task.id);
@@ -1224,6 +1290,9 @@
   $('#brief-add-repo').addEventListener('click', () => {
     $('#modal-brief').classList.add('hidden');
     openReposModal();
+  });
+  $('#brief-repo').addEventListener('change', () => {
+    refreshRepoBranchHint($('#brief-repo').value, $('#brief-repo-branch'));
   });
 
   // ---------- create task from linear ----------
@@ -1249,8 +1318,10 @@
     refreshLinearRepoSelect();
     const last = loadLastUsed();
     $('#linear-issue-id').value = '';
+    $('#linear-branch').value = '';
     $('#linear-model').value = last.model || 'default';
     if (last.repoId && state.repos.some((r) => r.id === last.repoId)) $('#linear-repo').value = last.repoId;
+    refreshRepoBranchHint($('#linear-repo').value, $('#linear-repo-branch'));
     linearSelectedId = null;
     $('#linear-issue-list').innerHTML = '';
     renderLinearConfigState();
@@ -1285,6 +1356,11 @@
     if (!btn) return;
     linearSelectedId = btn.dataset.id;
     $('#linear-issue-id').value = btn.dataset.identifier;
+    // Suggest the issue's own identifier as the branch name unless the user
+    // already typed a custom one.
+    if (!$('#linear-branch').value.trim()) {
+      $('#linear-branch').value = btn.dataset.identifier.toLowerCase();
+    }
     for (const el of $('#linear-issue-list').querySelectorAll('.linear-issue')) el.classList.remove('selected');
     btn.classList.add('selected');
   });
@@ -1300,7 +1376,9 @@
     if (!repoId) { toast('Add a repository first'); return; }
     if (!issueId) { toast('Paste an issue ID or pick one from the list'); return; }
     try {
-      const task = await api('POST', '/api/linear/briefs', { issueId, repoId, model: $('#linear-model').value });
+      const task = await api('POST', '/api/linear/briefs', {
+        issueId, repoId, model: $('#linear-model').value, branchName: $('#linear-branch').value.trim(),
+      });
       $('#modal-linear').classList.add('hidden');
       toast('Importing the Linear issue…', 'info');
       openDrawer(task.id);
@@ -1318,9 +1396,12 @@
     $('#modal-linear').classList.add('hidden');
     openReposModal();
   });
+  $('#linear-repo').addEventListener('change', () => {
+    refreshRepoBranchHint($('#linear-repo').value, $('#linear-repo-branch'));
+  });
   $('#linear-open-settings').addEventListener('click', () => {
     $('#modal-linear').classList.add('hidden');
-    openSettingsModal();
+    openSettingsModal('plugins');
   });
 
   // ---------- sounds ----------
@@ -1453,23 +1534,127 @@
     }
   }
 
-  // Reflect the redacted `linearConfigured` flag — we never render the raw token
-  // back into the DOM. The password field always starts empty; typing a value
-  // and saving replaces the stored key.
-  function updateLinearSettingNote() {
-    const note = $('#setting-linear-note');
-    note.textContent = linearConfigured()
-      ? 'A Linear API key is saved. Enter a new one to replace it, or clear it.'
-      : 'Create a personal API key in Linear (Settings → Security & access → Personal API keys).';
-    $('#setting-linear-clear').classList.toggle('hidden', !linearConfigured());
+  // ---------- plugins / marketplace ----------
+  const installedPluginIds = () => state.settings.installedPlugins || [];
+  const pluginInstalled = (id) => installedPluginIds().includes(id);
+
+  // Show/hide plugin-gated UI on the board. A plugin's features only surface once
+  // it's installed — right now that's the "From Linear" header button.
+  function renderPluginState() {
+    $('#btn-linear').classList.toggle('hidden', !pluginInstalled('linear'));
   }
 
-  function openSettingsModal() {
+  // A plugin's config block (only Linear needs one today — its API key). Rendered
+  // inside the plugin card when installed. The password field always starts empty:
+  // we never echo the stored token back, only the redacted `linearConfigured` flag.
+  function pluginConfigHtml(p) {
+    if (p.id !== 'linear' || !p.requiresApiKey) return '';
+    const configured = linearConfigured();
+    const note = configured
+      ? 'A Linear API key is saved. Enter a new one to replace it, or clear it.'
+      : 'Create a personal API key in Linear (Settings → Security & access → Personal API keys).';
+    return `
+      <div class="plugin-config">
+        <label>Personal API key <span class="field-hint">— stored locally, used to import issues</span>
+          <input class="plugin-key-input" type="password" placeholder="lin_api_…" autocomplete="off" />
+        </label>
+        <p class="addon-hint plugin-key-note">${esc(note)}</p>
+        <div class="row">
+          <button class="btn plugin-key-save">Save key</button>
+          <button class="btn ghost plugin-key-clear${configured ? '' : ' hidden'}">Clear</button>
+        </div>
+      </div>`;
+  }
+
+  function pluginCardHtml(p, installed) {
+    const badge = installed ? '<span class="plugin-badge">Installed</span>' : '';
+    const action = installed
+      ? '<button class="btn ghost plugin-uninstall">Uninstall</button>'
+      : '<button class="btn primary plugin-install">Install</button>';
+    return `
+      <div class="plugin-card" data-plugin="${esc(p.id)}">
+        <div class="plugin-card-icon">${icon(p.icon)}</div>
+        <div class="plugin-card-body">
+          <div class="plugin-card-head"><span class="plugin-card-name">${esc(p.name)}</span>${badge}</div>
+          <p class="plugin-card-desc">${esc(p.description)}</p>
+          ${installed ? pluginConfigHtml(p) : ''}
+        </div>
+        <div class="plugin-card-actions">${action}</div>
+      </div>`;
+  }
+
+  // Two groups, Claude-desktop style: what's installed, and the rest of the
+  // marketplace still available to add.
+  function renderPlugins() {
+    const body = $('#settings-plugins-body');
+    if (!body) return;
+    const installed = state.plugins.filter((p) => pluginInstalled(p.id));
+    const available = state.plugins.filter((p) => !pluginInstalled(p.id));
+    body.innerHTML = `
+      <div class="plugin-group">
+        <div class="plugin-group-title">Installed</div>
+        ${installed.length
+          ? installed.map((p) => pluginCardHtml(p, true)).join('')
+          : '<p class="plugin-empty">No plugins installed yet.</p>'}
+      </div>
+      <div class="plugin-group">
+        <div class="plugin-group-title">Marketplace</div>
+        ${available.length
+          ? available.map((p) => pluginCardHtml(p, false)).join('')
+          : '<p class="plugin-empty">You\'ve installed everything available.</p>'}
+      </div>`;
+  }
+
+  async function setInstalledPlugins(ids) {
+    await saveSettings({ installedPlugins: ids });
+    renderPlugins();
+    renderPluginState();
+  }
+
+  // Delegated handlers for the dynamically-rendered plugin cards.
+  $('#settings-plugins-body').addEventListener('click', async (e) => {
+    const card = e.target.closest('.plugin-card');
+    if (!card) return;
+    const id = card.dataset.plugin;
+    if (e.target.closest('.plugin-install')) {
+      await setInstalledPlugins([...installedPluginIds(), id]);
+      toast('Plugin installed', 'info');
+    } else if (e.target.closest('.plugin-uninstall')) {
+      await setInstalledPlugins(installedPluginIds().filter((x) => x !== id));
+      toast('Plugin uninstalled', 'info');
+    } else if (e.target.closest('.plugin-key-save')) {
+      const input = card.querySelector('.plugin-key-input');
+      const token = (input && input.value.trim()) || '';
+      if (!token) { toast('Paste your Linear API key first'); return; }
+      await saveSettings({ linearApiToken: token });
+      renderPlugins();
+      toast('Linear API key saved', 'info');
+    } else if (e.target.closest('.plugin-key-clear')) {
+      await saveSettings({ linearApiToken: '' });
+      renderPlugins();
+      toast('Linear API key cleared', 'info');
+    }
+  });
+
+  // ---------- settings modal ----------
+  function showSettingsSection(name) {
+    for (const item of document.querySelectorAll('.settings-nav-item')) {
+      item.classList.toggle('active', item.dataset.section === name);
+    }
+    for (const sec of document.querySelectorAll('.settings-section')) {
+      sec.classList.toggle('hidden', sec.dataset.section !== name);
+    }
+  }
+
+  // `section` may be a string ('general' | 'plugins') or a DOM event (from the
+  // header button); anything non-string falls back to the General section.
+  function openSettingsModal(section) {
     $('#setting-notifications').checked = notificationsOn();
     $('#setting-sounds').checked = soundsOn();
     updateNotifNote();
-    $('#setting-linear-token').value = '';
-    updateLinearSettingNote();
+    $('#setting-max-parallel').value = state.settings.maxParallelSessions || 3;
+    renderPlugins();
+    showSettingsSection(typeof section === 'string' ? section : 'general');
     $('#modal-settings').classList.remove('hidden');
   }
 
@@ -1479,7 +1664,10 @@
     } catch (e) { toast(e.message); }
   }
 
-  $('#btn-settings').addEventListener('click', openSettingsModal);
+  for (const item of document.querySelectorAll('.settings-nav-item')) {
+    item.addEventListener('click', () => showSettingsSection(item.dataset.section));
+  }
+  $('#btn-settings').addEventListener('click', () => openSettingsModal());
   $('#settings-close').addEventListener('click', () => $('#modal-settings').classList.add('hidden'));
   $('#setting-notifications').addEventListener('change', async (e) => {
     const enabled = e.target.checked;
@@ -1495,19 +1683,11 @@
     await saveSettings({ sounds: e.target.checked });
   });
   $('#setting-sound-test').addEventListener('click', () => playSound('finish', true));
-  $('#setting-linear-save').addEventListener('click', async () => {
-    const token = $('#setting-linear-token').value.trim();
-    if (!token) { toast('Paste your Linear API key first'); return; }
-    await saveSettings({ linearApiToken: token });
-    $('#setting-linear-token').value = '';
-    updateLinearSettingNote();
-    toast('Linear API key saved', 'info');
-  });
-  $('#setting-linear-clear').addEventListener('click', async () => {
-    await saveSettings({ linearApiToken: '' });
-    $('#setting-linear-token').value = '';
-    updateLinearSettingNote();
-    toast('Linear API key cleared', 'info');
+  $('#setting-max-parallel').addEventListener('change', async (e) => {
+    const n = Math.min(20, Math.max(1, Math.trunc(Number(e.target.value)) || 1));
+    e.target.value = n;
+    await saveSettings({ maxParallelSessions: n });
+    renderBoard();
   });
 
   // ---------- repos modal ----------
@@ -1598,7 +1778,7 @@
       { label: 'Brief an Idea', hint: 'Groom a rough idea into a task', icon: 'lightbulb', run: () => openBriefModal() },
       { label: 'Create Task from Linear', hint: 'Import an assigned issue', icon: 'linear', run: () => openLinearModal() },
       { label: 'Repositories', hint: 'Add or manage repos', icon: 'folder', run: () => openReposModal() },
-      { label: 'Settings', hint: 'Notifications, sounds, Linear key', icon: 'settings', run: () => openSettingsModal() },
+      { label: 'Settings', hint: 'Notifications, sounds, Linear key', icon: 'settings', kbd: `${MOD},`, run: () => openSettingsModal() },
       { label: 'Toggle Theme', hint: `Currently ${THEME_LABEL[currentTheme()]}`, icon: 'sun-moon', run: () => $('#btn-theme').click() },
       { label: 'Filter Tasks', hint: 'Jump to the filter box', icon: 'search', kbd: '/', run: () => $('#filter-search').focus() },
       { label: 'Keyboard Shortcuts', hint: 'See all shortcuts', icon: 'keyboard', kbd: '?', run: () => openShortcutsModal() },
@@ -1707,6 +1887,7 @@
   const SHORTCUTS = [
     { label: 'Search & commands', keys: [MOD, 'K'] },
     { label: 'New task', keys: [MOD, 'N'] },
+    { label: 'Settings', keys: [MOD, ','] },
     { label: 'Filter tasks', keys: ['/'] },
     { label: 'Submit the open form', keys: [MOD, '↵'] },
     { label: 'Close dialog / drawer', keys: ['esc'] },
@@ -1740,6 +1921,12 @@
       if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
       e.preventDefault();
       if (!modalOpen()) openShortcutsModal();
+      return;
+    }
+    // Cmd/Ctrl+, opens Settings — the platform-standard shortcut (⌘, on macOS).
+    if (e.key === ',' && mod && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      if ($('#modal-settings').classList.contains('hidden')) openSettingsModal();
     }
   });
 
@@ -1767,13 +1954,16 @@
         maybePlayTaskSound(prev, msg.task);
       } else if (msg.type === 'settings') {
         state.settings = msg.settings;
+        renderPluginState();
         if (!$('#modal-settings').classList.contains('hidden')) {
           $('#setting-notifications').checked = notificationsOn();
           $('#setting-sounds').checked = soundsOn();
+          $('#setting-max-parallel').value = state.settings.maxParallelSessions || 3;
           updateNotifNote();
-          updateLinearSettingNote();
+          renderPlugins();
         }
         if (!$('#modal-linear').classList.contains('hidden')) renderLinearConfigState();
+        renderBoard();
       } else if (msg.type === 'task-removed') {
         state.tasks.delete(msg.taskId);
         renderBoard();
@@ -1871,6 +2061,11 @@
     } catch { state.personas = []; }
 
     try {
+      state.plugins = (await api('GET', '/api/plugins')).plugins || [];
+    } catch { state.plugins = []; }
+    renderPluginState();
+
+    try {
       const h = await api('GET', '/api/health');
       const chip = $('#health');
       chip.textContent = h.ok ? `● ${h.claude}` : '● claude CLI not found';
@@ -1883,6 +2078,7 @@
   // Reflect the platform's modifier key in the top-bar shortcut hints.
   $('#btn-palette').title = `Search & commands (${MOD}K)`;
   $('#btn-new-task').title = `New task (${MOD}N)`;
+  $('#btn-settings').title = `Settings (${MOD},)`;
 
   initTheme();
   boot();

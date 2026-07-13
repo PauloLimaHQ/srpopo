@@ -14,7 +14,16 @@ fs.mkdirSync(LOGS_DIR, { recursive: true });
 
 // User-level preferences, persisted alongside repos/tasks in db.json. New keys
 // added here get their default backfilled on load, so old db.json files upgrade.
-const DEFAULT_SETTINGS: Settings = { notifications: true, sounds: true, linearApiToken: '' };
+const DEFAULT_SETTINGS: Settings = {
+  notifications: true,
+  sounds: true,
+  linearApiToken: '',
+  // 3 concurrent `claude` sessions is a reasonable default: enough to keep a few
+  // tasks moving without starving one run of CPU or hitting subscription rate
+  // limits on a typical dev laptop. Configurable in Settings.
+  maxParallelSessions: 3,
+  installedPlugins: [],
+};
 
 let db: Db = { repos: [], tasks: [], settings: { ...DEFAULT_SETTINGS } };
 if (fs.existsSync(DB_PATH)) {
@@ -28,7 +37,13 @@ if (fs.existsSync(DB_PATH)) {
   }
 }
 // Backfill any missing setting so the rest of the app can read them directly.
+// Capture pre-backfill hints first so we can migrate older db.json files below.
+const hadInstalledPlugins = Array.isArray(db.settings?.installedPlugins);
+const hadLinearToken = !!(db.settings?.linearApiToken || '').trim();
 db.settings = Object.assign({ ...DEFAULT_SETTINGS }, db.settings || {});
+// Migrate: users who configured Linear before the marketplace existed keep it
+// installed, so their "From Linear" button doesn't silently disappear.
+if (!hadInstalledPlugins) db.settings.installedPlugins = hadLinearToken ? ['linear'] : [];
 
 // Any task marked running/grooming when the server starts is an orphan from a
 // previous run — its child claude process died with the server.
