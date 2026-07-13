@@ -1,0 +1,106 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Sr. Popo — a serene turbaned guru">
+  <!--
+    Sr. Popo app icon — master artwork.
+    macOS icon grid: 1024x1024 canvas, 824x824 rounded "squircle" centered
+    (100px margin all around), corner radius 185.4 (0.225 * 824). Transparent
+    margins on purpose: macOS does not auto-mask app icons, so the shape is
+    baked in here. Regenerate every raster size with build/make-icons.sh.
+  -->
+  <defs>
+    <linearGradient id="bg" x1="512" y1="100" x2="512" y2="924" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#5A57DE"/>
+      <stop offset="0.55" stop-color="#403BB4"/>
+      <stop offset="1" stop-color="#262459"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="512" cy="320" r="540" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.20"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="turban" x1="512" y1="205" x2="512" y2="500" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFC768"/>
+      <stop offset="1" stop-color="#FB9A2E"/>
+    </linearGradient>
+    <linearGradient id="robe" x1="512" y1="545" x2="512" y2="830" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FCEFDB"/>
+      <stop offset="1" stop-color="#F4DCB8"/>
+    </linearGradient>
+    <radialGradient id="jewel" cx="512" cy="312" r="40" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7CF2DE"/>
+      <stop offset="1" stop-color="#149E88"/>
+    </radialGradient>
+    <clipPath id="plate">
+      <rect x="100" y="100" width="824" height="824" rx="185.4" ry="185.4"/>
+    </clipPath>
+  </defs>
+
+  <!-- Back plane -->
+  <g clip-path="url(#plate)">
+    <rect x="100" y="100" width="824" height="824" fill="url(#bg)"/>
+    <rect x="100" y="100" width="824" height="824" fill="url(#glow)"/>
+  </g>
+
+  <!-- ROBE (meditation base) -->
+  <path d="M512 548
+           C452 548 402 560 356 600
+           C300 648 250 720 232 792
+           C228 812 240 828 262 828
+           L762 828
+           C784 828 796 812 792 792
+           C774 720 724 648 668 600
+           C622 560 572 548 512 548 Z"
+        fill="url(#robe)"/>
+  <!-- soft robe fold hints -->
+  <path d="M372 628 C352 690 344 752 350 812" stroke="#E9CFA6" stroke-width="7" stroke-linecap="round" fill="none" opacity="0.7"/>
+  <path d="M652 628 C672 690 680 752 674 812" stroke="#E9CFA6" stroke-width="7" stroke-linecap="round" fill="none" opacity="0.7"/>
+
+  <!-- SASH -->
+  <path d="M292 676 C400 700 624 700 732 676
+           C740 700 744 712 740 716
+           C624 742 400 742 284 716
+           C280 712 284 700 292 676 Z"
+        fill="#F0912F"/>
+
+  <!-- FOLDED HANDS (calm mudra) -->
+  <ellipse cx="512" cy="726" rx="80" ry="31" fill="#FEF6E8"/>
+  <path d="M470 726 Q512 740 554 726" stroke="#E7C99C" stroke-width="6" stroke-linecap="round" fill="none"/>
+
+  <!-- FACE -->
+  <ellipse cx="512" cy="502" rx="112" ry="104" fill="#FBE0BE"/>
+  <!-- chin shadow to separate face from robe -->
+  <path d="M430 576 Q512 620 594 576" stroke="#ECCFA4" stroke-width="10" stroke-linecap="round" fill="none" opacity="0.7"/>
+  <!-- cheeks -->
+  <ellipse cx="450" cy="534" rx="18" ry="12" fill="#F3A883" opacity="0.35"/>
+  <ellipse cx="574" cy="534" rx="18" ry="12" fill="#F3A883" opacity="0.35"/>
+  <!-- serene closed eyes -->
+  <path d="M444 500 Q466 516 488 500" stroke="#5A3B22" stroke-width="11" stroke-linecap="round" fill="none"/>
+  <path d="M536 500 Q558 516 580 500" stroke="#5A3B22" stroke-width="11" stroke-linecap="round" fill="none"/>
+  <!-- gentle smile -->
+  <path d="M478 544 Q512 572 546 544" stroke="#5A3B22" stroke-width="11" stroke-linecap="round" fill="none"/>
+
+  <!-- robe V-neck collar (on the chest, echoes the turban) -->
+  <path d="M454 614 L512 664" stroke="#FB9A2E" stroke-width="11" stroke-linecap="round" fill="none"/>
+  <path d="M570 614 L512 664" stroke="#FB9A2E" stroke-width="11" stroke-linecap="round" fill="none"/>
+
+  <!-- TURBAN dome -->
+  <path d="M335 455
+           C335 298 430 208 512 208
+           C594 208 689 298 689 455
+           C660 490 586 498 512 498
+           C438 498 364 490 335 455 Z"
+        fill="url(#turban)"/>
+  <!-- apex crease (reads as wrapped cloth, not a hard shell) -->
+  <path d="M512 214 Q498 248 508 286" stroke="#E07E22" stroke-width="8" stroke-linecap="round" fill="none" opacity="0.55"/>
+  <!-- wrap fold lines -->
+  <path d="M356 430 Q450 372 512 366" stroke="#E07E22" stroke-width="9" stroke-linecap="round" fill="none" opacity="0.8"/>
+  <path d="M668 430 Q574 372 512 366" stroke="#E07E22" stroke-width="9" stroke-linecap="round" fill="none" opacity="0.8"/>
+  <!-- wrap band across the brow -->
+  <path d="M338 448 C420 486 604 486 686 448
+           C690 466 688 480 684 482
+           C602 512 422 512 340 482
+           C336 480 334 466 338 448 Z"
+        fill="#F0912F"/>
+  <!-- center jewel -->
+  <circle cx="512" cy="312" r="38" fill="#FFD98A"/>
+  <circle cx="512" cy="312" r="27" fill="url(#jewel)"/>
+  <circle cx="503" cy="303" r="8" fill="#FFFFFF" opacity="0.85"/>
+</svg>

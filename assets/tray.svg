@@ -1,0 +1,30 @@
+<svg width="1024" height="1024" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Sr. Popo menu-bar glyph">
+  <!--
+    macOS menu-bar (tray) glyph — a TEMPLATE image: single-color art on a
+    transparent canvas that macOS/Electron recolor to match the menu bar
+    (light/dark/selected), the way ChatGPT, Docker, and Dropbox render theirs.
+    Built to read at the @2x (36px) size shown on Retina Macs: a solid turban
+    (the unique silhouette, with the jewel punched out) over a HOLLOW ring face.
+    Keeping the face open — rather than a solid disc — gives the negative space
+    small monochrome glyphs need to stay legible. build/make-icons.sh renders it.
+  -->
+  <mask id="turbanCut">
+    <rect x="0" y="0" width="100" height="100" fill="#fff"/>
+    <!-- center jewel knockout -->
+    <circle cx="50" cy="31" r="5" fill="#000"/>
+    <!-- slim wrap-band crescent -->
+    <path d="M34 48 C40 52 60 52 66 48 C65 51 60 52 50 52 C40 52 35 51 34 48 Z" fill="#000"/>
+  </mask>
+
+  <!-- turban dome (solid) -->
+  <path d="M28 50 C28 23 39 13 50 13 C61 13 72 23 72 50 C64 56 36 56 28 50 Z"
+        fill="#000" mask="url(#turbanCut)"/>
+
+  <!-- hollow ring face -->
+  <circle cx="50" cy="69" r="16" fill="none" stroke="#000" stroke-width="7"/>
+  <!-- serene closed eyes -->
+  <path d="M41 66 Q44 69 47 66" stroke="#000" stroke-width="3" stroke-linecap="round" fill="none"/>
+  <path d="M53 66 Q56 69 59 66" stroke="#000" stroke-width="3" stroke-linecap="round" fill="none"/>
+  <!-- gentle smile -->
+  <path d="M44 74 Q50 78 56 74" stroke="#000" stroke-width="3" stroke-linecap="round" fill="none"/>
+</svg>

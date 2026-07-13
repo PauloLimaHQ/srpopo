@@ -173,11 +173,14 @@ function refreshTray() {
 }
 
 function createTray() {
-  // Full-color Sr. Popo logo in the menu bar (@2x is picked up automatically on
-  // retina). Not a template image, so the brand colors show through as-is.
+  // Monochrome menu-bar glyph. It's a macOS *template* image: a single-color
+  // silhouette that macOS recolors to match the menu bar (light/dark/selected),
+  // the way ChatGPT, Docker, and Dropbox render theirs. (@2x is picked up
+  // automatically on retina — the size actually shown on modern Macs.)
   const trayIcon = nativeImage.createFromPath(
     path.join(__dirname, '..', 'assets', 'tray.png')
   );
+  trayIcon.setTemplateImage(true);
 
   tray = new Tray(trayIcon);
   refreshTray();
