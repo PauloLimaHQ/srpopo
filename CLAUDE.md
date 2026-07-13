@@ -25,10 +25,13 @@ Ship changes that keep it: **local-first, dependency-light, and obviously safe.*
 | `server/git.js` | Worktree lifecycle (`git worktree add/remove`). |
 | `server/bus.js` | Server-Sent Events fan-out for the live board + timeline. |
 | `server/addons.js` | Catalog of opt-in task behaviors (see "Add-ons" below). |
+| `server/permissions.js` | In-memory registry of pending tool-approval prompts (see "Interactive permissions"). |
+| `server/permission-mcp.js` | Standalone MCP stdio bridge `claude` calls to ask the user before running a tool. |
 | `server/groomer.js` | Meta-prompt + result parser for "Brief an Idea" (see "Grooming" below). |
 | `electron/main.js` | macOS tray/menu-bar app shell; boots the server on a local port. |
 | `electron/preload.js` | Minimal, safe `contextBridge` (folder picker, base URL). |
 | `public/` | Dependency-free vanilla-JS Kanban UI (`app.js`, `index.html`, `styles.css`). |
+| `public/icons.js` | Inline-SVG icon set (Lucide) + a tiny renderer/hydrator. The only source of UI glyphs — no emojis. |
 | `tests/` | `node --test` smoke suite. |
 
 ## Commands
@@ -90,6 +93,16 @@ would require it.
 - **Keep runtime dependencies minimal.** `express` is the only one. Do not add a
   frontend framework or a build step — the UI is intentionally vanilla JS served static.
 - 2-space indent, single quotes, semicolons — match the existing files and ESLint.
+- **No emojis in the UI — use icons.** Glyphs come from `public/icons.js`, a small
+  inline-SVG set of [Lucide](https://lucide.dev) icons (the same open source set
+  shadcn/ui uses; ISC-licensed, inlined so there's no icon font, network fetch, or
+  build step). They inherit `currentColor`, so they theme for free. In static HTML
+  drop a placeholder — `<span class="i" data-icon="play"></span>` — that
+  `hydrate()` fills on load; in dynamic markup call `srpopoIcons.svg('play')`
+  inside the template string (its output is trusted markup — never pass it through
+  `esc()`). Need a new glyph? Add one entry to the `ICONS` map in `icons.js`. Emojis
+  are still acceptable where SVG can't reach — e.g. OS notification text — but avoid
+  them there too when a plain phrase reads just as well.
 - Persist state through `store.save()` and broadcast changes via `bus.broadcast()` so
   every connected board updates live. New task fields go in the object built in
   `POST /api/tasks` (and, if user-editable, the `allowed` list in `PATCH`).
@@ -100,9 +113,44 @@ would require it.
 `server/addons.js` is the single source of truth for optional per-task behaviors
 (e.g. "open a PR at the end", "self-review the diff"). Each entry drives **both** the
 UI checkbox (`GET /api/addons`) and the extra prompt text injected at dispatch. To add
-one, append an entry with `{ id, label, hint, instruction }` — nothing else changes.
-The `instruction` is appended to the user's prompt, so write it as a clear, standalone
-directive to Claude.
+one, append an entry with `{ id, label, hint, instruction, allow? }` — nothing else
+changes. The `instruction` is appended to the user's prompt, so write it as a clear,
+standalone directive to Claude. The optional `allow` array lists the `--allowedTools`
+patterns the behavior needs auto-approved (e.g. the "open a PR" add-on allows `gh` and
+git commit/push) so the headless run doesn't silently finish without doing the work;
+`runner.effectiveAllowedTools` merges these on top of the task's own allow-list and the
+safe package-manager defaults (`DEFAULT_ALLOWED_TOOLS`: npm/pnpm/yarn) at dispatch.
+
+## Interactive permissions (ask instead of auto-deny)
+
+A headless `claude -p` run auto-**denies** any tool it isn't told to allow, so a task
+can otherwise "finish" without doing the work. When a task has `promptPermissions` set
+(the default; a New-Task checkbox toggles it), the run instead **asks the user** before
+running an unapproved tool. Whitelisted tools (task allow-list, add-on `allow`, defaults)
+still auto-approve; only the leftovers prompt. Skipped under `bypassPermissions`.
+
+The wiring:
+- **`runner.buildArgs`** adds `--permission-prompt-tool mcp__srpopo__approve` and a
+  `--mcp-config` that registers **`server/permission-mcp.js`** — a tiny, dependency-free
+  MCP **stdio** bridge (newline-delimited JSON-RPC 2.0). It runs as plain Node even
+  inside the packaged Electron binary via `ELECTRON_RUN_AS_NODE=1`.
+- When `claude` needs approval it calls the bridge's `approve` tool; the bridge POSTs
+  `{ tool_name, input }` to `POST /api/tasks/:id/permission` (the server's base URL is
+  handed to the runner via `runner.setBaseUrl` on boot) and **blocks** on the response.
+- That endpoint registers a pending request in **`server/permissions.js`**, broadcasts a
+  `permission` event, and holds the connection open until the user answers. The board
+  renders Allow/Deny; `POST /api/tasks/:id/permissions/:reqId` resolves it. The reply to
+  the bridge is the CLI's contract: `{ behavior:'allow', updatedInput? }` or
+  `{ behavior:'deny', message }`. Unanswered prompts auto-deny after 30 minutes; a
+  stopped/exited run (`runner` exit → `permissions.rejectForTask`) or a dropped bridge
+  connection (`res` close) denies any still pending.
+- Pending prompts are **process-local and never persisted** — they only make sense while
+  the `claude` child is alive. `GET /api/state` annotates each task with its live
+  `pendingPermissions` so a reconnecting board rebuilds the prompts.
+
+Note: `--permission-prompt-tool` is a stable but undocumented CLI flag; the request/reply
+shapes here match what the CLI expects. If you change the bridge protocol, re-verify the
+handshake against a real run — the smoke suite covers the pieces but not the live CLI.
 
 ## Grooming: "Brief an Idea"
 

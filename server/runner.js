@@ -1,11 +1,54 @@
 const { spawn } = require('child_process');
 const readline = require('readline');
+const path = require('path');
 
 const { db, save, now, appendLog } = require('./store');
 const { broadcast } = require('./bus');
 const groomer = require('./groomer');
+const addons = require('./addons');
+const permissions = require('./permissions');
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
+
+// Tools every dispatched task gets auto-approved. The common package managers are
+// safe, near-universal build steps (install, lint, test, build); allowing them by
+// default means a run doesn't silently finish without doing the work just because
+// `acceptEdits` would have blocked the Bash call. Add-ons layer their own tools on
+// top of these (see addons.allowedToolsFor).
+const DEFAULT_ALLOWED_TOOLS = ['Bash(npm:*)', 'Bash(pnpm:*)', 'Bash(yarn:*)'];
+
+// Interactive permission prompting (see permissions.js + permission-mcp.js). When
+// a task opts in, we register our MCP bridge and tell the CLI to route any tool it
+// would otherwise auto-deny through it, so the user can approve from the board.
+const MCP_SERVER_NAME = 'srpopo';
+const PERMISSION_TOOL = `mcp__${MCP_SERVER_NAME}__approve`;
+const PERMISSION_MCP_SCRIPT = path.join(__dirname, 'permission-mcp.js');
+
+// The server's own base URL, set once the port is known (see index.start). The
+// permission bridge POSTs approval requests back here.
+let baseUrl = null;
+function setBaseUrl(url) { baseUrl = url; }
+function resolvedBaseUrl() {
+  return baseUrl || `http://127.0.0.1:${process.env.PORT || 7777}`;
+}
+
+// The `--mcp-config` JSON that registers the permission bridge for a task. The
+// bridge runs as plain Node even inside the packaged Electron binary via
+// ELECTRON_RUN_AS_NODE, and learns where to POST via SRPOPO_APPROVAL_URL.
+function permissionMcpConfig(task) {
+  return JSON.stringify({
+    mcpServers: {
+      [MCP_SERVER_NAME]: {
+        command: process.execPath,
+        args: [PERMISSION_MCP_SCRIPT],
+        env: {
+          ELECTRON_RUN_AS_NODE: '1',
+          SRPOPO_APPROVAL_URL: `${resolvedBaseUrl()}/api/tasks/${task.id}/permission`,
+        },
+      },
+    },
+  });
+}
 
 // taskId -> child process
 const running = new Map();
@@ -48,13 +91,49 @@ function normalizeAllowedTools(value) {
   return list.join(',').slice(0, 2000);
 }
 
+// Merge any number of allow-list sources (comma/newline strings or arrays of
+// patterns) into one deduped, comma-joined `--allowedTools` value. Order is
+// preserved and the total is capped like normalizeAllowedTools.
+function mergeAllowedTools(...sources) {
+  const seen = new Set();
+  const out = [];
+  for (const src of sources) {
+    const list = Array.isArray(src) ? src : String(src || '').split(/[,\n]/);
+    for (const raw of list) {
+      const tool = String(raw).trim();
+      if (tool && !seen.has(tool)) {
+        seen.add(tool);
+        out.push(tool);
+      }
+    }
+  }
+  return out.join(',').slice(0, 2000);
+}
+
+// The full set of tools auto-approved for a dispatched task: the user's own
+// allow-list, the safe package-manager defaults, and whatever the selected
+// add-ons need to run (e.g. `gh` + git for "open a PR").
+function effectiveAllowedTools(task) {
+  return mergeAllowedTools(
+    task.allowedTools,
+    DEFAULT_ALLOWED_TOOLS,
+    addons.allowedToolsFor(task.addons),
+  );
+}
+
 function buildArgs(task, resume) {
   const args = ['-p', '--output-format', 'stream-json', '--verbose'];
   if (task.model && task.model !== 'default') args.push('--model', task.model);
   if (task.permissionMode === 'bypassPermissions') args.push('--dangerously-skip-permissions');
   else if (task.permissionMode && task.permissionMode !== 'default') args.push('--permission-mode', task.permissionMode);
-  const allow = normalizeAllowedTools(task.allowedTools);
+  const allow = effectiveAllowedTools(task);
   if (allow) args.push('--allowedTools', allow);
+  // Opt-in: route otherwise-denied tools to an interactive approval prompt rather
+  // than auto-denying them. Skipped under bypassPermissions (nothing to prompt).
+  if (task.promptPermissions && task.permissionMode !== 'bypassPermissions') {
+    args.push('--permission-prompt-tool', PERMISSION_TOOL);
+    args.push('--mcp-config', permissionMcpConfig(task));
+  }
   if (resume && task.sessionId) args.push('--resume', task.sessionId);
   return args;
 }
@@ -160,6 +239,8 @@ function launch(task, { args, workDir, prompt, promptEvent, resolveExit }) {
 
   child.on('exit', (code, signal) => {
     running.delete(task.id);
+    // Deny any prompts still waiting — the child that asked is gone.
+    permissions.rejectForTask(task.id, 'Run ended');
     task.finishedAt = now();
     task.activeSubagents = 0;
     resolveExit({ code, signal, stopped: !!child.wasStopped, sawResult, stderrTail });
@@ -301,4 +382,18 @@ function stopAll() {
   for (const [taskId] of running) stop(taskId);
 }
 
-module.exports = { dispatch, groom, stop, stopAll, isRunning, buildArgs, normalizeAllowedTools, CLAUDE_BIN };
+module.exports = {
+  dispatch,
+  groom,
+  stop,
+  stopAll,
+  isRunning,
+  buildArgs,
+  normalizeAllowedTools,
+  mergeAllowedTools,
+  effectiveAllowedTools,
+  setBaseUrl,
+  PERMISSION_TOOL,
+  DEFAULT_ALLOWED_TOOLS,
+  CLAUDE_BIN,
+};

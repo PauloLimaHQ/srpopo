@@ -12,7 +12,17 @@
     settings: { notifications: true }, // user preferences (from /api/settings)
     filters: { search: '', repoIds: new Set() }, // board filters (project + text)
     prByTask: new Map(), // taskId -> 'loading' | { pr, reason } from /api/tasks/:id/pr
+    permissions: new Map(), // taskId -> [ pending tool-approval requests ]
   };
+
+  // Pending permission-prompt helpers — a task's live tool-approval requests.
+  function pendingPermissions(taskId) {
+    return state.permissions.get(taskId) || [];
+  }
+  function setPendingPermissions(taskId, list) {
+    if (list && list.length) state.permissions.set(taskId, list);
+    else state.permissions.delete(taskId);
+  }
 
   // In the desktop app native notifications are fired by the Electron shell; in a
   // plain browser we fall back to the Web Notifications API from here.
@@ -38,6 +48,10 @@
   const isLive = (t) => t.status === 'running' || t.status === 'grooming';
 
   const $ = (sel) => document.querySelector(sel);
+
+  // Inline SVG icon (Lucide, via icons.js). Returns trusted markup — insert it
+  // into templates directly, never through esc(). No emojis in the UI.
+  const icon = (name, opts) => (window.srpopoIcons ? window.srpopoIcons.svg(name, opts) : '');
 
   // ---------- api ----------
   async function api(method, url, body) {
@@ -198,19 +212,23 @@
       `<span class="chip repo">${esc(t.repoName)}</span>`,
       `<span class="chip model">${esc(t.model === 'default' ? (t.resolvedModel || 'default') : t.model)}</span>`,
     ];
-    if (t.status === 'grooming') chips.push(`<span class="chip grooming-chip" title="Grooming a rough idea into a task prompt">💡 grooming</span>`);
-    if (t.useWorktree) chips.push(`<span class="chip worktree" title="${esc(t.worktreePath || 'worktree on dispatch')}">🌿 ${esc(t.branch || 'worktree')}</span>`);
-    if (t.addons && t.addons.includes('pull_request')) chips.push(`<span class="chip addon-chip" title="Opens a pull request when finished">⇢ PR</span>`);
-    if (t.addons && t.addons.includes('code_review')) chips.push(`<span class="chip addon-chip" title="Self code-reviews and fixes issues before finishing">🔍 review</span>`);
+    if (t.status === 'grooming') chips.push(`<span class="chip grooming-chip" title="Grooming a rough idea into a task prompt">${icon('lightbulb')} grooming</span>`);
+    if (t.useWorktree) chips.push(`<span class="chip worktree" title="${esc(t.worktreePath || 'worktree on dispatch')}">${icon('git-branch')} ${esc(t.branch || 'worktree')}</span>`);
+    if (t.addons && t.addons.includes('pull_request')) chips.push(`<span class="chip addon-chip" title="Opens a pull request when finished">${icon('git-pull-request')} PR</span>`);
+    if (t.addons && t.addons.includes('code_review')) chips.push(`<span class="chip addon-chip" title="Self code-reviews and fixes issues before finishing">${icon('search')} review</span>`);
     (t.personas || []).forEach((pid) => {
       const p = state.personas.find((x) => x.id === pid);
-      chips.push(`<span class="chip persona-chip" title="${esc(p ? p.hint : 'persona')}">🎭 ${esc(p ? p.label : pid)}</span>`);
+      chips.push(`<span class="chip persona-chip" title="${esc(p ? p.hint : 'persona')}">${icon('persona')} ${esc(p ? p.label : pid)}</span>`);
     });
     if (t.costUsd > 0) chips.push(`<span class="chip cost">$${t.costUsd.toFixed(2)}</span>`);
     if (t.status === 'failed') chips.push(`<span class="chip badge-failed">FAILED</span>`);
     if (t.lastOutcome === 'stopped') chips.push(`<span class="chip badge-stopped">stopped</span>`);
     if (t.status === 'running' && t.activeSubagents > 0) {
-      chips.push(`<span class="chip subagents">🤖 ${t.activeSubagents} subagent${t.activeSubagents > 1 ? 's' : ''}</span>`);
+      chips.push(`<span class="chip subagents">${icon('bot')} ${t.activeSubagents} subagent${t.activeSubagents > 1 ? 's' : ''}</span>`);
+    }
+    const pending = pendingPermissions(t.id).length;
+    if (pending > 0) {
+      chips.push(`<span class="chip needs-approval" title="Waiting for you to approve a tool">${icon('shield')} ${pending} to approve</span>`);
     }
 
     let statusRow = '';
@@ -220,7 +238,7 @@
           <span class="spinner"></span>
           ${t.status === 'grooming' ? '<span class="live-label">grooming</span>' : ''}
           <span class="elapsed" data-start="${esc(t.startedAt)}">${elapsedSince(t.startedAt)}</span>
-          <button class="btn icon danger card-stop" data-action="stop" title="Stop run">■</button>
+          <button class="btn icon danger card-stop" data-action="stop" title="Stop run" aria-label="Stop run">${icon('square')}</button>
         </div>`;
     } else if (t.durationMs != null) {
       statusRow = `<div class="card-status">last run ${fmtDuration(t.durationMs)} · ${t.numTurns ?? '?'} turns</div>`;
@@ -238,7 +256,7 @@
     });
     el.addEventListener('dragend', () => el.classList.remove('dragging'));
     el.addEventListener('click', (e) => {
-      if (e.target.dataset.action === 'stop') { stopTask(t.id); return; }
+      if (e.target.closest('[data-action="stop"]')) { stopTask(t.id); return; }
       openDrawer(t.id);
     });
     return el;
@@ -291,6 +309,7 @@
       const { task, events } = await api('GET', `/api/tasks/${taskId}/logs`);
       state.tasks.set(task.id, task);
       renderDrawerHead(task);
+      renderPermissionPrompts(taskId);
       if (task.branch) refreshPr(task.id, true); // lazily fetch the PR when the drawer opens
       $('#timeline').innerHTML = '';
       for (const ev of events) appendEvent(ev);
@@ -302,6 +321,79 @@
     state.openTaskId = null;
     $('#drawer').classList.add('hidden');
     $('#drawer-overlay').classList.add('hidden');
+    renderPermissionPrompts(null);
+  }
+
+  // ---------- interactive permission prompts ----------
+
+  // Render the pending tool-approval prompts for the drawer's task. Each shows the
+  // requested tool + input and Allow/Deny buttons that resolve the waiting run.
+  function renderPermissionPrompts(taskId) {
+    const box = $('#permission-prompts');
+    if (!box) return;
+    const list = taskId ? pendingPermissions(taskId) : [];
+    if (!list.length) {
+      box.classList.add('hidden');
+      box.innerHTML = '';
+      return;
+    }
+    box.classList.remove('hidden');
+    box.innerHTML = list.map((r) => {
+      const summary = toolInputSummary(r.toolName, r.input || {});
+      return `
+        <div class="perm-prompt" data-req="${esc(r.id)}">
+          <div class="perm-head">${icon('shield')} <span>Approve <code>${esc(r.toolName)}</code>?</span></div>
+          ${summary ? `<pre class="perm-summary">${esc(String(summary).slice(0, 400))}</pre>` : ''}
+          <div class="perm-actions">
+            <button class="btn ghost danger" data-perm="deny" data-req="${esc(r.id)}">Deny</button>
+            <button class="btn primary" data-perm="allow" data-req="${esc(r.id)}">Allow</button>
+          </div>
+        </div>`;
+    }).join('');
+  }
+
+  async function decidePermission(taskId, reqId, behavior) {
+    // Optimistically clear it locally so the buttons can't be double-clicked.
+    setPendingPermissions(taskId, pendingPermissions(taskId).filter((r) => r.id !== reqId));
+    renderPermissionPrompts(state.openTaskId);
+    renderBoard();
+    try {
+      await api('POST', `/api/tasks/${taskId}/permissions/${reqId}`, { behavior });
+    } catch (e) { toast(e.message); }
+  }
+
+  // One delegated handler for every Allow/Deny button in the prompts box.
+  $('#permission-prompts').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-perm]');
+    if (!btn || !state.openTaskId) return;
+    decidePermission(state.openTaskId, btn.dataset.req, btn.dataset.perm);
+  });
+
+  // Live permission-prompt updates from the server: a new request appears, or an
+  // existing one is resolved (by anyone, or by the run ending).
+  function applyPermissionEvent(msg) {
+    const list = pendingPermissions(msg.taskId);
+    if (msg.action === 'request') {
+      const isNew = !list.some((r) => r.id === msg.request.id);
+      if (isNew) setPendingPermissions(msg.taskId, [...list, msg.request]);
+      // The run is blocked until answered, so notify even under Electron — the tray
+      // shell only surfaces task lifecycle, not permission prompts.
+      if (isNew && notificationsOn()) maybeNotifyPermission(msg);
+    } else if (msg.action === 'resolved') {
+      setPendingPermissions(msg.taskId, list.filter((r) => r.id !== msg.requestId));
+    }
+    if (state.openTaskId === msg.taskId) renderPermissionPrompts(msg.taskId);
+    renderBoard();
+  }
+
+  // Nudge the user that a run is blocked waiting on them — it can't proceed alone.
+  function maybeNotifyPermission(msg) {
+    const t = state.tasks.get(msg.taskId);
+    const title = t ? t.title : 'A task';
+    showBrowserNotification('Approval needed', {
+      body: `${title} wants to run ${msg.request.toolName}`,
+      tag: `srpopo-perm-${msg.taskId}`,
+    });
   }
 
   function renderDrawerHead(t) {
@@ -311,7 +403,8 @@
       `<span class="chip model">${esc(t.resolvedModel || t.model)}</span>`,
       `<span class="chip">${esc(t.permissionMode)}</span>`,
     ];
-    if (t.worktreePath) meta.push(`<span class="chip worktree" title="${esc(t.worktreePath)}">🌿 ${esc(t.branch)}</span>`);
+    if (t.promptPermissions) meta.push(`<span class="chip" title="Asks you to approve otherwise-denied tools">${icon('shield')} asks</span>`);
+    if (t.worktreePath) meta.push(`<span class="chip worktree" title="${esc(t.worktreePath)}">${icon('git-branch')} ${esc(t.branch)}</span>`);
     if (t.sessionId) meta.push(`<span class="chip" title="session id">${esc(t.sessionId.slice(0, 8))}…</span>`);
     if (t.costUsd > 0) meta.push(`<span class="chip cost">$${t.costUsd.toFixed(2)} total</span>`);
     if (t.numTurns != null) meta.push(`<span class="chip">${t.numTurns} turns</span>`);
@@ -346,10 +439,10 @@
 
     const actions = [];
     if (isLive(t)) {
-      actions.push(`<button class="btn danger" data-act="stop">■ Stop</button>`);
+      actions.push(`<button class="btn danger" data-act="stop">${icon('square')} Stop</button>`);
     } else {
-      if (t.status === 'backlog' || t.status === 'ready') actions.push(`<button class="btn primary" data-act="dispatch">▶ Run</button>`);
-      actions.push(`<button class="btn ghost" data-act="edit">✎ Edit</button>`);
+      if (t.status === 'backlog' || t.status === 'ready') actions.push(`<button class="btn primary" data-act="dispatch">${icon('play')} Run</button>`);
+      actions.push(`<button class="btn ghost" data-act="edit">${icon('pencil')} Edit</button>`);
       actions.push(`<button class="btn ghost" data-act="archive">Archive</button>`);
     }
     if (t.worktreePath) {
@@ -359,7 +452,7 @@
     const box = $('#drawer-actions');
     box.innerHTML = actions.join('');
     box.onclick = async (e) => {
-      const act = e.target.dataset.act;
+      const act = e.target.closest('[data-act]')?.dataset.act;
       if (!act) return;
       try {
         if (act === 'stop') await api('POST', `/api/tasks/${t.id}/stop`);
@@ -393,7 +486,7 @@
   // Render the PR chip for a task from the cached /api/tasks/:id/pr result.
   // Only called when the task has a branch.
   function prChipHtml(t) {
-    const refresh = '<button class="pr-refresh" data-act="refresh-pr" title="Refresh PR status">↻</button>';
+    const refresh = `<button class="pr-refresh" data-act="refresh-pr" title="Refresh PR status" aria-label="Refresh PR status">${icon('rotate-cw')}</button>`;
     const res = state.prByTask.get(t.id);
     if (res === undefined || res === 'loading') {
       return `<span class="chip pr pr-muted" title="Looking up pull request…">PR …</span>`;
@@ -470,7 +563,7 @@
           <span class="tag">${tag} · run ${ev.run || 1}</span>${esc(ev.text)}
         </div>`);
     } else if (type === 'system' && ev.subtype === 'init') {
-      addHtml(containerFor(ev), `<div class="ev-meta">⚡ session started · ${esc(ev.model || '')} · ${esc((ev.session_id || '').slice(0, 8))}</div>`);
+      addHtml(containerFor(ev), `<div class="ev-meta">${icon('zap')} session started · ${esc(ev.model || '')} · ${esc((ev.session_id || '').slice(0, 8))}</div>`);
     } else if (type === 'assistant') {
       const blocks = (ev.message && ev.message.content) || [];
       for (const b of blocks) {
@@ -478,7 +571,7 @@
           addHtml(containerFor(ev), `<div class="ev-text">${esc(b.text)}</div>`);
         } else if (b.type === 'thinking' && b.thinking) {
           addHtml(containerFor(ev), `
-            <details class="ev-thinking"><summary>💭 thinking</summary><pre>${esc(b.thinking)}</pre></details>`);
+            <details class="ev-thinking"><summary>${icon('brain')} thinking</summary><pre>${esc(b.thinking)}</pre></details>`);
         } else if (b.type === 'tool_use') {
           appendToolUse(ev, b);
         }
@@ -492,17 +585,22 @@
       }
     } else if (type === 'result') {
       const cls = ev.is_error ? 'error' : '';
-      const icon = ev.is_error ? '✖' : '✔';
+      const resIcon = ev.is_error ? icon('circle-x') : icon('circle-check');
       const text = typeof ev.result === 'string' ? ev.result : (ev.subtype || '');
       addHtml($('#timeline'), `
         <div class="ev-result ${cls}">
-          ${icon} ${esc(String(text).slice(0, 600))}
+          ${resIcon} ${esc(String(text).slice(0, 600))}
           <div class="stats">${fmtDuration(ev.duration_ms)} · ${ev.num_turns ?? '?'} turns · $${(ev.total_cost_usd || 0).toFixed(2)}</div>
         </div>`);
     } else if (type === 'stderr') {
       addHtml($('#timeline'), `<div class="ev-stderr">${esc(ev.text)}</div>`);
     } else if (type === 'proc') {
-      addHtml($('#timeline'), `<div class="ev-meta">⏹ ${esc(ev.text)}</div>`);
+      addHtml($('#timeline'), `<div class="ev-meta">${icon('square')} ${esc(ev.text)}</div>`);
+    } else if (type === 'permission') {
+      const allowed = ev.decision && ev.decision.behavior === 'allow';
+      const verb = allowed ? 'Allowed' : 'Denied';
+      const why = !allowed && ev.decision && ev.decision.message ? ` — ${ev.decision.message}` : '';
+      addHtml($('#timeline'), `<div class="ev-meta perm-log ${allowed ? 'ok' : 'no'}">${icon('shield')} ${verb} ${esc(ev.toolName || 'tool')}${esc(why)}</div>`);
     } else if (type === 'raw') {
       addHtml($('#timeline'), `<div class="ev-stderr">${esc(ev.text)}</div>`);
     }
@@ -516,7 +614,7 @@
       const group = document.createElement('div');
       group.className = 'subagent-group';
       group.innerHTML = `
-        <div class="subagent-head">🤖 ${esc(block.input?.description || 'subagent')}
+        <div class="subagent-head">${icon('bot')} ${esc(block.input?.description || 'subagent')}
           <span class="chip">${esc(block.input?.subagent_type || 'agent')}</span>
           <span class="status">running…</span>
         </div>
@@ -539,7 +637,7 @@
       <summary>
         <span class="tool-name">${esc(block.name)}</span>
         <span class="tool-summary">${esc(toolInputSummary(block.name, block.input))}</span>
-        <span class="tool-state">⏳</span>
+        <span class="tool-state">${icon('loader', { spin: true })}</span>
       </summary>
       <div class="tool-detail">
         <div class="result-label">input</div>
@@ -555,7 +653,7 @@
     // Subagent finished?
     if (timeline.subagents.has(block.tool_use_id)) {
       const sa = timeline.subagents.get(block.tool_use_id);
-      sa.head.textContent = block.is_error ? 'failed' : 'done ✔';
+      sa.head.innerHTML = block.is_error ? `${icon('circle-x')} failed` : `${icon('circle-check')} done`;
       sa.group.style.borderStyle = 'solid';
       const text = extractResultText(block);
       if (text) {
@@ -567,7 +665,7 @@
     }
     const row = timeline.toolRows.get(block.tool_use_id);
     if (!row) return;
-    row.querySelector('.tool-state').textContent = block.is_error ? '✖' : '✔';
+    row.querySelector('.tool-state').innerHTML = block.is_error ? icon('circle-x') : icon('circle-check');
     const slot = row.querySelector('.result-slot');
     const text = extractResultText(block);
     slot.innerHTML = `<div class="result-label">${block.is_error ? 'error' : 'result'}</div><pre>${esc((text || '(empty)').slice(0, 4000))}</pre>`;
@@ -680,9 +778,9 @@
       const p = state.personas.find((x) => x.id === id);
       const label = p ? p.label : id;
       return `<span class="persona-tag" role="listitem">
-          <span class="persona-tag-label">🎭 ${esc(label)}</span>
+          <span class="persona-tag-label">${icon('persona')} ${esc(label)}</span>
           <button type="button" class="persona-tag-x" data-remove="${esc(id)}"
-                  title="Remove ${esc(label)}" aria-label="Remove ${esc(label)}">✕</button>
+                  title="Remove ${esc(label)}" aria-label="Remove ${esc(label)}">${icon('x')}</button>
         </span>`;
     }).join('');
   }
@@ -717,7 +815,7 @@
       return `<div class="persona-option${on ? ' on' : ''}${active ? ' active' : ''}"
           role="option" id="persona-opt-${esc(p.id)}" aria-selected="${on}"
           data-persona="${esc(p.id)}">
-          <span class="persona-check" aria-hidden="true">${on ? '✓' : ''}</span>
+          <span class="persona-check" aria-hidden="true">${on ? icon('check') : ''}</span>
           <span class="addon-text">
             <span class="addon-label">${esc(p.label)}</span>
             ${p.hint ? `<span class="addon-hint">${esc(p.hint)}</span>` : ''}
@@ -808,6 +906,7 @@
         model: fields.model,
         permissionMode: fields.permissionMode,
         allowedTools: fields.allowedTools,
+        promptPermissions: fields.promptPermissions,
         useWorktree: fields.useWorktree,
         addons: fields.addons,
         personas: fields.personas,
@@ -829,6 +928,9 @@
     $('#task-model').value = task ? (task.model || 'default') : (last.model || 'default');
     $('#task-perm').value = task ? (task.permissionMode || 'acceptEdits') : (last.permissionMode || 'acceptEdits');
     $('#task-allowed-tools').value = task ? (task.allowedTools || '') : (last.allowedTools || '');
+    $('#task-prompt-permissions').checked = task
+      ? (task.promptPermissions !== false)
+      : (last.promptPermissions ?? true);
     $('#task-worktree').checked = task ? !!task.useWorktree : (last.useWorktree ?? true);
     // A materialized worktree can't be toggled off; the repo can't move after creation.
     $('#task-worktree').disabled = !!(task && task.worktreePath);
@@ -841,7 +943,7 @@
 
     $('#task-modal-title').textContent = task ? 'Edit Task' : 'New Task';
     $('#task-create').textContent = task ? 'Save' : 'Create in Backlog';
-    $('#task-create-run').textContent = task ? 'Save & Run ▶' : 'Create & Run ▶';
+    $('#task-create-run').innerHTML = `${task ? 'Save & Run' : 'Create & Run'} ${icon('play')}`;
 
     $('#modal-task').classList.remove('hidden');
     $('#task-title').focus();
@@ -857,6 +959,7 @@
       model: $('#task-model').value,
       permissionMode: $('#task-perm').value,
       allowedTools: $('#task-allowed-tools').value,
+      promptPermissions: $('#task-prompt-permissions').checked,
       useWorktree: $('#task-worktree').checked,
       addons: selectedAddons(),
       personas: selectedPersonas(),
@@ -970,13 +1073,13 @@
     if (task.lastOutcome === 'stopped') return;
     let title, body;
     if (task.status === 'failed') {
-      title = `❌ Task failed — ${task.title}`;
+      title = `Task failed — ${task.title}`;
       body = task.lastError ? String(task.lastError).slice(0, 140) : task.repoName;
     } else if (task.lastOutcome === 'groomed') {
-      title = `✨ Idea groomed — ${task.title}`;
+      title = `Idea groomed — ${task.title}`;
       body = `${task.repoName} · ready to run`;
     } else {
-      title = `✅ Task finished — ${task.title}`;
+      title = `Task finished — ${task.title}`;
       body = task.repoName;
     }
     showBrowserNotification(title, { body, tag: `srpopo-${task.id}` });
@@ -1015,7 +1118,7 @@
   });
   $('#setting-notif-test').addEventListener('click', () => {
     // Works in both modes: under Electron the Web Notification routes to a native one.
-    showBrowserNotification('Sr. Popo', { body: 'Notifications are working. 🎉' }, true);
+    showBrowserNotification('Sr. Popo', { body: 'Notifications are working.' }, true);
   });
 
   // ---------- repos modal ----------
@@ -1027,7 +1130,7 @@
       li.innerHTML = `
         <span class="repo-name">${esc(r.name)}</span>
         <span class="repo-path">${esc(r.path)}</span>
-        <button class="btn icon danger" title="Remove">✕</button>`;
+        <button class="btn icon danger" title="Remove" aria-label="Remove repository">${icon('x')}</button>`;
       li.querySelector('button').addEventListener('click', async () => {
         try { await api('DELETE', `/api/repos/${r.id}`); } catch (e) { toast(e.message); }
       });
@@ -1132,6 +1235,8 @@
         renderFilters();
       } else if (msg.type === 'log' && msg.taskId === state.openTaskId) {
         appendEvent(msg.event);
+      } else if (msg.type === 'permission') {
+        applyPermissionEvent(msg);
       }
     };
     es.onerror = () => {
@@ -1153,7 +1258,7 @@
   // already matches; here we keep the toggle button in sync and cycle it.
   const THEME_KEY = 'srpopo.theme';
   const THEME_CYCLE = ['system', 'light', 'dark'];
-  const THEME_ICON = { system: '🌗', light: '☀️', dark: '🌙' };
+  const THEME_ICON = { system: 'sun-moon', light: 'sun', dark: 'moon' };
   const THEME_LABEL = { system: 'System', light: 'Light', dark: 'Dark' };
 
   function currentTheme() {
@@ -1174,7 +1279,7 @@
     } catch { /* storage unavailable — non-fatal */ }
     const btn = $('#btn-theme');
     if (btn) {
-      btn.textContent = THEME_ICON[mode];
+      btn.innerHTML = icon(THEME_ICON[mode]);
       btn.title = `Theme: ${THEME_LABEL[mode]} (click to change)`;
     }
   }
@@ -1192,6 +1297,12 @@
       const { repos, tasks, settings } = await api('GET', '/api/state');
       state.repos = repos;
       state.tasks = new Map(tasks.map((t) => [t.id, t]));
+      // Seed live tool-approval prompts, then drop the transient field off the task.
+      state.permissions = new Map();
+      for (const t of tasks) {
+        if (t.pendingPermissions && t.pendingPermissions.length) state.permissions.set(t.id, t.pendingPermissions);
+        delete t.pendingPermissions;
+      }
       if (settings) state.settings = settings;
       loadFilters();
       $('#filter-search').value = state.filters.search;
