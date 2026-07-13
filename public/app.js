@@ -51,6 +51,10 @@
 
   const $ = (sel) => document.querySelector(sel);
 
+  // Modifier label for on-screen keyboard hints — ⌘ on macOS, "Ctrl" elsewhere.
+  const IS_MAC = /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent || '');
+  const MOD = IS_MAC ? '⌘' : 'Ctrl';
+
   // Inline SVG icon (Lucide, via icons.js). Returns trusted markup — insert it
   // into templates directly, never through esc(). No emojis in the UI.
   const icon = (name, opts) => (window.srpopoIcons ? window.srpopoIcons.svg(name, opts) : '');
@@ -829,6 +833,9 @@
       $('#modal-followup').classList.add('hidden');
     } catch (e) { toast(e.message); }
   });
+  $('#followup-modal-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) $('#followup-modal-send').click();
+  });
 
   // ---------- new task modal ----------
   function refreshRepoSelect() {
@@ -1190,6 +1197,9 @@
   $('#task-cancel').addEventListener('click', () => $('#modal-task').classList.add('hidden'));
   $('#task-create').addEventListener('click', () => saveTask(false));
   $('#task-create-run').addEventListener('click', () => saveTask(true));
+  $('#task-prompt').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) $('#task-create-run').click();
+  });
   $('#task-add-repo').addEventListener('click', () => {
     $('#modal-task').classList.add('hidden');
     openReposModal();
@@ -1756,9 +1766,165 @@
     $('#filter-search').focus();
   });
 
-  // Cmd/Ctrl+, opens Settings — the platform-standard shortcut (⌘, on macOS).
+  // ---------- command palette (⌘K) ----------
+  // A quick switcher: jump straight to any task by name, or run a top-bar
+  // action, without hunting across columns/filters or reaching for the mouse.
+  let paletteResults = []; // flat, in on-screen order: { type: 'command'|'task', item }
+  let paletteActive = 0;
+
+  function paletteCommands() {
+    return [
+      { label: 'New Task', hint: 'Start a task from scratch', icon: 'plus', kbd: `${MOD}N`, run: () => openTaskModal() },
+      { label: 'Brief an Idea', hint: 'Groom a rough idea into a task', icon: 'lightbulb', run: () => openBriefModal() },
+      { label: 'Create Task from Linear', hint: 'Import an assigned issue', icon: 'linear', run: () => openLinearModal() },
+      { label: 'Repositories', hint: 'Add or manage repos', icon: 'folder', run: () => openReposModal() },
+      { label: 'Settings', hint: 'Notifications, sounds, Linear key', icon: 'settings', kbd: `${MOD},`, run: () => openSettingsModal() },
+      { label: 'Toggle Theme', hint: `Currently ${THEME_LABEL[currentTheme()]}`, icon: 'sun-moon', run: () => $('#btn-theme').click() },
+      { label: 'Filter Tasks', hint: 'Jump to the filter box', icon: 'search', kbd: '/', run: () => $('#filter-search').focus() },
+      { label: 'Keyboard Shortcuts', hint: 'See all shortcuts', icon: 'keyboard', kbd: '?', run: () => openShortcutsModal() },
+    ];
+  }
+
+  function paletteRow(index, opts) {
+    return `<div class="palette-option" data-index="${index}">
+      ${opts.dot ? `<span class="palette-status-dot" style="background:${opts.dot}"></span>`
+        : `<span class="palette-option-icon">${icon(opts.icon)}</span>`}
+      <span class="palette-option-body">
+        <span class="palette-option-label">${esc(opts.label)}</span>
+        <span class="palette-option-hint">${esc(opts.hint)}</span>
+      </span>
+      ${opts.kbd ? `<span class="kbd">${esc(opts.kbd)}</span>` : ''}
+    </div>`;
+  }
+
+  function renderPalette(query) {
+    const tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const matches = (text) => tokens.every((t) => text.includes(t));
+
+    const cmds = paletteCommands().filter((c) => matches(`${c.label} ${c.hint}`.toLowerCase()));
+    const allTasks = [...state.tasks.values()].sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+    const tasks = (tokens.length ? allTasks.filter((t) => matches(`${t.title} ${t.repoName}`.toLowerCase())) : allTasks.slice(0, 6))
+      .slice(0, 8);
+
+    paletteResults = [
+      ...cmds.map((item) => ({ type: 'command', item })),
+      ...tasks.map((item) => ({ type: 'task', item })),
+    ];
+    paletteActive = 0;
+
+    const results = $('#palette-results');
+    if (!paletteResults.length) {
+      results.innerHTML = '<div class="palette-empty">No matches</div>';
+      return;
+    }
+    let html = '';
+    if (cmds.length) {
+      html += '<div class="palette-group">Commands</div>';
+      html += cmds.map((c, i) => paletteRow(i, c)).join('');
+    }
+    if (tasks.length) {
+      html += `<div class="palette-group">${tokens.length ? 'Tasks' : 'Recent tasks'}</div>`;
+      html += tasks.map((t, i) => paletteRow(cmds.length + i, {
+        label: t.title, hint: `${t.repoName} · ${t.status}`, dot: COLUMNS.find((c) => c.key === COLUMN_OF_STATUS[t.status]).dot,
+      })).join('');
+    }
+    results.innerHTML = html;
+    updatePaletteActive();
+  }
+
+  function updatePaletteActive() {
+    const results = $('#palette-results');
+    results.querySelectorAll('.palette-option').forEach((el) => {
+      el.classList.toggle('active', Number(el.dataset.index) === paletteActive);
+    });
+    const activeEl = results.querySelector('.palette-option.active');
+    if (activeEl) activeEl.scrollIntoView({ block: 'nearest' });
+  }
+
+  function movePaletteActive(delta) {
+    if (!paletteResults.length) return;
+    paletteActive = (paletteActive + delta + paletteResults.length) % paletteResults.length;
+    updatePaletteActive();
+  }
+
+  function activatePalette(index) {
+    const entry = paletteResults[index];
+    if (!entry) return;
+    closePalette();
+    if (entry.type === 'command') entry.item.run();
+    else openDrawer(entry.item.id);
+  }
+
+  function openPalette() {
+    $('#palette-input').value = '';
+    renderPalette('');
+    $('#modal-palette').classList.remove('hidden');
+    $('#palette-input').focus();
+  }
+  function closePalette() { $('#modal-palette').classList.add('hidden'); }
+
+  $('#btn-palette').addEventListener('click', openPalette);
+  $('#modal-palette').addEventListener('click', (e) => { if (e.target.id === 'modal-palette') closePalette(); });
+  $('#palette-input').addEventListener('input', (e) => renderPalette(e.target.value));
+  $('#palette-input').addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); movePaletteActive(1); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); movePaletteActive(-1); }
+    else if (e.key === 'Enter') { e.preventDefault(); activatePalette(paletteActive); }
+  });
+  $('#palette-results').addEventListener('click', (e) => {
+    const row = e.target.closest('.palette-option');
+    if (row) activatePalette(Number(row.dataset.index));
+  });
+  $('#palette-results').addEventListener('mousemove', (e) => {
+    const row = e.target.closest('.palette-option');
+    if (row && Number(row.dataset.index) !== paletteActive) {
+      paletteActive = Number(row.dataset.index);
+      updatePaletteActive();
+    }
+  });
+
+  // ---------- keyboard shortcuts help ----------
+  const SHORTCUTS = [
+    { label: 'Search & commands', keys: [MOD, 'K'] },
+    { label: 'New task', keys: [MOD, 'N'] },
+    { label: 'Settings', keys: [MOD, ','] },
+    { label: 'Filter tasks', keys: ['/'] },
+    { label: 'Submit the open form', keys: [MOD, '↵'] },
+    { label: 'Close dialog / drawer', keys: ['esc'] },
+    { label: 'This help', keys: ['?'] },
+  ];
+  $('#shortcuts-list').innerHTML = SHORTCUTS.map((s) => `
+    <li><span class="shortcut-label">${esc(s.label)}</span>
+      <span class="kbd-group">${s.keys.map((k) => `<span class="kbd">${esc(k)}</span>`).join('')}</span>
+    </li>`).join('');
+
+  function openShortcutsModal() { $('#modal-shortcuts').classList.remove('hidden'); }
+  $('#shortcuts-close').addEventListener('click', () => $('#modal-shortcuts').classList.add('hidden'));
+
+  // A blocking modal already covers the screen — don't stack a second one on top.
+  const modalOpen = () => !!document.querySelector('.modal:not(.hidden)');
+
   document.addEventListener('keydown', (e) => {
-    if (e.key === ',' && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
+    const mod = e.metaKey || e.ctrlKey;
+    if (mod && e.key.toLowerCase() === 'k') {
+      e.preventDefault();
+      if (!modalOpen()) openPalette();
+      return;
+    }
+    if (mod && e.key.toLowerCase() === 'n' && !e.shiftKey && !e.altKey) {
+      e.preventDefault();
+      if (!modalOpen()) openTaskModal();
+      return;
+    }
+    if (e.key === '?' && !mod && !e.altKey) {
+      const tag = (e.target.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+      e.preventDefault();
+      if (!modalOpen()) openShortcutsModal();
+      return;
+    }
+    // Cmd/Ctrl+, opens Settings — the platform-standard shortcut (⌘, on macOS).
+    if (e.key === ',' && mod && !e.altKey && !e.shiftKey) {
       e.preventDefault();
       if ($('#modal-settings').classList.contains('hidden')) openSettingsModal();
     }
@@ -1908,6 +2074,11 @@
 
     connectSSE();
   }
+
+  // Reflect the platform's modifier key in the top-bar shortcut hints.
+  $('#btn-palette').title = `Search & commands (${MOD}K)`;
+  $('#btn-new-task').title = `New task (${MOD}N)`;
+  $('#btn-settings').title = `Settings (${MOD},)`;
 
   initTheme();
   boot();
