@@ -1,10 +1,12 @@
 name: CI
 
+# On feature branches (PRs) and main merges we only build, lint, and test.
+# Packaging the app for each required environment happens on release
+# (see release.yml), not here.
 on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 # Cancel superseded runs on the same ref to save CI minutes.
 concurrency:
@@ -12,8 +14,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  lint-test:
-    name: Lint & Test
+  build-lint-test:
+    name: Build, Lint & Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,33 +31,8 @@ jobs:
       - name: Lint
         run: npm run lint
 
-      - name: Typecheck
-        run: npm run typecheck
+      - name: Build
+        run: npm run build
 
       - name: Test
         run: npm test
-
-  build:
-    name: Build (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-
-      - name: Install dependencies
-        run: npm install --no-audit --no-fund
-
-      # Package the app (unpacked) to verify it builds on each platform.
-      # No code signing in CI.
-      - name: Package
-        run: npm run pack
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: false
