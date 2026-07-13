@@ -8,6 +8,18 @@
 export interface Settings {
   notifications: boolean;
   sounds: boolean;
+  // Linear personal API key, used to import issues. A secret: it lives only in
+  // db.json and is never returned to the board (see PublicSettings).
+  linearApiToken: string;
+}
+
+// The redacted, board-facing view of Settings. Omits the raw Linear token and
+// exposes only a derived boolean so the UI can show configured/not-configured
+// without ever holding the secret.
+export interface PublicSettings {
+  notifications: boolean;
+  sounds: boolean;
+  linearConfigured: boolean;
 }
 
 export interface Repo {
@@ -33,11 +45,17 @@ export interface Task {
   prompt: string;
   // The original rough idea, present only on tasks created via "Brief an Idea".
   brief?: string;
+  // Origin pointer for tasks imported from a Linear issue, so the drawer can
+  // link back to it. Present only on the Linear import path.
+  linearIssue?: { identifier: string; url: string };
   repoId: string;
   repoName: string;
   repoPath: string;
   addons: string[];
   personas: string[];
+  // Files the user attached; bytes live under DATA_DIR/attachments/<id>/<name>,
+  // managed only through the upload/delete routes (never the PATCH allowlist).
+  attachments?: Attachment[];
   useWorktree: boolean;
   worktreePath: string | null;
   branch: string | null;
@@ -63,6 +81,14 @@ export interface Task {
   // Annotated onto GET /api/state responses so a reconnecting board rebuilds any
   // live tool-approval prompts. Never persisted to db.json.
   pendingPermissions?: PublicPermissionRequest[];
+}
+
+// A file attached to a task. `name` is the stored (sanitized) basename under
+// DATA_DIR/attachments/<taskId>/; `size` is the byte length as written.
+export interface Attachment {
+  name: string;
+  size: number;
+  addedAt: string;
 }
 
 export interface Db {
@@ -109,4 +135,32 @@ export interface PrInfo {
   state: string;
   isDraft: boolean;
   updatedAt: string | null;
+}
+
+// The compact issue shape linear.parseIssueList normalizes for the browse list.
+export interface LinearIssueSummary {
+  id: string;
+  identifier: string;
+  title: string;
+  url: string;
+  state: string;
+  updatedAt: string | null;
+}
+
+// A single comment on a Linear issue, normalized by linear.parseIssue.
+export interface LinearIssueComment {
+  body: string;
+  author: string;
+  createdAt: string | null;
+}
+
+// The full issue shape linear.parseIssue normalizes, with enough context
+// (description + comments) to groom it into a task prompt.
+export interface LinearIssue {
+  identifier: string;
+  title: string;
+  description: string;
+  url: string;
+  state: string;
+  comments: LinearIssueComment[];
 }

@@ -34,6 +34,7 @@ test('server modules load without throwing', () => {
     require('../server/personas');
     require('../server/groomer');
     require('../server/github');
+    require('../server/linear');
     require('../server/index');
   });
 });
@@ -72,6 +73,94 @@ test('github: parsePrList normalizes a gh payload and handles the empty list', (
   assert.strictEqual(github.parsePrList('not json'), null, 'unparsable yields null');
   assert.strictEqual(github.parsePrList('{}'), null, 'non-array yields null');
   assert.strictEqual(github.parsePrList(JSON.stringify([{ url: 'x' }])), null, 'a PR without a number is rejected');
+});
+
+test('linear: module exports non-throwing fetchers and pure parse helpers', () => {
+  const linear = require('../server/linear');
+  for (const fn of ['listMyIssues', 'getIssue', 'parseIssue', 'parseIssueList', 'briefFromIssue']) {
+    assert.strictEqual(typeof linear[fn], 'function', `${fn} is exported`);
+  }
+});
+
+test('linear: listMyIssues resolves to no-token without a configured key (no network)', async () => {
+  const store = require('../server/store');
+  const linear = require('../server/linear');
+  const prev = store.db.settings.linearApiToken;
+  store.db.settings.linearApiToken = ''; // a real fetch here would fail loudly
+  try {
+    assert.deepStrictEqual(await linear.listMyIssues(), { ok: false, reason: 'no-token' });
+    assert.deepStrictEqual(await linear.getIssue('ABC-123'), { ok: false, reason: 'no-token' });
+    assert.deepStrictEqual(await linear.getIssue(''), { ok: false, reason: 'not-found' });
+  } finally {
+    store.db.settings.linearApiToken = prev;
+  }
+});
+
+test('linear: parseIssueList normalizes, sorts by updatedAt desc, and handles junk', () => {
+  const linear = require('../server/linear');
+
+  const payload = {
+    data: {
+      viewer: {
+        assignedIssues: {
+          nodes: [
+            { id: 'u1', identifier: 'ABC-1', title: 'Older', url: 'https://l/ABC-1', updatedAt: '2026-07-01T00:00:00Z', state: { name: 'Todo' } },
+            { id: 'u2', identifier: 'ABC-2', title: 'Newer', url: 'https://l/ABC-2', updatedAt: '2026-07-10T00:00:00Z', state: { name: 'In Progress' } },
+            { title: 'no id — dropped' },
+          ],
+        },
+      },
+    },
+  };
+  assert.deepStrictEqual(linear.parseIssueList(payload), [
+    { id: 'u2', identifier: 'ABC-2', title: 'Newer', url: 'https://l/ABC-2', state: 'In Progress', updatedAt: '2026-07-10T00:00:00Z' },
+    { id: 'u1', identifier: 'ABC-1', title: 'Older', url: 'https://l/ABC-1', state: 'Todo', updatedAt: '2026-07-01T00:00:00Z' },
+  ]);
+
+  // Empty / malformed payloads yield [] (never a throw or a partial row).
+  assert.deepStrictEqual(linear.parseIssueList({}), []);
+  assert.deepStrictEqual(linear.parseIssueList(null), []);
+  assert.deepStrictEqual(linear.parseIssueList({ data: { viewer: { assignedIssues: { nodes: 'nope' } } } }), []);
+});
+
+test('linear: parseIssue reads both the issue and issues.nodes shapes; briefFromIssue keeps origin', () => {
+  const linear = require('../server/linear');
+
+  // Direct `issue(id:)` shape, with comments normalized.
+  const byId = {
+    data: {
+      issue: {
+        identifier: 'ENG-42', title: 'Fix the thing', description: 'It is broken.', url: 'https://l/ENG-42',
+        state: { name: 'Todo' },
+        comments: { nodes: [
+          { body: 'Repro here', createdAt: '2026-07-02T00:00:00Z', user: { name: 'Ada' } },
+          { body: '   ', createdAt: '2026-07-03T00:00:00Z', user: { name: 'Blank' } }, // empty → dropped
+        ] },
+      },
+    },
+  };
+  const issue = linear.parseIssue(byId);
+  assert.deepStrictEqual(issue, {
+    identifier: 'ENG-42', title: 'Fix the thing', description: 'It is broken.', url: 'https://l/ENG-42',
+    state: 'Todo',
+    comments: [{ body: 'Repro here', author: 'Ada', createdAt: '2026-07-02T00:00:00Z' }],
+  });
+
+  // The identifier-lookup shape (issues.nodes[0]) parses the same way.
+  const byIdent = { data: { issues: { nodes: [{ identifier: 'ENG-9', title: 'T', url: 'https://l/ENG-9', state: { name: 'Done' } }] } } };
+  assert.strictEqual(linear.parseIssue(byIdent).identifier, 'ENG-9');
+
+  // Missing / malformed issue → null.
+  assert.strictEqual(linear.parseIssue({ data: { issue: null } }), null);
+  assert.strictEqual(linear.parseIssue({}), null);
+  assert.strictEqual(linear.parseIssue({ data: { issue: { title: 'no identifier' } } }), null);
+
+  // briefFromIssue leads with the identifier + URL so the origin is preserved.
+  const brief = linear.briefFromIssue(issue);
+  assert.match(brief, /^Linear issue ENG-42 — https:\/\/l\/ENG-42/, 'identifier + url lead the brief');
+  assert.match(brief, /# Fix the thing/, 'title is included');
+  assert.match(brief, /It is broken\./, 'description is included');
+  assert.match(brief, /Repro here/, 'comment body is included');
 });
 
 test('runner: allowedTools normalizes and maps to --allowedTools', () => {
@@ -231,6 +320,41 @@ test('permissions: an unanswered prompt auto-denies after the timeout', async ()
     clearInterval(keepAlive);
     permissions._setTimeoutMs(permissions.DEFAULT_TIMEOUT_MS); // restore
   }
+});
+
+test('attachments: write/list/remove round-trips under the task dir and sanitizes traversal', () => {
+  const attachments = require('../server/attachments');
+  const taskId = 'attach-task-1';
+  const dir = attachments.attachmentsDir(taskId);
+
+  // A benign upload persists a file and reports its stored name/size.
+  const bytes = Buffer.from('hello attachment');
+  const { name, size } = attachments.write(taskId, 'notes.txt', bytes);
+  assert.strictEqual(name, 'notes.txt', 'keeps the basename');
+  assert.strictEqual(size, bytes.length, 'reports the byte length');
+  assert.ok(fs.existsSync(path.join(dir, 'notes.txt')), 'file is on disk under the task dir');
+
+  // listPaths yields absolute paths inside the task dir, skipping missing names.
+  const paths = attachments.listPaths(taskId, ['notes.txt', 'gone.txt']);
+  assert.deepStrictEqual(paths, [path.join(dir, 'notes.txt')], 'only existing files, absolute path');
+  assert.ok(path.isAbsolute(paths[0]), 'path is absolute');
+
+  // A path-traversal name is reduced to a safe basename inside the task dir.
+  const evil = attachments.write(taskId, '../../evil', Buffer.from('x'));
+  assert.strictEqual(evil.name, 'evil', 'traversal stripped to basename');
+  assert.ok(fs.existsSync(path.join(dir, 'evil')), 'lands inside the task dir');
+  assert.ok(!fs.existsSync(path.join(dir, '..', '..', 'evil')), 'never escapes the task dir');
+
+  // A collision disambiguates rather than overwriting.
+  const second = attachments.write(taskId, 'notes.txt', Buffer.from('other'));
+  assert.strictEqual(second.name, 'notes (2).txt', 'collision is suffixed');
+
+  // remove drops just the one file; removeDir clears the whole task dir.
+  attachments.remove(taskId, 'notes.txt');
+  assert.ok(!fs.existsSync(path.join(dir, 'notes.txt')), 'removed file is gone');
+  assert.ok(fs.existsSync(path.join(dir, 'evil')), 'siblings remain');
+  attachments.removeDir(taskId);
+  assert.ok(!fs.existsSync(dir), 'removeDir clears the task dir');
 });
 
 test('personas: sanitize keeps only known ids and preamble is prepended', () => {
