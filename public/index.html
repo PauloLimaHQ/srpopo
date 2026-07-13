@@ -6,6 +6,16 @@
   <title>Sr. Popo — Claude Code Orchestrator</title>
   <link rel="icon" type="image/png" href="logo.png" />
   <link rel="stylesheet" href="styles.css" />
+  <script>
+    // Apply the saved theme before first paint to avoid a flash of the wrong
+    // one. Absence of the key means "follow the system" (no data-theme attr).
+    (function () {
+      try {
+        var t = localStorage.getItem('srpopo.theme');
+        if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+      } catch (e) { /* storage unavailable — fall back to system */ }
+    })();
+  </script>
 </head>
 <body>
   <header class="topbar">
@@ -18,6 +28,7 @@
     </div>
     <div class="topbar-actions">
       <span id="health" class="health-chip" title="Claude CLI status">checking…</span>
+      <button class="btn ghost" id="btn-theme" title="Theme: System">🌗</button>
       <button class="btn ghost" id="btn-settings" title="Settings">⚙️</button>
       <button class="btn ghost" id="btn-repos">📁 Repos</button>
       <button class="btn ghost" id="btn-brief">💡 Brief an Idea</button>

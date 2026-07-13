@@ -18,13 +18,15 @@
   // plain browser we fall back to the Web Notifications API from here.
   const isElectron = !!(window.srpopo && window.srpopo.isElectron);
 
+  // Dot colors are mid-tones chosen to read on both the light "paper" and dark
+  // surfaces; running uses Claude's terracotta accent to match the theme.
   const COLUMNS = [
-    { key: 'backlog', label: 'Backlog', dot: '#8b93a8' },
-    { key: 'grooming', label: 'Grooming', dot: '#e879c9' },
-    { key: 'ready', label: 'Ready', dot: '#60a5fa' },
-    { key: 'running', label: 'Running', dot: '#e0a93e' },
-    { key: 'review', label: 'Review', dot: '#8b7cf6' },
-    { key: 'done', label: 'Done', dot: '#4ade80' },
+    { key: 'backlog', label: 'Backlog', dot: '#94897a' },
+    { key: 'grooming', label: 'Grooming', dot: '#c06fce' },
+    { key: 'ready', label: 'Ready', dot: '#5b8cbe' },
+    { key: 'running', label: 'Running', dot: '#d97757' },
+    { key: 'review', label: 'Review', dot: '#8a78d6' },
+    { key: 'done', label: 'Done', dot: '#5aa873' },
   ];
   // failed tasks are surfaced in the Review column with a FAILED badge
   const COLUMN_OF_STATUS = {
@@ -1145,6 +1147,45 @@
   }
   window.addEventListener('hashchange', handleHashDeeplink);
 
+  // ---------- theme ----------
+  // System → Light → Dark, persisted like the other lightweight prefs. The
+  // saved value is also read by an inline <head> script so the first paint
+  // already matches; here we keep the toggle button in sync and cycle it.
+  const THEME_KEY = 'srpopo.theme';
+  const THEME_CYCLE = ['system', 'light', 'dark'];
+  const THEME_ICON = { system: '🌗', light: '☀️', dark: '🌙' };
+  const THEME_LABEL = { system: 'System', light: 'Light', dark: 'Dark' };
+
+  function currentTheme() {
+    try {
+      const t = localStorage.getItem(THEME_KEY);
+      return t === 'light' || t === 'dark' ? t : 'system';
+    } catch { return 'system'; }
+  }
+  function applyTheme(mode) {
+    if (mode === 'light' || mode === 'dark') {
+      document.documentElement.setAttribute('data-theme', mode);
+    } else {
+      document.documentElement.removeAttribute('data-theme');
+    }
+    try {
+      if (mode === 'system') localStorage.removeItem(THEME_KEY);
+      else localStorage.setItem(THEME_KEY, mode);
+    } catch { /* storage unavailable — non-fatal */ }
+    const btn = $('#btn-theme');
+    if (btn) {
+      btn.textContent = THEME_ICON[mode];
+      btn.title = `Theme: ${THEME_LABEL[mode]} (click to change)`;
+    }
+  }
+  function initTheme() {
+    applyTheme(currentTheme());
+    $('#btn-theme').addEventListener('click', () => {
+      const next = THEME_CYCLE[(THEME_CYCLE.indexOf(currentTheme()) + 1) % THEME_CYCLE.length];
+      applyTheme(next);
+    });
+  }
+
   // ---------- boot ----------
   async function boot() {
     try {
@@ -1177,5 +1218,6 @@
     connectSSE();
   }
 
+  initTheme();
   boot();
 })();
