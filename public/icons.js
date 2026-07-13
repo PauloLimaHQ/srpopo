@@ -48,6 +48,8 @@
     shield: '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>',
     // linear — a rounded square with the concentric-corner motif of the Linear mark
     linear: '<rect x="3" y="3" width="18" height="18" rx="5"/><path d="M6 14a4 4 0 0 0 4 4"/><path d="M6 10a8 8 0 0 0 8 8"/><path d="M6 6a12 12 0 0 0 12 12"/>',
+    // paperclip — used for file attachments on a task
+    paperclip: '<path d="M13.234 20.252 21 12.3a4.24 4.24 0 0 0 0-6 4.24 4.24 0 0 0-6 0l-9.5 9.51a2.83 2.83 0 0 0 0 4 2.83 2.83 0 0 0 4 0l8.86-8.85a1.42 1.42 0 0 0 0-2 1.42 1.42 0 0 0-2 0l-7.94 7.94"/>',
   };
 
   // Render an icon as an inline <svg> string. `opts.spin` adds the spin class,

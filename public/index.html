@@ -87,6 +87,17 @@
       <label>Prompt for Claude
         <textarea id="task-prompt" rows="6" placeholder="Describe the task exactly as you would tell Claude Code…"></textarea>
       </label>
+      <div class="field-block">
+        <span class="field-label">Attachments <span class="field-hint">— files the run can Read by path</span></span>
+        <input type="file" id="task-file-input" multiple hidden />
+        <div id="task-dropzone" class="dropzone">
+          <span class="i" data-icon="paperclip"></span>
+          <span class="dropzone-text">Drag files here or
+            <button type="button" class="link-btn" id="task-add-files">add files</button>
+          </span>
+        </div>
+        <div id="task-attachment-list" class="attachment-list"></div>
+      </div>
       <div class="grid-2">
         <label>Model
           <select id="task-model">

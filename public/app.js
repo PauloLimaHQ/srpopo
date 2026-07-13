@@ -989,9 +989,81 @@
 
   // null => create mode; a task => edit that task.
   let editingTaskId = null;
+  // Attachments held for the modal: `staged` are File objects not yet uploaded
+  // (create mode — uploaded after the task exists); `saved` are Attachment
+  // entries already on the server (edit mode — removable via the delete route).
+  let stagedFiles = [];
+  let savedAttachments = [];
+
+  function renderAttachments() {
+    const rows = [];
+    savedAttachments.forEach((a) => {
+      rows.push(`<div class="attachment-row" data-saved="${esc(a.name)}">` +
+        `<span class="i" data-icon="paperclip"></span>` +
+        `<span class="attachment-name">${esc(a.name)}</span>` +
+        `<span class="attachment-size">${fmtBytes(a.size)}</span>` +
+        `<button type="button" class="icon-btn attachment-remove" data-remove-saved="${esc(a.name)}" ` +
+        `title="Remove" aria-label="Remove ${esc(a.name)}">${icon('x')}</button></div>`);
+    });
+    stagedFiles.forEach((f, i) => {
+      rows.push(`<div class="attachment-row" data-staged="${i}">` +
+        `<span class="i" data-icon="paperclip"></span>` +
+        `<span class="attachment-name">${esc(f.name)}</span>` +
+        `<span class="attachment-size">${fmtBytes(f.size)}</span>` +
+        `<button type="button" class="icon-btn attachment-remove" data-remove-staged="${i}" ` +
+        `title="Remove" aria-label="Remove ${esc(f.name)}">${icon('x')}</button></div>`);
+    });
+    const el = $('#task-attachment-list');
+    el.innerHTML = rows.join('');
+    if (window.srpopoIcons) window.srpopoIcons.hydrate(el);
+  }
+
+  function fmtBytes(n) {
+    if (!n) return '0 B';
+    const u = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.min(u.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
+    return `${(n / 1024 ** i).toFixed(i ? 1 : 0)} ${u[i]}`;
+  }
+
+  // Upload one File to a task's attachment route as raw bytes.
+  async function uploadAttachment(taskId, file) {
+    const res = await fetch(`/api/tasks/${taskId}/attachments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream', 'X-Filename': encodeURIComponent(file.name) },
+      body: file,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `Upload of ${file.name} failed (${res.status})`);
+    return data;
+  }
+
+  // Add files chosen via the picker or dropped on the zone. In edit mode they
+  // upload immediately; in create mode they stage until the task is created.
+  async function addFiles(fileList) {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+    if (editingTaskId) {
+      try {
+        let task;
+        for (const f of files) task = await uploadAttachment(editingTaskId, f);
+        if (task) {
+          state.tasks.set(task.id, task);
+          renderBoard();
+          savedAttachments = task.attachments || [];
+          renderAttachments();
+        }
+      } catch (e) { toast(e.message); }
+    } else {
+      stagedFiles.push(...files);
+      renderAttachments();
+    }
+  }
 
   function openTaskModal(task = null) {
     editingTaskId = task ? task.id : null;
+    stagedFiles = [];
+    savedAttachments = task ? (task.attachments || []).slice() : [];
+    renderAttachments();
     // In create mode, seed the form from the last task the user created.
     const last = task ? {} : loadLastUsed();
     refreshRepoSelect();
@@ -1045,7 +1117,11 @@
         if (!repoId) { toast('Add a repository first'); return; }
         task = await api('POST', '/api/tasks', { ...fields, repoId, status: run ? 'ready' : 'backlog' });
         saveLastUsed(fields, repoId);
+        // Uploads are keyed by task id, so they wait until the task exists.
+        for (const f of stagedFiles) task = await uploadAttachment(task.id, f);
+        stagedFiles = [];
       }
+      state.tasks.set(task.id, task);
       $('#modal-task').classList.add('hidden');
       if (run) await api('POST', `/api/tasks/${task.id}/dispatch`);
     } catch (e) { toast(e.message); }
@@ -1058,6 +1134,44 @@
   $('#task-add-repo').addEventListener('click', () => {
     $('#modal-task').classList.add('hidden');
     openReposModal();
+  });
+
+  // ---------- attachments (picker + drag-and-drop) ----------
+  $('#task-add-files').addEventListener('click', () => $('#task-file-input').click());
+  $('#task-file-input').addEventListener('change', (e) => {
+    addFiles(e.target.files);
+    e.target.value = ''; // let the same file be re-picked later
+  });
+  const dropzone = $('#task-dropzone');
+  ['dragover', 'dragenter'].forEach((ev) => dropzone.addEventListener(ev, (e) => {
+    e.preventDefault();
+    dropzone.classList.add('dragging');
+  }));
+  ['dragleave', 'dragend'].forEach((ev) => dropzone.addEventListener(ev, () => dropzone.classList.remove('dragging')));
+  dropzone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropzone.classList.remove('dragging');
+    if (e.dataTransfer && e.dataTransfer.files) addFiles(e.dataTransfer.files);
+  });
+  // Remove an attachment: staged files drop from the list; saved ones hit the delete route.
+  $('#task-attachment-list').addEventListener('click', async (e) => {
+    const staged = e.target.closest('[data-remove-staged]');
+    if (staged) {
+      stagedFiles.splice(Number(staged.dataset.removeStaged), 1);
+      renderAttachments();
+      return;
+    }
+    const saved = e.target.closest('[data-remove-saved]');
+    if (saved && editingTaskId) {
+      const name = saved.dataset.removeSaved;
+      try {
+        const task = await api('DELETE', `/api/tasks/${editingTaskId}/attachments/${encodeURIComponent(name)}`);
+        state.tasks.set(task.id, task);
+        renderBoard();
+        savedAttachments = task.attachments || [];
+        renderAttachments();
+      } catch (err) { toast(err.message); }
+    }
   });
 
   // ---------- brief an idea (grooming) ----------

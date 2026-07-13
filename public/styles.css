@@ -544,6 +544,35 @@ a.chip.pr:hover { border-color: currentColor; }
 .addon-hint { font-size: 11px; color: var(--text-dim); }
 .field-hint { font-weight: normal; font-size: 11px; color: var(--text-dim); }
 .addon input { width: auto; margin-top: 2px; }
+
+/* attachments */
+.field-block { display: flex; flex-direction: column; gap: 5px; }
+.field-label { font-size: 12px; color: var(--text-dim); }
+.dropzone {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px; border: 1px dashed var(--border); border-radius: 8px;
+  background: var(--bg-card); color: var(--text-dim); font-size: 12px;
+}
+.dropzone.dragging { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+.dropzone .icon { flex-shrink: 0; }
+.link-btn {
+  background: none; border: none; padding: 0; color: var(--accent);
+  font: inherit; cursor: pointer; text-decoration: underline;
+}
+.attachment-list { display: flex; flex-direction: column; gap: 4px; }
+.attachment-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg-card); font-size: 12px; color: var(--text);
+}
+.attachment-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-size { color: var(--text-dim); font-size: 11px; }
+.icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  background: none; border: none; padding: 2px; cursor: pointer;
+  color: var(--text-dim); border-radius: 4px;
+}
+.icon-btn:hover { background: var(--bg-hover); color: var(--text); }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .row { display: flex; gap: 8px; }
