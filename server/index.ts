@@ -95,6 +95,7 @@ function startGrooming(repo: Repo, brief: string, model: unknown, extra?: Partia
     personas: [],
     useWorktree: true,
     worktreePath: null,
+    branchName: null,
     branch: null,
     model: (model as string) || 'default',
     permissionMode: 'acceptEdits',
@@ -226,6 +227,15 @@ app.post('/api/repos', async (req: Request, res: Response) => {
   res.json(repo);
 });
 
+// Live lookup of the repo's current checked-out branch — refreshed on demand
+// (e.g. when the New Task / Brief modals open) rather than the snapshot taken
+// when the repo was added, which can go stale as the user switches branches.
+app.get('/api/repos/:id/branch', async (req: Request, res: Response) => {
+  const repo = db.repos.find((r) => r.id === req.params.id);
+  if (!repo) return err(res, 404, 'Repo not found');
+  res.json({ branch: await git.currentBranch(repo.path) });
+});
+
 app.delete('/api/repos/:id', (req: Request, res: Response) => {
   const idx = db.repos.findIndex((r) => r.id === req.params.id);
   if (idx === -1) return err(res, 404, 'Repo not found');
@@ -257,6 +267,7 @@ app.post('/api/tasks', (req: Request, res: Response) => {
     attachments: [],
     useWorktree: !!useWorktree,
     worktreePath: null,
+    branchName: req.body.branchName ? String(req.body.branchName).trim() : null,
     branch: null,
     model: model || 'default',
     permissionMode: permissionMode || 'acceptEdits',
@@ -301,7 +312,8 @@ app.post('/api/briefs', (req: Request, res: Response) => {
   if (atCapacity()) return err(res, 409, capacityError());
 
   try {
-    res.json(startGrooming(repo, brief, req.body.model));
+    const branchName = req.body.branchName ? String(req.body.branchName).trim() : null;
+    res.json(startGrooming(repo, brief, req.body.model, { branchName }));
   } catch (e) {
     err(res, 500, (e as Error).message);
   }
@@ -332,9 +344,16 @@ app.post('/api/linear/briefs', async (req: Request, res: Response) => {
   if (!result.ok) return linearFail(res, result.reason);
 
   const brief = linear.briefFromIssue(result.issue);
+  // Default the branch to the issue's own identifier (e.g. "abc-123") so it
+  // matches whatever convention the team already uses in Linear/GitHub; an
+  // explicit branchName from the caller still wins.
+  const branchName = req.body.branchName
+    ? String(req.body.branchName).trim()
+    : slugify(result.issue.identifier);
   try {
     res.json(startGrooming(repo, brief, req.body.model, {
       linearIssue: { identifier: result.issue.identifier, url: result.issue.url },
+      branchName,
     }));
   } catch (e) {
     err(res, 500, (e as Error).message);
@@ -346,7 +365,7 @@ app.patch('/api/tasks/:id', (req: Request, res: Response) => {
   if (!task) return err(res, 404, 'Task not found');
   if (runner.isRunning(task.id)) return err(res, 409, 'Task is running; stop it first');
 
-  const allowed = ['title', 'prompt', 'model', 'permissionMode', 'allowedTools', 'promptPermissions', 'useWorktree', 'status', 'addons', 'personas'] as const;
+  const allowed = ['title', 'prompt', 'model', 'permissionMode', 'allowedTools', 'promptPermissions', 'useWorktree', 'branchName', 'status', 'addons', 'personas'] as const;
   for (const key of allowed) {
     if (key in req.body) {
       if (key === 'addons') {
@@ -365,6 +384,9 @@ app.patch('/api/tasks/:id', (req: Request, res: Response) => {
         task.status = target;
       } else if (key === 'useWorktree' && task.worktreePath) {
         // worktree already materialized; ignore toggle
+      } else if (key === 'branchName') {
+        // Branch is fixed once the worktree is materialized; ignore edits after that.
+        if (!task.worktreePath) task.branchName = req.body.branchName ? String(req.body.branchName).trim() : null;
       } else {
         (task as unknown as Record<string, unknown>)[key] = req.body[key];
       }
@@ -435,7 +457,7 @@ app.post('/api/tasks/:id/dispatch', async (req: Request, res: Response) => {
 
   try {
     if (task.useWorktree && !task.worktreePath) {
-      const { wtPath, branch } = await git.addWorktree(task.repoPath, task.id, slugify(task.title));
+      const { wtPath, branch } = await git.addWorktree(task.repoPath, task.id, slugify(task.title), task.branchName);
       task.worktreePath = wtPath;
       task.branch = branch;
       save();

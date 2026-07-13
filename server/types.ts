@@ -79,6 +79,11 @@ export interface Task {
   attachments?: Attachment[];
   useWorktree: boolean;
   worktreePath: string | null;
+  // User-editable override for the worktree branch name (e.g. to match a repo's
+  // own branch convention or reuse a Linear issue's identifier). Only takes
+  // effect up to the point the worktree is materialized; null falls back to the
+  // auto-generated `srpopo/<slug>-<id>` name.
+  branchName: string | null;
   branch: string | null;
   model: string;
   permissionMode: string;

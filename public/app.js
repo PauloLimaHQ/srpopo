@@ -13,6 +13,7 @@
     settings: { notifications: true, sounds: true, maxParallelSessions: 3, installedPlugins: [] }, // user preferences (from /api/settings)
     filters: { search: '', repoIds: new Set() }, // board filters (project + text)
     prByTask: new Map(), // taskId -> 'loading' | { pr, reason } from /api/tasks/:id/pr
+    repoBranchByTask: new Map(), // taskId -> 'loading' | repo's live current branch (non-worktree tasks only)
     permissions: new Map(), // taskId -> [ pending tool-approval requests ]
   };
 
@@ -290,7 +291,7 @@
       `<span class="chip model">${esc(t.model === 'default' ? (t.resolvedModel || 'default') : t.model)}</span>`,
     ];
     if (t.status === 'grooming') chips.push(`<span class="chip grooming-chip" title="Grooming a rough idea into a task prompt">${icon('lightbulb')} grooming</span>`);
-    if (t.useWorktree) chips.push(`<span class="chip worktree" title="${esc(t.worktreePath || 'worktree on dispatch')}">${icon('git-branch')} ${esc(t.branch || 'worktree')}</span>`);
+    if (t.useWorktree) chips.push(`<span class="chip worktree" title="${esc(t.worktreePath || 'worktree on dispatch')}">${icon('git-branch')} ${esc(t.branch || t.branchName || 'worktree')}</span>`);
     if (t.addons && t.addons.includes('pull_request')) chips.push(`<span class="chip addon-chip" title="Opens a pull request when finished">${icon('git-pull-request')} PR</span>`);
     if (t.addons && t.addons.includes('code_review')) chips.push(`<span class="chip addon-chip" title="Self code-reviews and fixes issues before finishing">${icon('search')} review</span>`);
     (t.personas || []).forEach((pid) => {
@@ -388,6 +389,7 @@
       renderDrawerHead(task);
       renderPermissionPrompts(taskId);
       if (task.branch) refreshPr(task.id, true); // lazily fetch the PR when the drawer opens
+      if (!task.useWorktree) refreshRepoBranchForTask(task.id);
       $('#timeline').innerHTML = '';
       for (const ev of events) appendEvent(ev);
       scrollTimeline();
@@ -485,7 +487,13 @@
     if (t.linearIssue && t.linearIssue.identifier) {
       meta.push(`<a class="chip linear-chip" href="${esc(t.linearIssue.url)}" target="_blank" rel="noopener" title="Open in Linear">${icon('linear')} ${esc(t.linearIssue.identifier)}</a>`);
     }
-    if (t.worktreePath) meta.push(`<span class="chip worktree" title="${esc(t.worktreePath)}">${icon('git-branch')} ${esc(t.branch)}</span>`);
+    if (t.worktreePath) {
+      meta.push(`<span class="chip worktree" title="${esc(t.worktreePath)}">${icon('git-branch')} ${esc(t.branch)}</span>`);
+    } else if (t.useWorktree && t.branchName) {
+      meta.push(`<span class="chip worktree" title="Branch is created on dispatch">${icon('git-branch')} ${esc(t.branchName)} (planned)</span>`);
+    } else if (!t.useWorktree) {
+      meta.push(repoBranchChipHtml(t));
+    }
     if (t.sessionId) meta.push(`<span class="chip" title="session id">${esc(t.sessionId.slice(0, 8))}…</span>`);
     if (t.costUsd > 0) meta.push(`<span class="chip cost">$${t.costUsd.toFixed(2)} total</span>`);
     if (t.numTurns != null) meta.push(`<span class="chip">${t.numTurns} turns</span>`);
@@ -604,6 +612,29 @@
       res = { pr: null, reason: 'error' };
     }
     state.prByTask.set(taskId, res);
+    if (state.openTaskId === taskId) renderDrawerHead(state.tasks.get(taskId) || task);
+  }
+
+  // For a task that runs directly against the repo (no worktree), show the
+  // repo's live current branch — that's whatever branch the run will actually
+  // affect, and it can drift from the snapshot taken when the repo was added.
+  function repoBranchChipHtml(t) {
+    const res = state.repoBranchByTask.get(t.id);
+    if (res === undefined || res === 'loading') {
+      return `<span class="chip" title="Looking up the repo's current branch…">branch …</span>`;
+    }
+    if (!res) return '';
+    return `<span class="chip" title="This task runs directly on the repo's checked-out branch">${icon('git-branch')} ${esc(res)}</span>`;
+  }
+
+  async function refreshRepoBranchForTask(taskId) {
+    const task = state.tasks.get(taskId);
+    if (!task || task.useWorktree) return;
+    state.repoBranchByTask.set(taskId, 'loading');
+    if (state.openTaskId === taskId) renderDrawerHead(task);
+    let branch = null;
+    try { ({ branch } = await api('GET', `/api/repos/${task.repoId}/branch`)); } catch { /* stays null */ }
+    state.repoBranchByTask.set(taskId, branch);
     if (state.openTaskId === taskId) renderDrawerHead(state.tasks.get(taskId) || task);
   }
 
@@ -805,6 +836,20 @@
     sel.innerHTML = state.repos.length
       ? state.repos.map((r) => `<option value="${r.id}">${esc(r.name)} — ${esc(r.path)}</option>`).join('')
       : '<option value="">No repos yet — add one first</option>';
+  }
+
+  // Show the repo's live current branch (not the stale snapshot taken when it
+  // was added) next to a repo <select>, so the user knows what a non-worktree
+  // task would run against. `hintEl` is a <span> updated in place; a repo with
+  // no branch (detached HEAD, lookup failure) clears the hint quietly.
+  async function refreshRepoBranchHint(repoId, hintEl) {
+    if (!repoId) { hintEl.textContent = ''; return; }
+    try {
+      const { branch } = await api('GET', `/api/repos/${repoId}/branch`);
+      hintEl.textContent = branch ? `Repo is currently on ${branch}` : '';
+    } catch {
+      hintEl.textContent = '';
+    }
   }
 
   // Optional task behaviors — checkboxes derived from the /api/addons catalog.
@@ -1087,12 +1132,16 @@
     $('#task-worktree').checked = task ? !!task.useWorktree : (last.useWorktree ?? true);
     // A materialized worktree can't be toggled off; the repo can't move after creation.
     $('#task-worktree').disabled = !!(task && task.worktreePath);
+    $('#task-branch').value = task ? (task.branchName || '') : '';
+    // The branch is fixed once the worktree is materialized.
+    $('#task-branch').disabled = !!(task && task.worktreePath);
     renderAddonOptions(task ? (task.addons || []) : (last.addons || []));
     initPersonaPicker(task ? (task.personas || []) : (last.personas || []));
     $('#task-repo-field').classList.toggle('hidden', !!task);
     if (task) $('#task-repo').value = task.repoId;
     // Restore the last-used repo if it still exists in the current list.
     else if (last.repoId && state.repos.some((r) => r.id === last.repoId)) $('#task-repo').value = last.repoId;
+    refreshRepoBranchHint($('#task-repo').value, $('#task-repo-branch'));
 
     $('#task-modal-title').textContent = task ? 'Edit Task' : 'New Task';
     $('#task-create').textContent = task ? 'Save' : 'Create in Backlog';
@@ -1114,6 +1163,7 @@
       allowedTools: $('#task-allowed-tools').value,
       promptPermissions: $('#task-prompt-permissions').checked,
       useWorktree: $('#task-worktree').checked,
+      branchName: $('#task-branch').value.trim(),
       addons: selectedAddons(),
       personas: selectedPersonas(),
     };
@@ -1143,6 +1193,9 @@
   $('#task-add-repo').addEventListener('click', () => {
     $('#modal-task').classList.add('hidden');
     openReposModal();
+  });
+  $('#task-repo').addEventListener('change', () => {
+    refreshRepoBranchHint($('#task-repo').value, $('#task-repo-branch'));
   });
 
   // ---------- attachments (picker + drag-and-drop) ----------
@@ -1195,8 +1248,10 @@
     refreshBriefRepoSelect();
     const last = loadLastUsed();
     $('#brief-text').value = '';
+    $('#brief-branch').value = '';
     $('#brief-model').value = last.model || 'default';
     if (last.repoId && state.repos.some((r) => r.id === last.repoId)) $('#brief-repo').value = last.repoId;
+    refreshRepoBranchHint($('#brief-repo').value, $('#brief-repo-branch'));
     $('#modal-brief').classList.remove('hidden');
     $('#brief-text').focus();
   }
@@ -1207,7 +1262,9 @@
     if (!brief) { toast('Describe your idea first'); return; }
     if (!repoId) { toast('Add a repository first'); return; }
     try {
-      const task = await api('POST', '/api/briefs', { brief, repoId, model: $('#brief-model').value });
+      const task = await api('POST', '/api/briefs', {
+        brief, repoId, model: $('#brief-model').value, branchName: $('#brief-branch').value.trim(),
+      });
       $('#modal-brief').classList.add('hidden');
       toast('Grooming your idea into a task…', 'info');
       openDrawer(task.id);
@@ -1223,6 +1280,9 @@
   $('#brief-add-repo').addEventListener('click', () => {
     $('#modal-brief').classList.add('hidden');
     openReposModal();
+  });
+  $('#brief-repo').addEventListener('change', () => {
+    refreshRepoBranchHint($('#brief-repo').value, $('#brief-repo-branch'));
   });
 
   // ---------- create task from linear ----------
@@ -1248,8 +1308,10 @@
     refreshLinearRepoSelect();
     const last = loadLastUsed();
     $('#linear-issue-id').value = '';
+    $('#linear-branch').value = '';
     $('#linear-model').value = last.model || 'default';
     if (last.repoId && state.repos.some((r) => r.id === last.repoId)) $('#linear-repo').value = last.repoId;
+    refreshRepoBranchHint($('#linear-repo').value, $('#linear-repo-branch'));
     linearSelectedId = null;
     $('#linear-issue-list').innerHTML = '';
     renderLinearConfigState();
@@ -1284,6 +1346,11 @@
     if (!btn) return;
     linearSelectedId = btn.dataset.id;
     $('#linear-issue-id').value = btn.dataset.identifier;
+    // Suggest the issue's own identifier as the branch name unless the user
+    // already typed a custom one.
+    if (!$('#linear-branch').value.trim()) {
+      $('#linear-branch').value = btn.dataset.identifier.toLowerCase();
+    }
     for (const el of $('#linear-issue-list').querySelectorAll('.linear-issue')) el.classList.remove('selected');
     btn.classList.add('selected');
   });
@@ -1299,7 +1366,9 @@
     if (!repoId) { toast('Add a repository first'); return; }
     if (!issueId) { toast('Paste an issue ID or pick one from the list'); return; }
     try {
-      const task = await api('POST', '/api/linear/briefs', { issueId, repoId, model: $('#linear-model').value });
+      const task = await api('POST', '/api/linear/briefs', {
+        issueId, repoId, model: $('#linear-model').value, branchName: $('#linear-branch').value.trim(),
+      });
       $('#modal-linear').classList.add('hidden');
       toast('Importing the Linear issue…', 'info');
       openDrawer(task.id);
@@ -1316,6 +1385,9 @@
   $('#linear-add-repo').addEventListener('click', () => {
     $('#modal-linear').classList.add('hidden');
     openReposModal();
+  });
+  $('#linear-repo').addEventListener('change', () => {
+    refreshRepoBranchHint($('#linear-repo').value, $('#linear-repo-branch'));
   });
   $('#linear-open-settings').addEventListener('click', () => {
     $('#modal-linear').classList.add('hidden');
