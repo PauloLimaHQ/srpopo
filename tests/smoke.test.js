@@ -29,8 +29,45 @@ test('server modules load without throwing', () => {
     require('../server/addons');
     require('../server/personas');
     require('../server/groomer');
+    require('../server/github');
     require('../server/index');
   });
+});
+
+test('github: module exports prForTask and a pure parsePrList helper', () => {
+  const github = require('../server/github');
+  assert.strictEqual(typeof github.prForTask, 'function', 'prForTask is exported');
+  assert.strictEqual(typeof github.parsePrList, 'function', 'parsePrList is exported');
+});
+
+test('github: a task with no branch resolves to no-branch without invoking gh', async () => {
+  const github = require('../server/github');
+  // No branch means we must never spawn `gh`; a bogus path would fail loudly if we did.
+  const res = await github.prForTask({ branch: null, repoPath: '/nonexistent/repo' });
+  assert.deepStrictEqual(res, { pr: null, reason: 'no-branch' });
+});
+
+test('github: parsePrList normalizes a gh payload and handles the empty list', () => {
+  const github = require('../server/github');
+
+  // Success: first PR, state lower-cased, draftness kept separate.
+  const payload = JSON.stringify([
+    { number: 42, url: 'https://github.com/o/r/pull/42', state: 'OPEN', title: 'Add X', isDraft: true, updatedAt: '2026-07-13T00:00:00Z' },
+  ]);
+  assert.deepStrictEqual(github.parsePrList(payload), {
+    number: 42,
+    url: 'https://github.com/o/r/pull/42',
+    title: 'Add X',
+    state: 'open',
+    isDraft: true,
+    updatedAt: '2026-07-13T00:00:00Z',
+  });
+
+  // Empty list / non-array / garbage → null (never a partial PR).
+  assert.strictEqual(github.parsePrList('[]'), null, 'empty list yields null');
+  assert.strictEqual(github.parsePrList('not json'), null, 'unparsable yields null');
+  assert.strictEqual(github.parsePrList('{}'), null, 'non-array yields null');
+  assert.strictEqual(github.parsePrList(JSON.stringify([{ url: 'x' }])), null, 'a PR without a number is rejected');
 });
 
 test('runner: allowedTools normalizes and maps to --allowedTools', () => {
