@@ -30,16 +30,21 @@ async function currentBranch(repoPath: string): Promise<string | null> {
   }
 }
 
-// Creates a worktree with a new branch off the repo's current HEAD.
+// Creates a worktree with a new branch off the repo's current HEAD. `branchOverride`,
+// when given, is used verbatim as the branch name (e.g. a repo's own naming
+// convention, or a Linear issue identifier) instead of the auto-generated one;
+// the worktree directory name is still derived from the task's slug/id so it
+// stays filesystem-safe regardless of what the branch name looks like.
 async function addWorktree(
   repoPath: string,
   taskId: string,
   slug: string,
+  branchOverride?: string | null,
 ): Promise<{ wtPath: string; branch: string }> {
   fs.mkdirSync(WORKTREES_DIR, { recursive: true });
   const repoName = path.basename(repoPath);
   const wtPath = path.join(WORKTREES_DIR, `${repoName}--${slug}-${taskId}`);
-  const branch = `srpopo/${slug}-${taskId}`;
+  const branch = branchOverride?.trim() || `srpopo/${slug}-${taskId}`;
   await git(repoPath, ['worktree', 'add', wtPath, '-b', branch]);
   return { wtPath, branch };
 }

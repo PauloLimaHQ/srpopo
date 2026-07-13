@@ -80,6 +80,7 @@
           <select id="task-repo"></select>
           <button class="btn ghost" id="task-add-repo" title="Add a repository" aria-label="Add a repository"><span class="i" data-icon="plus"></span></button>
         </div>
+        <span id="task-repo-branch" class="field-hint"></span>
       </label>
       <label>Title
         <input id="task-title" placeholder="e.g. Add dark mode toggle" maxlength="120" />
@@ -150,6 +151,9 @@
             <span class="addon-hint">Work on a dedicated branch <code>srpopo/&lt;task&gt;</code> instead of the repo's current branch.</span>
           </span>
         </label>
+        <label id="task-branch-field">Branch name <span class="field-hint">— optional, defaults to <code>srpopo/&lt;task&gt;-&lt;id&gt;</code></span>
+          <input id="task-branch" type="text" placeholder="e.g. feature/ABC-123, matching your repo's convention" />
+        </label>
         <label class="check addon">
           <input type="checkbox" id="task-prompt-permissions" checked />
           <span class="addon-text">
@@ -178,10 +182,14 @@
           <select id="brief-repo"></select>
           <button class="btn ghost" id="brief-add-repo" title="Add a repository" aria-label="Add a repository"><span class="i" data-icon="plus"></span></button>
         </div>
+        <span id="brief-repo-branch" class="field-hint"></span>
       </label>
       <label>Your idea
         <textarea id="brief-text" rows="5"
                   placeholder="e.g. it'd be nice to archive all Done tasks in one click"></textarea>
+      </label>
+      <label>Branch name <span class="field-hint">— optional, defaults to <code>srpopo/&lt;task&gt;-&lt;id&gt;</code></span>
+        <input id="brief-branch" type="text" placeholder="e.g. feature/ABC-123, matching your repo's convention" />
       </label>
       <label>Model <span class="field-hint">— used for the grooming session</span>
         <select id="brief-model">
@@ -216,9 +224,13 @@
             <select id="linear-repo"></select>
             <button class="btn ghost" id="linear-add-repo" title="Add a repository" aria-label="Add a repository"><span class="i" data-icon="plus"></span></button>
           </div>
+          <span id="linear-repo-branch" class="field-hint"></span>
         </label>
         <label>Issue ID
           <input id="linear-issue-id" placeholder="e.g. ABC-123" autocomplete="off" />
+        </label>
+        <label>Branch name <span class="field-hint">— defaults to the issue's own identifier</span>
+          <input id="linear-branch" type="text" placeholder="e.g. abc-123" />
         </label>
         <div class="linear-browse">
           <div class="linear-browse-head">
