@@ -95,6 +95,38 @@ async function worktreeStatus(wtPath: string): Promise<{ dirty: boolean; files: 
   }
 }
 
+// Lists every worktree `git worktree list` knows about for a repo, except the
+// main one (whose path is the repo itself) — ground truth for what's actually
+// checked out on disk, since a task's own `worktreePath` can go stale (removed
+// externally, etc.). Each entry is annotated with its dirty/file-count status.
+async function listWorktrees(repoPath: string): Promise<{ path: string; branch: string | null; dirty: boolean; files: number }[]> {
+  let out: string;
+  try {
+    out = await git(repoPath, ['worktree', 'list', '--porcelain']);
+  } catch {
+    return [];
+  }
+
+  const entries: { path: string; branch: string | null }[] = [];
+  let current: { path: string; branch: string | null } | null = null;
+  for (const line of out.split('\n')) {
+    if (line.startsWith('worktree ')) {
+      current = { path: line.slice('worktree '.length).trim(), branch: null };
+      entries.push(current);
+    } else if (line.startsWith('branch ') && current) {
+      current.branch = line.slice('branch '.length).trim().replace(/^refs\/heads\//, '');
+    }
+  }
+
+  const others = entries.filter((e) => e.path !== repoPath);
+  const results = [];
+  for (const e of others) {
+    const status = await worktreeStatus(e.path);
+    results.push({ path: e.path, branch: e.branch, dirty: status?.dirty ?? false, files: status?.files ?? 0 });
+  }
+  return results;
+}
+
 export {
   isGitRepo,
   currentBranch,
@@ -102,5 +134,6 @@ export {
   addWorktree,
   removeWorktree,
   worktreeStatus,
+  listWorktrees,
   WORKTREES_DIR,
 };

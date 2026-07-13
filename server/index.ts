@@ -9,7 +9,7 @@ import type { AddressInfo } from 'net';
 import { db, save, id, now, readLog, getTask, getRepo } from './store';
 import { broadcast, sse } from './bus';
 import { appRoot } from './paths';
-import type { Task, Attachment, Repo, PublicSettings } from './types';
+import type { Task, Attachment, Repo, PublicSettings, WorktreeInfo } from './types';
 import * as git from './git';
 import * as runner from './runner';
 import * as attachments from './attachments';
@@ -234,6 +234,27 @@ app.get('/api/repos/:id/branch', async (req: Request, res: Response) => {
   const repo = db.repos.find((r) => r.id === req.params.id);
   if (!repo) return err(res, 404, 'Repo not found');
   res.json({ branch: await git.currentBranch(repo.path) });
+});
+
+// Live worktree list for a repo, sourced from `git worktree list` (ground
+// truth) rather than stored task.worktreePath values, which can go stale.
+app.get('/api/repos/:id/worktrees', async (req: Request, res: Response) => {
+  const repo = db.repos.find((r) => r.id === req.params.id);
+  if (!repo) return err(res, 404, 'Repo not found');
+  const entries = await git.listWorktrees(repo.path);
+  const worktrees: WorktreeInfo[] = entries.map((e) => {
+    const task = db.tasks.find((t) => t.worktreePath === e.path);
+    return {
+      path: e.path,
+      branch: e.branch,
+      dirty: e.dirty,
+      files: e.files,
+      taskId: task?.id ?? null,
+      taskTitle: task?.title ?? null,
+      taskStatus: task?.status ?? null,
+    };
+  });
+  res.json({ worktrees });
 });
 
 app.delete('/api/repos/:id', (req: Request, res: Response) => {

@@ -51,6 +51,19 @@ export interface Repo {
   addedAt: string;
 }
 
+// A live worktree on disk for a repo, as reported by `git worktree list`
+// (ground truth — a task's own `worktreePath` can go stale). Cross-referenced
+// against db.tasks by path to attach the owning task, if any.
+export interface WorktreeInfo {
+  path: string;
+  branch: string | null;
+  dirty: boolean;
+  files: number;
+  taskId: string | null;
+  taskTitle: string | null;
+  taskStatus: TaskStatus | null;
+}
+
 export type TaskStatus =
   | 'backlog'
   | 'ready'

@@ -38,18 +38,27 @@
     </div>
   </header>
 
-  <div class="filterbar" id="filterbar">
+  <div id="workspace-header" class="workspace-header hidden">
+    <button class="btn ghost" id="workspace-back"><span class="i" data-icon="arrow-left"></span>Super View</button>
+    <div class="workspace-header-title">
+      <span id="workspace-title" class="workspace-title"></span>
+      <span id="workspace-branch-chip"></span>
+    </div>
+    <button class="btn ghost icon" id="workspace-info" title="Workspace details" aria-label="Workspace details"><span class="i" data-icon="info"></span></button>
+  </div>
+
+  <div class="filterbar hidden" id="filterbar">
     <div class="filter-search">
       <span class="filter-search-icon" data-icon="search"></span>
       <input id="filter-search" type="search" placeholder="Filter tasks…  ( / )" autocomplete="off" />
     </div>
-    <div class="filter-repos" id="filter-repos"></div>
     <button class="filter-clear hidden" id="filter-clear" title="Clear filters">Clear<span class="i" data-icon="x"></span></button>
     <span class="filter-count" id="filter-count"></span>
   </div>
 
   <main>
-    <div id="board" class="board"></div>
+    <div id="super-view" class="super-view"></div>
+    <div id="board" class="board hidden"></div>
   </main>
 
   <!-- Task detail drawer -->
@@ -329,6 +338,23 @@
       <ul id="repo-list" class="repo-list"></ul>
       <div class="modal-actions">
         <button class="btn ghost" id="repos-close">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Workspace details popover (path, branch, live worktrees) -->
+  <div id="modal-workspace" class="modal hidden">
+    <div class="modal-box">
+      <h2 id="workspace-modal-title">Workspace</h2>
+      <div class="workspace-info-rows">
+        <div class="workspace-info-row"><span class="field-label">Path</span><span id="workspace-info-path" class="mono"></span></div>
+        <div class="workspace-info-row"><span class="field-label">Repository</span><span id="workspace-info-name"></span></div>
+        <div class="workspace-info-row"><span class="field-label">Branch</span><span id="workspace-info-branch"></span></div>
+      </div>
+      <span class="field-label">Live worktrees</span>
+      <div id="workspace-worktree-list" class="worktree-list"></div>
+      <div class="modal-actions">
+        <button class="btn ghost" id="workspace-modal-close">Close</button>
       </div>
     </div>
   </div>
