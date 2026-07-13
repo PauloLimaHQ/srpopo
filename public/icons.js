@@ -50,6 +50,10 @@
     linear: '<rect x="3" y="3" width="18" height="18" rx="5"/><path d="M6 14a4 4 0 0 0 4 4"/><path d="M6 10a8 8 0 0 0 8 8"/><path d="M6 6a12 12 0 0 0 12 12"/>',
     // paperclip — used for file attachments on a task
     paperclip: '<path d="M13.234 20.252 21 12.3a4.24 4.24 0 0 0 0-6 4.24 4.24 0 0 0-6 0l-9.5 9.51a2.83 2.83 0 0 0 0 4 2.83 2.83 0 0 0 4 0l8.86-8.85a1.42 1.42 0 0 0 0-2 1.42 1.42 0 0 0-2 0l-7.94 7.94"/>',
+    // command — used for the search/command-palette entry point (⌘K)
+    command: '<path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3"/>',
+    // keyboard — used for the keyboard-shortcuts help modal
+    keyboard: '<path d="M10 8h.01"/><path d="M12 12h.01"/><path d="M14 8h.01"/><path d="M16 12h.01"/><path d="M18 8h.01"/><path d="M6 8h.01"/><path d="M7 16h10"/><path d="M8 12h.01"/><rect width="20" height="16" x="2" y="4" rx="2"/>',
   };
 
   // Render an icon as an inline <svg> string. `opts.spin` adds the spin class,
