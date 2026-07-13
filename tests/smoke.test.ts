@@ -233,6 +233,41 @@ test('permissions: an unanswered prompt auto-denies after the timeout', async ()
   }
 });
 
+test('attachments: write/list/remove round-trips under the task dir and sanitizes traversal', () => {
+  const attachments = require('../server/attachments');
+  const taskId = 'attach-task-1';
+  const dir = attachments.attachmentsDir(taskId);
+
+  // A benign upload persists a file and reports its stored name/size.
+  const bytes = Buffer.from('hello attachment');
+  const { name, size } = attachments.write(taskId, 'notes.txt', bytes);
+  assert.strictEqual(name, 'notes.txt', 'keeps the basename');
+  assert.strictEqual(size, bytes.length, 'reports the byte length');
+  assert.ok(fs.existsSync(path.join(dir, 'notes.txt')), 'file is on disk under the task dir');
+
+  // listPaths yields absolute paths inside the task dir, skipping missing names.
+  const paths = attachments.listPaths(taskId, ['notes.txt', 'gone.txt']);
+  assert.deepStrictEqual(paths, [path.join(dir, 'notes.txt')], 'only existing files, absolute path');
+  assert.ok(path.isAbsolute(paths[0]), 'path is absolute');
+
+  // A path-traversal name is reduced to a safe basename inside the task dir.
+  const evil = attachments.write(taskId, '../../evil', Buffer.from('x'));
+  assert.strictEqual(evil.name, 'evil', 'traversal stripped to basename');
+  assert.ok(fs.existsSync(path.join(dir, 'evil')), 'lands inside the task dir');
+  assert.ok(!fs.existsSync(path.join(dir, '..', '..', 'evil')), 'never escapes the task dir');
+
+  // A collision disambiguates rather than overwriting.
+  const second = attachments.write(taskId, 'notes.txt', Buffer.from('other'));
+  assert.strictEqual(second.name, 'notes (2).txt', 'collision is suffixed');
+
+  // remove drops just the one file; removeDir clears the whole task dir.
+  attachments.remove(taskId, 'notes.txt');
+  assert.ok(!fs.existsSync(path.join(dir, 'notes.txt')), 'removed file is gone');
+  assert.ok(fs.existsSync(path.join(dir, 'evil')), 'siblings remain');
+  attachments.removeDir(taskId);
+  assert.ok(!fs.existsSync(dir), 'removeDir clears the task dir');
+});
+
 test('personas: sanitize keeps only known ids and preamble is prepended', () => {
   const personas = require('../server/personas');
   const ids = personas.catalog().map((p: { id: string }) => p.id);

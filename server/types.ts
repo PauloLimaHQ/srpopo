@@ -38,6 +38,9 @@ export interface Task {
   repoPath: string;
   addons: string[];
   personas: string[];
+  // Files the user attached; bytes live under DATA_DIR/attachments/<id>/<name>,
+  // managed only through the upload/delete routes (never the PATCH allowlist).
+  attachments?: Attachment[];
   useWorktree: boolean;
   worktreePath: string | null;
   branch: string | null;
@@ -63,6 +66,14 @@ export interface Task {
   // Annotated onto GET /api/state responses so a reconnecting board rebuilds any
   // live tool-approval prompts. Never persisted to db.json.
   pendingPermissions?: PublicPermissionRequest[];
+}
+
+// A file attached to a task. `name` is the stored (sanitized) basename under
+// DATA_DIR/attachments/<taskId>/; `size` is the byte length as written.
+export interface Attachment {
+  name: string;
+  size: number;
+  addedAt: string;
 }
 
 export interface Db {
