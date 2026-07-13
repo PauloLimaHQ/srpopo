@@ -68,6 +68,23 @@ function parsePrList(stdout: string): PrInfo | null {
   };
 }
 
+// Merge the PR associated with a task's head branch via `gh pr merge`. Looks the
+// PR up first (reusing prForTask) so the caller doesn't have to pass a number and
+// an already-merged PR is a no-op. Returns a typed, non-throwing result mirroring
+// prForTask; a failed merge carries the reason plus `gh`'s stderr for the UI.
+async function mergePrForTask(
+  task: Partial<Task>,
+): Promise<{ ok: boolean; alreadyMerged?: boolean; reason?: string; message?: string }> {
+  const found = await prForTask(task);
+  if (!found.pr) return { ok: false, reason: found.reason || 'no-pr' };
+  if (found.pr.state === 'merged') return { ok: true, alreadyMerged: true };
+
+  const cwd = (task && (task.worktreePath || task.repoPath)) || undefined;
+  const res = await gh(cwd, ['pr', 'merge', String(found.pr.number), '--merge']);
+  if (res.err) return { ok: false, reason: classifyError(res), message: res.stderr.trim() || undefined };
+  return { ok: true };
+}
+
 // Resolve the PR (if any) associated with a task's head branch. Returns a typed,
 // non-throwing result: { pr: {...} } on success, otherwise { pr: null, reason }.
 async function prForTask(task: Partial<Task>): Promise<{ pr: PrInfo | null; reason?: string }> {
@@ -89,4 +106,4 @@ async function prForTask(task: Partial<Task>): Promise<{ pr: PrInfo | null; reas
   return { pr };
 }
 
-export { prForTask, parsePrList, PR_JSON_FIELDS };
+export { prForTask, mergePrForTask, parsePrList, PR_JSON_FIELDS };

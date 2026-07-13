@@ -257,6 +257,34 @@ app.get('/api/repos/:id/worktrees', async (req: Request, res: Response) => {
   res.json({ worktrees });
 });
 
+// Removes a worktree by path, e.g. from the Workspace popover's live list.
+// Unlike POST /api/tasks/:id/worktree/remove (which only clears a task's own
+// worktree), this also handles orphaned worktrees that have no owning task
+// (task deleted/archived while the worktree survived, or one created outside
+// Sr. Popo). The path is checked against `git worktree list` for the repo
+// first so this can't be pointed at an arbitrary filesystem path.
+app.post('/api/repos/:id/worktrees/remove', async (req: Request, res: Response) => {
+  const repo = db.repos.find((r) => r.id === req.params.id);
+  if (!repo) return err(res, 404, 'Repo not found');
+  const wtPath = String(req.body?.path || '');
+  const live = await git.listWorktrees(repo.path);
+  if (!live.some((w) => w.path === wtPath)) return err(res, 404, 'Worktree not found');
+  const task = db.tasks.find((t) => t.worktreePath === wtPath);
+  if (task && runner.isRunning(task.id)) return err(res, 409, 'Stop the task first');
+  try {
+    await git.removeWorktree(repo.path, wtPath);
+    if (task) {
+      task.worktreePath = null;
+      task.updatedAt = now();
+      broadcast({ type: 'task', task });
+    }
+    save();
+    res.json({ ok: true });
+  } catch (e) {
+    err(res, 500, (e as Error).message);
+  }
+});
+
 app.delete('/api/repos/:id', (req: Request, res: Response) => {
   const idx = db.repos.findIndex((r) => r.id === req.params.id);
   if (idx === -1) return err(res, 404, 'Repo not found');
@@ -599,6 +627,18 @@ app.get('/api/tasks/:id/pr', async (req: Request, res: Response) => {
   const task = getTask(req.params.id);
   if (!task) return err(res, 404, 'Task not found');
   res.json(await github.prForTask(task));
+});
+
+// Merge the task's open PR via `gh pr merge`. Used by the "Move to Done" flow so
+// a task can be wrapped up — merge, then optionally drop its worktree — in one
+// step. Non-throwing at the github layer; a failed merge maps to a 502 the board
+// surfaces as a toast (an already-merged PR just succeeds).
+app.post('/api/tasks/:id/pr/merge', async (req: Request, res: Response) => {
+  const task = getTask(req.params.id);
+  if (!task) return err(res, 404, 'Task not found');
+  const result = await github.mergePrForTask(task);
+  if (!result.ok) return err(res, 502, result.message || 'Could not merge the pull request');
+  res.json({ ok: true, alreadyMerged: !!result.alreadyMerged });
 });
 
 app.get('/api/tasks/:id/worktree/status', async (req: Request, res: Response) => {

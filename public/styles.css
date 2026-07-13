@@ -292,6 +292,7 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
 .worktree-dot.dirty { background: var(--accent); }
 .worktree-branch { font-family: var(--mono); font-size: 11px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .worktree-task-link { cursor: pointer; }
+.worktree-row .btn { flex: none; padding: 3px 8px; font-size: 11px; }
 
 /* ── board ── */
 .board {
@@ -654,6 +655,22 @@ a.chip.pr:hover { border-color: currentColor; }
 .addon-hint { font-size: 11px; color: var(--text-dim); }
 .field-hint { font-weight: normal; font-size: 11px; color: var(--text-dim); }
 .addon input { width: auto; margin-top: 2px; }
+
+/* move-to-done wrap-up options */
+.done-options { display: flex; flex-direction: column; gap: 8px; margin: 4px 0; }
+.done-option {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg-card); cursor: pointer;
+}
+.done-option:hover { border-color: var(--accent); background: var(--accent-soft); }
+.done-option input { width: auto; margin-top: 2px; flex: none; }
+.done-option-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.done-option-label { font-size: 13px; color: var(--text); }
+.done-option-hint {
+  font-size: 11px; color: var(--text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 /* attachments */
 .field-block { display: flex; flex-direction: column; gap: 5px; }

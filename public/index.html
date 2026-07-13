@@ -359,6 +359,19 @@
     </div>
   </div>
 
+  <!-- Move-to-Done modal: confirm any wrap-up steps (merge PR, delete worktree) -->
+  <div id="modal-done" class="modal hidden">
+    <div class="modal-box">
+      <h2>Move to Done</h2>
+      <p class="muted" id="done-modal-sub"></p>
+      <div id="done-modal-options" class="done-options"></div>
+      <div class="modal-actions">
+        <button class="btn ghost" id="done-modal-cancel">Cancel</button>
+        <button class="btn primary" id="done-modal-confirm">Move to Done</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Follow-up modal (re-dispatch a finished task) -->
   <div id="modal-followup" class="modal hidden">
     <div class="modal-box">

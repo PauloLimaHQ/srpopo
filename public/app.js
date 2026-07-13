@@ -398,14 +398,18 @@
     const el = $('#workspace-worktree-list');
     if (!Array.isArray(list)) { el.innerHTML = '<div class="muted">Loading…</div>'; return; }
     if (!list.length) { el.innerHTML = '<div class="muted">No live worktrees.</div>'; return; }
-    el.innerHTML = list.map((w) => `
+    el.innerHTML = list.map((w) => {
+      const live = w.taskId && (w.taskStatus === 'running' || w.taskStatus === 'grooming');
+      return `
       <div class="worktree-row">
         <span class="worktree-dot ${w.dirty ? 'dirty' : 'clean'}" title="${w.dirty ? 'Uncommitted changes' : 'Clean'}"></span>
         <span class="worktree-branch">${esc(w.branch || '(detached)')}</span>
         ${w.taskId
           ? `<span class="chip worktree-task-link" data-task-link="${esc(w.taskId)}">${esc(w.taskTitle)} · ${esc(w.taskStatus)}</span>`
           : '<span class="muted">no task</span>'}
-      </div>`).join('');
+        ${live ? '' : `<button class="btn ghost danger" data-rm-wt="${esc(w.path)}" title="${w.dirty ? 'Has uncommitted changes' : 'Remove this worktree'}">Remove</button>`}
+      </div>`;
+    }).join('');
   }
 
   function openWorkspacePopover() {
@@ -424,9 +428,20 @@
   $('#workspace-back').addEventListener('click', exitWorkspace);
   $('#workspace-info').addEventListener('click', openWorkspacePopover);
   $('#workspace-modal-close').addEventListener('click', () => $('#modal-workspace').classList.add('hidden'));
-  $('#workspace-worktree-list').addEventListener('click', (e) => {
+  $('#workspace-worktree-list').addEventListener('click', async (e) => {
     const id = e.target.closest('[data-task-link]')?.dataset.taskLink;
-    if (id) { $('#modal-workspace').classList.add('hidden'); openDrawer(id); }
+    if (id) { $('#modal-workspace').classList.add('hidden'); openDrawer(id); return; }
+    const wtPath = e.target.closest('[data-rm-wt]')?.dataset.rmWt;
+    if (!wtPath) return;
+    if (!confirm(`Remove worktree?\n${wtPath}\n\nThis discards any uncommitted changes in it.`)) return;
+    const repoId = state.view.repoId;
+    try {
+      await api('POST', `/api/repos/${repoId}/worktrees/remove`, { path: wtPath });
+      toast('Worktree removed', 'info');
+      await refreshRepoWorktreesCard(repoId, true);
+    } catch (e2) {
+      toast(e2.message || 'Failed to remove worktree', 'error');
+    }
   });
 
   function renderCard(t) {
@@ -508,11 +523,105 @@
         } else if (t.sessionId) {
           openFollowupModal(t); // finished tasks continue their session
         }
+      } else if (colKey === 'done' && t.status !== 'running') {
+        await moveToDone(t);
       } else if (t.status !== 'running') {
         await api('PATCH', `/api/tasks/${t.id}`, { status: colKey });
       }
     } catch (e) { toast(e.message); }
   }
+
+  // Moving a task to Done can carry two optional wrap-up steps: merge its open PR
+  // and/or delete its worktree. We surface whichever actually apply as checkboxes
+  // (see openDoneModal). If neither applies the move happens straight away — no
+  // dialog for the common case.
+  async function moveToDone(t) {
+    const options = [];
+    if (t.worktreePath) {
+      options.push({
+        id: 'delete-worktree',
+        label: 'Delete the worktree',
+        hint: t.worktreePath,
+      });
+    }
+    // An unmerged PR is only meaningful for a task that has a resolved branch.
+    // Look it up fresh (the cached value may be stale or absent) so the prompt
+    // reflects the PR's real state at the moment of the move.
+    if (t.branch) {
+      let res = state.prByTask.get(t.id);
+      if (!res || res === 'loading') {
+        try {
+          res = await api('GET', `/api/tasks/${t.id}/pr`);
+          state.prByTask.set(t.id, res);
+        } catch { res = null; }
+      }
+      if (res && res.pr && res.pr.state !== 'merged') {
+        options.push({
+          id: 'merge-pr',
+          label: `Merge PR #${res.pr.number}`,
+          hint: res.pr.title || '',
+        });
+      }
+    }
+    if (!options.length) {
+      await api('PATCH', `/api/tasks/${t.id}`, { status: 'done' });
+      return;
+    }
+    openDoneModal(t, options);
+  }
+
+  // Renders the applicable wrap-up steps as unchecked checkboxes. Cancel leaves
+  // the task where it is; confirming with nothing checked just moves it; any
+  // checked step runs (merge before worktree removal, so `gh` still has the
+  // worktree to run in) before the move.
+  let doneModalCtx = null;
+  function openDoneModal(t, options) {
+    doneModalCtx = { task: t, options };
+    $('#done-modal-sub').textContent =
+      `“${t.title}” — choose any wrap-up steps to run, then it moves to Done.`;
+    $('#done-modal-options').innerHTML = options.map((o) =>
+      `<label class="done-option">` +
+      `<input type="checkbox" data-done-opt="${esc(o.id)}" />` +
+      `<span class="done-option-text"><span class="done-option-label">${esc(o.label)}</span>` +
+      (o.hint ? `<span class="done-option-hint">${esc(o.hint)}</span>` : '') +
+      `</span></label>`,
+    ).join('');
+    $('#done-modal-confirm').disabled = false;
+    $('#modal-done').classList.remove('hidden');
+  }
+
+  $('#done-modal-cancel').addEventListener('click', () => {
+    $('#modal-done').classList.add('hidden');
+    doneModalCtx = null;
+  });
+  $('#done-modal-confirm').addEventListener('click', async () => {
+    if (!doneModalCtx) return;
+    const { task, options } = doneModalCtx;
+    const checked = new Set(
+      [...document.querySelectorAll('#done-modal-options input[data-done-opt]:checked')]
+        .map((el) => el.dataset.doneOpt),
+    );
+    const btn = $('#done-modal-confirm');
+    btn.disabled = true;
+    try {
+      // Merge first: worktree removal below would take away the dir `gh` runs in.
+      if (checked.has('merge-pr') && options.some((o) => o.id === 'merge-pr')) {
+        await api('POST', `/api/tasks/${task.id}/pr/merge`);
+        state.prByTask.delete(task.id); // force a fresh PR status next render
+        toast('Pull request merged', 'info');
+      }
+      if (checked.has('delete-worktree') && options.some((o) => o.id === 'delete-worktree')) {
+        await api('POST', `/api/tasks/${task.id}/worktree/remove`);
+        toast('Worktree removed', 'info');
+      }
+      await api('PATCH', `/api/tasks/${task.id}`, { status: 'done' });
+      $('#modal-done').classList.add('hidden');
+      doneModalCtx = null;
+    } catch (e) {
+      toast(e.message, 'error');
+      btn.disabled = false;
+    }
+  });
 
   async function stopTask(id) {
     try { await api('POST', `/api/tasks/${id}/stop`); } catch (e) { toast(e.message); }

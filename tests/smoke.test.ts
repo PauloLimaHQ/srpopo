@@ -53,9 +53,10 @@ test('plugins: catalog lists Linear and sanitize keeps only known ids', () => {
   assert.deepStrictEqual(plugins.sanitize(['linear', 'linear']), ['linear'], 'ids deduped');
 });
 
-test('github: module exports prForTask and a pure parsePrList helper', () => {
+test('github: module exports prForTask, mergePrForTask, and a pure parsePrList helper', () => {
   const github = require('../server/github');
   assert.strictEqual(typeof github.prForTask, 'function', 'prForTask is exported');
+  assert.strictEqual(typeof github.mergePrForTask, 'function', 'mergePrForTask is exported');
   assert.strictEqual(typeof github.parsePrList, 'function', 'parsePrList is exported');
 });
 
@@ -64,6 +65,14 @@ test('github: a task with no branch resolves to no-branch without invoking gh', 
   // No branch means we must never spawn `gh`; a bogus path would fail loudly if we did.
   const res = await github.prForTask({ branch: null, repoPath: '/nonexistent/repo' });
   assert.deepStrictEqual(res, { pr: null, reason: 'no-branch' });
+});
+
+test('github: merging a branch-less task resolves to no-pr without invoking gh', async () => {
+  const github = require('../server/github');
+  // With no branch there is no PR to look up, so mergePrForTask must short-circuit
+  // (via prForTask's no-branch) rather than spawn `gh pr merge` on a bogus path.
+  const res = await github.mergePrForTask({ branch: null, repoPath: '/nonexistent/repo' });
+  assert.deepStrictEqual(res, { ok: false, reason: 'no-branch' });
 });
 
 test('github: parsePrList normalizes a gh payload and handles the empty list', () => {
