@@ -73,6 +73,7 @@ app.get('/api/settings', (req: Request, res: Response) => res.json(db.settings))
 
 app.patch('/api/settings', (req: Request, res: Response) => {
   if ('notifications' in req.body) db.settings.notifications = !!req.body.notifications;
+  if ('sounds' in req.body) db.settings.sounds = !!req.body.sounds;
   save();
   broadcast({ type: 'settings', settings: db.settings });
   res.json(db.settings);

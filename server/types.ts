@@ -7,6 +7,7 @@
 
 export interface Settings {
   notifications: boolean;
+  sounds: boolean;
 }
 
 export interface Repo {
