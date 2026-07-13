@@ -11,6 +11,7 @@
     personas: [],     // catalog of expert personas (from /api/personas)
     settings: { notifications: true }, // user preferences (from /api/settings)
     filters: { search: '', repoIds: new Set() }, // board filters (project + text)
+    prByTask: new Map(), // taskId -> 'loading' | { pr, reason } from /api/tasks/:id/pr
   };
 
   // In the desktop app native notifications are fired by the Electron shell; in a
@@ -288,6 +289,7 @@
       const { task, events } = await api('GET', `/api/tasks/${taskId}/logs`);
       state.tasks.set(task.id, task);
       renderDrawerHead(task);
+      if (task.branch) refreshPr(task.id, true); // lazily fetch the PR when the drawer opens
       $('#timeline').innerHTML = '';
       for (const ev of events) appendEvent(ev);
       scrollTimeline();
@@ -311,7 +313,13 @@
     if (t.sessionId) meta.push(`<span class="chip" title="session id">${esc(t.sessionId.slice(0, 8))}…</span>`);
     if (t.costUsd > 0) meta.push(`<span class="chip cost">$${t.costUsd.toFixed(2)} total</span>`);
     if (t.numTurns != null) meta.push(`<span class="chip">${t.numTurns} turns</span>`);
-    $('#drawer-meta').innerHTML = meta.join('');
+    if (t.branch) meta.push(prChipHtml(t)); // GitHub PR for this branch, if any
+    const metaEl = $('#drawer-meta');
+    metaEl.innerHTML = meta.join('');
+    // A branch's PR status can be re-checked on demand from the refresh affordance.
+    metaEl.onclick = (e) => {
+      if (e.target.closest('[data-act="refresh-pr"]')) { e.preventDefault(); refreshPr(t.id, true); }
+    };
 
     // The prompt block — always visible, even for a task that never ran. Briefed
     // tasks show the original idea and, once groomed, the resulting prompt too.
@@ -367,6 +375,60 @@
     $('#followup-input').placeholder = isLive(t)
       ? (t.status === 'grooming' ? 'Grooming the idea…' : 'Task is running…')
       : t.sessionId ? 'Send a follow-up to this session…' : 'Run the task first to start a session';
+  }
+
+  // ---------- GitHub PR chip ----------
+
+  // Subtle, non-alarming hints for the reasons a lookup can't produce a PR link.
+  // 'no-pr'/'no-branch' render nothing; the rest show a quiet muted chip.
+  const PR_HINTS = {
+    'gh-missing': 'GitHub CLI (gh) not found on PATH',
+    'not-authed': 'Not logged in to GitHub — run `gh auth login`',
+    'not-github': "This branch's remote isn't a GitHub repository",
+    error: "Couldn't look up the pull request",
+  };
+
+  // Render the PR chip for a task from the cached /api/tasks/:id/pr result.
+  // Only called when the task has a branch.
+  function prChipHtml(t) {
+    const refresh = '<button class="pr-refresh" data-act="refresh-pr" title="Refresh PR status">↻</button>';
+    const res = state.prByTask.get(t.id);
+    if (res === undefined || res === 'loading') {
+      return `<span class="chip pr pr-muted" title="Looking up pull request…">PR …</span>`;
+    }
+    if (res.pr) {
+      const pr = res.pr;
+      const st = pr.isDraft && pr.state === 'open' ? 'draft' : (pr.state || 'open');
+      const title = pr.title ? `${pr.title} — ${st}` : `PR #${pr.number} — ${st}`;
+      return (
+        `<a class="chip pr pr-${esc(st)}" href="${esc(pr.url)}" target="_blank" rel="noopener" title="${esc(title)}">` +
+        `<span class="pr-dot"></span>PR #${esc(pr.number)} · ${esc(st)}</a>` +
+        refresh
+      );
+    }
+    // No PR (or no branch resolved yet) — stay quiet; only hint on real failures.
+    if (res.reason === 'no-pr' || res.reason === 'no-branch') return '';
+    const hint = PR_HINTS[res.reason] || PR_HINTS.error;
+    return `<span class="chip pr pr-muted" title="${esc(hint)}">no PR</span>` + refresh;
+  }
+
+  // Fetch (or re-fetch) the PR for a task and re-render the drawer head if it's
+  // still the open task. Skips the network when a result is already cached unless
+  // forced (e.g. from the refresh affordance or a fresh drawer open).
+  async function refreshPr(taskId, force) {
+    const task = state.tasks.get(taskId);
+    if (!task || !task.branch) return;
+    if (!force && state.prByTask.has(taskId)) return;
+    state.prByTask.set(taskId, 'loading');
+    if (state.openTaskId === taskId) renderDrawerHead(task);
+    let res;
+    try {
+      res = await api('GET', `/api/tasks/${taskId}/pr`);
+    } catch {
+      res = { pr: null, reason: 'error' };
+    }
+    state.prByTask.set(taskId, res);
+    if (state.openTaskId === taskId) renderDrawerHead(state.tasks.get(taskId) || task);
   }
 
   function scrollTimeline() {

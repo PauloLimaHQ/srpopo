@@ -10,6 +10,7 @@ const runner = require('./runner');
 const addons = require('./addons');
 const personas = require('./personas');
 const groomer = require('./groomer');
+const github = require('./github');
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -320,6 +321,15 @@ app.get('/api/tasks/:id/logs', (req, res) => {
   const task = getTask(req.params.id);
   if (!task) return err(res, 404, 'Task not found');
   res.json({ task, events: readLog(task.id) });
+});
+
+// Read-only lookup of the GitHub PR for a task's branch, via the `gh` CLI.
+// Never mutates task state or requires the task to be running; returns a typed
+// { pr, reason } result so a missing/failed `gh` never crashes the endpoint.
+app.get('/api/tasks/:id/pr', async (req, res) => {
+  const task = getTask(req.params.id);
+  if (!task) return err(res, 404, 'Task not found');
+  res.json(await github.prForTask(task));
 });
 
 app.get('/api/tasks/:id/worktree/status', async (req, res) => {
