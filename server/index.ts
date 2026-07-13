@@ -184,7 +184,7 @@ app.post('/api/repos', async (req: Request, res: Response) => {
   const repo = {
     id: id(),
     path: repoPath,
-    name: path.basename(repoPath),
+    name: await git.displayName(repoPath),
     branch: await git.currentBranch(repoPath),
     addedAt: now(),
   };
@@ -529,6 +529,25 @@ app.get('/api/tasks/:id/worktree/status', async (req: Request, res: Response) =>
   res.json((await git.worktreeStatus(task.worktreePath)) || {});
 });
 
+// Repos added before "org/repo" naming existed only have a bare directory name
+// (no "/"). Best-effort upgrade them from their `origin` remote on boot so
+// older db.json files pick up the new label without a manual re-add.
+async function backfillRepoNames(): Promise<void> {
+  let changed = false;
+  for (const repo of db.repos) {
+    if (repo.name.includes('/')) continue;
+    const name = await git.displayName(repo.path);
+    if (name !== repo.name) {
+      repo.name = name;
+      changed = true;
+    }
+  }
+  if (changed) {
+    save();
+    broadcast({ type: 'repos', repos: db.repos });
+  }
+}
+
 // ---------- boot ----------
 
 /**
@@ -543,6 +562,7 @@ function start(port: string | number = process.env.PORT || 7777): Promise<{ serv
       // Tell the runner where the permission bridge should POST approval requests.
       runner.setBaseUrl(url);
       resolve({ server, port: actual, url });
+      backfillRepoNames();
     });
     server.on('error', reject);
   });
