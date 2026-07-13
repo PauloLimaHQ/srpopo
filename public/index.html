@@ -32,7 +32,7 @@
       <button class="btn ghost" id="btn-settings" title="Settings" aria-label="Settings"><span class="i" data-icon="settings"></span></button>
       <button class="btn ghost" id="btn-repos"><span class="i" data-icon="folder"></span>Repos</button>
       <button class="btn ghost" id="btn-brief"><span class="i" data-icon="lightbulb"></span>Brief an Idea</button>
-      <button class="btn ghost" id="btn-linear"><span class="i" data-icon="linear"></span>From Linear</button>
+      <button class="btn ghost hidden" id="btn-linear"><span class="i" data-icon="linear"></span>From Linear</button>
       <button class="btn primary" id="btn-new-task"><span class="i" data-icon="plus"></span>New Task</button>
     </div>
   </header>
@@ -243,46 +243,56 @@
     </div>
   </div>
 
-  <!-- Settings modal -->
+  <!-- Settings modal (Claude-desktop style: sidebar nav + content pane) -->
   <div id="modal-settings" class="modal hidden">
-    <div class="modal-box">
-      <h2><span class="i" data-icon="settings"></span>Settings</h2>
-      <fieldset class="addons">
-        <legend>Notifications</legend>
-        <label class="check addon">
-          <input type="checkbox" id="setting-notifications" />
-          <span class="addon-text">
-            <span class="addon-label">Desktop notifications</span>
-            <span class="addon-hint">Get a system notification when a task finishes, fails, or an idea is groomed.</span>
-          </span>
-        </label>
-        <p class="addon-hint" id="setting-notif-note"></p>
-        <button class="btn ghost" id="setting-notif-test">Send a test notification</button>
-      </fieldset>
-      <fieldset class="addons">
-        <legend>Sounds</legend>
-        <label class="check addon">
-          <input type="checkbox" id="setting-sounds" />
-          <span class="addon-text">
-            <span class="addon-label">Sound cues</span>
-            <span class="addon-hint">Play a short chime when a task finishes or a tool needs your approval.</span>
-          </span>
-        </label>
-        <button class="btn ghost" id="setting-sound-test">Play a test sound</button>
-      </fieldset>
-      <fieldset class="addons">
-        <legend>Linear</legend>
-        <label>Personal API key <span class="field-hint">— stored locally, used to import issues</span>
-          <input id="setting-linear-token" type="password" placeholder="lin_api_…" autocomplete="off" />
-        </label>
-        <p class="addon-hint" id="setting-linear-note"></p>
-        <div class="row linear-settings-actions">
-          <button class="btn" id="setting-linear-save">Save key</button>
-          <button class="btn ghost hidden" id="setting-linear-clear">Clear</button>
+    <div class="modal-box settings-box">
+      <div class="settings-layout">
+        <nav class="settings-nav" aria-label="Settings sections">
+          <div class="settings-nav-title">Settings</div>
+          <button class="settings-nav-item active" data-section="general">
+            <span class="i" data-icon="sliders-horizontal"></span>General
+          </button>
+          <button class="settings-nav-item" data-section="plugins">
+            <span class="i" data-icon="puzzle"></span>Plugins
+          </button>
+        </nav>
+        <div class="settings-main">
+          <button class="btn icon settings-close" id="settings-close" title="Close" aria-label="Close"><span class="i" data-icon="x"></span></button>
+
+          <section class="settings-section" data-section="general">
+            <h2 class="settings-section-title">General</h2>
+            <fieldset class="addons">
+              <legend>Notifications</legend>
+              <label class="check addon">
+                <input type="checkbox" id="setting-notifications" />
+                <span class="addon-text">
+                  <span class="addon-label">Desktop notifications</span>
+                  <span class="addon-hint">Get a system notification when a task finishes, fails, or an idea is groomed.</span>
+                </span>
+              </label>
+              <p class="addon-hint" id="setting-notif-note"></p>
+              <button class="btn ghost" id="setting-notif-test">Send a test notification</button>
+            </fieldset>
+            <fieldset class="addons">
+              <legend>Sounds</legend>
+              <label class="check addon">
+                <input type="checkbox" id="setting-sounds" />
+                <span class="addon-text">
+                  <span class="addon-label">Sound cues</span>
+                  <span class="addon-hint">Play a short chime when a task finishes or a tool needs your approval.</span>
+                </span>
+              </label>
+              <button class="btn ghost" id="setting-sound-test">Play a test sound</button>
+            </fieldset>
+          </section>
+
+          <section class="settings-section hidden" data-section="plugins">
+            <h2 class="settings-section-title">Plugins</h2>
+            <p class="muted">Install integrations to add features to Sr. Popo. Everything runs
+              locally with your own credentials.</p>
+            <div id="settings-plugins-body" class="plugins-body"></div>
+          </section>
         </div>
-      </fieldset>
-      <div class="modal-actions">
-        <button class="btn ghost" id="settings-close">Close</button>
       </div>
     </div>
   </div>
