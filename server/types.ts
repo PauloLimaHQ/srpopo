@@ -11,6 +11,10 @@ export interface Settings {
   // Linear personal API key, used to import issues. A secret: it lives only in
   // db.json and is never returned to the board (see PublicSettings).
   linearApiToken: string;
+  // Caps how many `claude` child processes (dispatched runs + grooming sessions
+  // combined) may be alive at once. Dispatch/groom reject once the cap is hit
+  // rather than queuing — see runner.runningCount and index.ts's atCapacity.
+  maxParallelSessions: number;
 }
 
 // The redacted, board-facing view of Settings. Omits the raw Linear token and
@@ -20,6 +24,7 @@ export interface PublicSettings {
   notifications: boolean;
   sounds: boolean;
   linearConfigured: boolean;
+  maxParallelSessions: number;
 }
 
 export interface Repo {

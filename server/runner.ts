@@ -67,6 +67,13 @@ function isRunning(taskId: string): boolean {
   return running.has(taskId);
 }
 
+// Count of live `claude` child processes across both dispatched runs and
+// grooming sessions (they share the `running` map) — what the max-parallel-
+// sessions cap in index.ts measures against.
+function runningCount(): number {
+  return running.size;
+}
+
 function childEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
   // Force subscription auth: never let an API key leak into task runs.
@@ -414,6 +421,7 @@ export {
   stop,
   stopAll,
   isRunning,
+  runningCount,
   buildArgs,
   normalizeAllowedTools,
   mergeAllowedTools,

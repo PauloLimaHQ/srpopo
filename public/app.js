@@ -9,7 +9,7 @@
     openTaskId: null, // task shown in drawer
     addons: [],       // catalog of optional task behaviors (from /api/addons)
     personas: [],     // catalog of expert personas (from /api/personas)
-    settings: { notifications: true, sounds: true }, // user preferences (from /api/settings)
+    settings: { notifications: true, sounds: true, maxParallelSessions: 3 }, // user preferences (from /api/settings)
     filters: { search: '', repoIds: new Set() }, // board filters (project + text)
     prByTask: new Map(), // taskId -> 'loading' | { pr, reason } from /api/tasks/:id/pr
     permissions: new Map(), // taskId -> [ pending tool-approval requests ]
@@ -239,6 +239,14 @@
         .filter(taskMatchesFilters)
         .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
 
+      // The running column's count doubles as a live view of the parallel-session
+      // cap (dispatched runs + grooming share the same claude-process budget —
+      // see runner.runningCount), so a user can tell at a glance why a dispatch
+      // was rejected without opening Settings.
+      const max = state.settings.maxParallelSessions;
+      const liveCount = [...state.tasks.values()].filter(isLive).length;
+      const countLabel = col.key === 'running' && max ? `${liveCount}/${max}` : tasks.length;
+
       const colEl = document.createElement('div');
       colEl.className = 'column';
       colEl.dataset.col = col.key;
@@ -246,7 +254,7 @@
         <div class="column-head">
           <span class="dot" style="background:${col.dot}"></span>
           ${col.label}
-          <span class="count">${tasks.length}</span>
+          <span class="count" ${col.key === 'running' && max ? `title="${liveCount} of ${max} parallel sessions in use (running + grooming)"` : ''}>${countLabel}</span>
         </div>
         <div class="column-body"></div>`;
       const body = colEl.querySelector('.column-body');
@@ -1458,6 +1466,7 @@
     $('#setting-notifications').checked = notificationsOn();
     $('#setting-sounds').checked = soundsOn();
     updateNotifNote();
+    $('#setting-max-parallel').value = state.settings.maxParallelSessions || 3;
     $('#setting-linear-token').value = '';
     updateLinearSettingNote();
     $('#modal-settings').classList.remove('hidden');
@@ -1485,6 +1494,12 @@
     await saveSettings({ sounds: e.target.checked });
   });
   $('#setting-sound-test').addEventListener('click', () => playSound('finish', true));
+  $('#setting-max-parallel').addEventListener('change', async (e) => {
+    const n = Math.min(20, Math.max(1, Math.trunc(Number(e.target.value)) || 1));
+    e.target.value = n;
+    await saveSettings({ maxParallelSessions: n });
+    renderBoard();
+  });
   $('#setting-linear-save').addEventListener('click', async () => {
     const token = $('#setting-linear-token').value.trim();
     if (!token) { toast('Paste your Linear API key first'); return; }
@@ -1603,10 +1618,12 @@
         if (!$('#modal-settings').classList.contains('hidden')) {
           $('#setting-notifications').checked = notificationsOn();
           $('#setting-sounds').checked = soundsOn();
+          $('#setting-max-parallel').value = state.settings.maxParallelSessions || 3;
           updateNotifNote();
           updateLinearSettingNote();
         }
         if (!$('#modal-linear').classList.contains('hidden')) renderLinearConfigState();
+        renderBoard();
       } else if (msg.type === 'task-removed') {
         state.tasks.delete(msg.taskId);
         renderBoard();

@@ -14,7 +14,15 @@ fs.mkdirSync(LOGS_DIR, { recursive: true });
 
 // User-level preferences, persisted alongside repos/tasks in db.json. New keys
 // added here get their default backfilled on load, so old db.json files upgrade.
-const DEFAULT_SETTINGS: Settings = { notifications: true, sounds: true, linearApiToken: '' };
+const DEFAULT_SETTINGS: Settings = {
+  notifications: true,
+  sounds: true,
+  linearApiToken: '',
+  // 3 concurrent `claude` sessions is a reasonable default: enough to keep a few
+  // tasks moving without starving one run of CPU or hitting subscription rate
+  // limits on a typical dev laptop. Configurable in Settings.
+  maxParallelSessions: 3,
+};
 
 let db: Db = { repos: [], tasks: [], settings: { ...DEFAULT_SETTINGS } };
 if (fs.existsSync(DB_PATH)) {
