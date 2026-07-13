@@ -76,6 +76,74 @@
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+  // Small, dependency-free markdown → HTML for Claude's own chat text (headings,
+  // lists, code fences/spans, bold/italic, links). Always escapes the source first
+  // and only ever re-introduces tags we generate ourselves — the markdown source
+  // is never trusted to inject arbitrary markup.
+  function mdToHtml(src) {
+    const codeBlocks = [];
+    const text = String(src ?? '').replace(/```[ \t]*(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+      codeBlocks.push(`<pre class="md-code"><code>${esc(code.replace(/\n$/, ''))}</code></pre>`);
+      return ` B${codeBlocks.length - 1} `;
+    });
+
+    function inline(line) {
+      const spans = [];
+      let s = esc(line).replace(/`([^`]+)`/g, (_, c) => {
+        spans.push(`<code>${c}</code>`);
+        return ` S${spans.length - 1} `;
+      });
+      s = s
+        .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+        .replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>')
+        .replace(/(^|[^_])_([^_\n]+)_(?!_)/g, '$1<em>$2</em>');
+      return s.replace(/ S(\d+) /g, (_, i) => spans[Number(i)]);
+    }
+
+    const html = [];
+    let list = null; // { tag: 'ul'|'ol', items: [] }
+    let para = [];
+    const flushPara = () => { if (para.length) { html.push(`<p>${para.join('<br>')}</p>`); para = []; } };
+    const flushList = () => {
+      if (list) html.push(`<${list.tag}>${list.items.map((it) => `<li>${it}</li>`).join('')}</${list.tag}>`);
+      list = null;
+    };
+
+    for (const line of text.split('\n')) {
+      const codeRef = line.match(/^ B(\d+) $/);
+      const heading = line.match(/^(#{1,4})\s+(.+)$/);
+      const quote = line.match(/^>\s?(.*)$/);
+      const ul = line.match(/^[-*+]\s+(.+)$/);
+      const ol = line.match(/^\d+\.\s+(.+)$/);
+      const hr = /^([-*_])\1{2,}$/.test(line.trim());
+
+      if (codeRef) { flushPara(); flushList(); html.push(codeBlocks[Number(codeRef[1])]); } else if (heading) {
+        flushPara(); flushList();
+        const level = Math.min(heading[1].length + 2, 6); // keep headings small inside a chat bubble
+        html.push(`<h${level}>${inline(heading[2])}</h${level}>`);
+      } else if (hr) {
+        flushPara(); flushList(); html.push('<hr>');
+      } else if (quote) {
+        flushPara(); flushList(); html.push(`<blockquote>${inline(quote[1])}</blockquote>`);
+      } else if (ul) {
+        flushPara();
+        if (!list || list.tag !== 'ul') { flushList(); list = { tag: 'ul', items: [] }; }
+        list.items.push(inline(ul[1]));
+      } else if (ol) {
+        flushPara();
+        if (!list || list.tag !== 'ol') { flushList(); list = { tag: 'ol', items: [] }; }
+        list.items.push(inline(ol[1]));
+      } else if (line.trim() === '') {
+        flushPara(); flushList();
+      } else {
+        flushList(); para.push(inline(line));
+      }
+    }
+    flushPara(); flushList();
+    return html.join('');
+  }
+
   function fmtDuration(ms) {
     if (ms == null) return '';
     const s = Math.round(ms / 1000);
@@ -568,7 +636,7 @@
       const blocks = (ev.message && ev.message.content) || [];
       for (const b of blocks) {
         if (b.type === 'text' && b.text && b.text.trim()) {
-          addHtml(containerFor(ev), `<div class="ev-text">${esc(b.text)}</div>`);
+          addHtml(containerFor(ev), `<div class="ev-text md">${mdToHtml(b.text)}</div>`);
         } else if (b.type === 'thinking' && b.thinking) {
           addHtml(containerFor(ev), `
             <details class="ev-thinking"><summary>${icon('brain')} thinking</summary><pre>${esc(b.thinking)}</pre></details>`);
@@ -589,7 +657,7 @@
       const text = typeof ev.result === 'string' ? ev.result : (ev.subtype || '');
       addHtml($('#timeline'), `
         <div class="ev-result ${cls}">
-          ${resIcon} ${esc(String(text).slice(0, 600))}
+          ${resIcon} <span class="md">${mdToHtml(String(text).slice(0, 600))}</span>
           <div class="stats">${fmtDuration(ev.duration_ms)} · ${ev.num_turns ?? '?'} turns · $${(ev.total_cost_usd || 0).toFixed(2)}</div>
         </div>`);
     } else if (type === 'stderr') {
