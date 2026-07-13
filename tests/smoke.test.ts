@@ -37,8 +37,20 @@ test('server modules load without throwing', () => {
     require('../server/groomer');
     require('../server/github');
     require('../server/linear');
+    require('../server/plugins');
     require('../server/index');
   });
+});
+
+test('plugins: catalog lists Linear and sanitize keeps only known ids', () => {
+  const plugins = require('../server/plugins');
+  const ids = plugins.catalog().map((p: { id: string }) => p.id);
+  assert.ok(ids.includes('linear'), 'Linear is in the marketplace catalog');
+  assert.ok(plugins.isKnown('linear'), 'isKnown recognizes a catalog id');
+  assert.strictEqual(plugins.isKnown('nope'), false, 'isKnown rejects unknown ids');
+  assert.deepStrictEqual(plugins.sanitize(['linear', 'bogus']), ['linear'], 'unknown ids dropped');
+  assert.deepStrictEqual(plugins.sanitize('not-an-array'), [], 'non-array yields []');
+  assert.deepStrictEqual(plugins.sanitize(['linear', 'linear']), ['linear'], 'ids deduped');
 });
 
 test('github: module exports prForTask and a pure parsePrList helper', () => {

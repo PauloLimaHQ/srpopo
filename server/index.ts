@@ -19,6 +19,7 @@ import * as personas from './personas';
 import * as groomer from './groomer';
 import * as github from './github';
 import * as linear from './linear';
+import * as plugins from './plugins';
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -47,6 +48,7 @@ function publicSettings(): PublicSettings {
     sounds: db.settings.sounds,
     linearConfigured: !!(db.settings.linearApiToken && db.settings.linearApiToken.trim()),
     maxParallelSessions: db.settings.maxParallelSessions,
+    installedPlugins: plugins.sanitize(db.settings.installedPlugins),
   };
 }
 
@@ -180,6 +182,9 @@ app.patch('/api/settings', (req: Request, res: Response) => {
     }
     db.settings.maxParallelSessions = n;
   }
+  // Marketplace: the board sends the full desired set of installed plugin ids;
+  // unknown ids are dropped so only real plugins can be toggled on.
+  if ('installedPlugins' in req.body) db.settings.installedPlugins = plugins.sanitize(req.body.installedPlugins);
   save();
   const settings = publicSettings();
   broadcast({ type: 'settings', settings });
@@ -191,6 +196,12 @@ app.get('/api/addons', (req: Request, res: Response) => res.json(addons.catalog(
 
 // Catalog of expert personas the UI renders as selectable role checkboxes.
 app.get('/api/personas', (req: Request, res: Response) => res.json(personas.catalog()));
+
+// Marketplace catalog. `installed` is the current set so the UI can render each
+// plugin as installed/available; installing/uninstalling goes through PATCH
+// /api/settings (installedPlugins), keeping settings' single writer.
+app.get('/api/plugins', (req: Request, res: Response) =>
+  res.json({ plugins: plugins.catalog(), installed: plugins.sanitize(db.settings.installedPlugins) }));
 
 // ---------- repos ----------
 
@@ -205,7 +216,7 @@ app.post('/api/repos', async (req: Request, res: Response) => {
   const repo = {
     id: id(),
     path: repoPath,
-    name: path.basename(repoPath),
+    name: await git.displayName(repoPath),
     branch: await git.currentBranch(repoPath),
     addedAt: now(),
   };
@@ -553,6 +564,25 @@ app.get('/api/tasks/:id/worktree/status', async (req: Request, res: Response) =>
   res.json((await git.worktreeStatus(task.worktreePath)) || {});
 });
 
+// Repos added before "org/repo" naming existed only have a bare directory name
+// (no "/"). Best-effort upgrade them from their `origin` remote on boot so
+// older db.json files pick up the new label without a manual re-add.
+async function backfillRepoNames(): Promise<void> {
+  let changed = false;
+  for (const repo of db.repos) {
+    if (repo.name.includes('/')) continue;
+    const name = await git.displayName(repo.path);
+    if (name !== repo.name) {
+      repo.name = name;
+      changed = true;
+    }
+  }
+  if (changed) {
+    save();
+    broadcast({ type: 'repos', repos: db.repos });
+  }
+}
+
 // ---------- boot ----------
 
 /**
@@ -567,6 +597,7 @@ function start(port: string | number = process.env.PORT || 7777): Promise<{ serv
       // Tell the runner where the permission bridge should POST approval requests.
       runner.setBaseUrl(url);
       resolve({ server, port: actual, url });
+      backfillRepoNames();
     });
     server.on('error', reject);
   });

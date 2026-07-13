@@ -485,6 +485,66 @@ a.chip.pr:hover { border-color: currentColor; }
 #setting-notif-note { margin: 0; }
 #setting-notif-test { align-self: flex-start; }
 
+/* ── settings: Claude-desktop two-pane (sidebar nav + content) ── */
+.settings-box { width: min(780px, 96vw); padding: 0; overflow: hidden; }
+.settings-layout { display: flex; align-items: stretch; max-height: 90vh; min-height: 460px; }
+.settings-nav {
+  flex: none; width: 184px; background: var(--bg-card);
+  border-right: 1px solid var(--border);
+  padding: 18px 12px; display: flex; flex-direction: column; gap: 2px;
+}
+.settings-nav-title { font-family: var(--serif); font-size: 15px; font-weight: 600; padding: 2px 10px 12px; }
+.settings-nav-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; border-radius: 8px; border: none; background: transparent;
+  color: var(--text-dim); font-size: 13px; font-family: inherit; cursor: pointer; text-align: left;
+  transition: background .1s, color .1s;
+}
+.settings-nav-item:hover { background: var(--bg-hover); color: var(--text); }
+.settings-nav-item.active { background: var(--accent-soft); color: var(--text); }
+.settings-nav-item .icon { width: 16px; height: 16px; flex: none; }
+.settings-main {
+  flex: 1; min-width: 0; overflow-y: auto; position: relative;
+  padding: 22px 26px; display: flex; flex-direction: column; gap: 16px;
+}
+.settings-section { display: flex; flex-direction: column; gap: 15px; }
+.settings-section-title { font-family: var(--serif); font-size: 18px; font-weight: 600; }
+.settings-close { position: absolute; top: 14px; right: 14px; }
+
+/* ── plugins / marketplace ── */
+.plugins-body { display: flex; flex-direction: column; gap: 20px; }
+.plugin-group { display: flex; flex-direction: column; gap: 10px; }
+.plugin-group-title { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); }
+.plugin-empty { font-size: 12px; color: var(--text-dim); font-style: italic; }
+.plugin-card {
+  display: flex; gap: 12px; align-items: flex-start;
+  border: 1px solid var(--border); border-radius: 12px; padding: 14px;
+  background: var(--bg-card);
+}
+.plugin-card-icon {
+  flex: none; width: 38px; height: 38px; border-radius: 9px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--accent-soft); color: var(--text);
+}
+.plugin-card-icon .icon { width: 20px; height: 20px; }
+.plugin-card-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.plugin-card-head { display: flex; align-items: center; gap: 8px; }
+.plugin-card-name { font-size: 14px; font-weight: 600; color: var(--text); }
+.plugin-badge {
+  font-size: 9px; text-transform: uppercase; letter-spacing: .5px;
+  color: var(--green); background: var(--green-soft); border-radius: 6px; padding: 2px 6px;
+}
+.plugin-card-desc { font-size: 12px; color: var(--text-dim); line-height: 1.45; }
+.plugin-card-actions { flex: none; align-self: center; }
+.plugin-config {
+  display: flex; flex-direction: column; gap: 8px;
+  margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);
+}
+.plugin-config label { font-size: 12px; color: var(--text-dim); display: flex; flex-direction: column; gap: 5px; }
+.plugin-config .row { justify-content: flex-start; }
+.plugin-config .row .btn { flex: none; }
+.plugin-key-note { margin: 0; }
+
 /* ── persona picker: compact multi-select, Claude-desktop style ── */
 .persona-picker { position: relative; display: flex; flex-direction: column; gap: 8px; }
 .persona-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }

@@ -15,6 +15,9 @@ export interface Settings {
   // combined) may be alive at once. Dispatch/groom reject once the cap is hit
   // rather than queuing — see runner.runningCount and index.ts's atCapacity.
   maxParallelSessions: number;
+  // Ids of plugins the user installed from the marketplace (see server/plugins.ts).
+  // A plugin's features (e.g. the "From Linear" import) only surface once it's here.
+  installedPlugins: string[];
 }
 
 // The redacted, board-facing view of Settings. Omits the raw Linear token and
@@ -25,6 +28,19 @@ export interface PublicSettings {
   sounds: boolean;
   linearConfigured: boolean;
   maxParallelSessions: number;
+  installedPlugins: string[];
+}
+
+// A marketplace plugin as the UI lists it. The full catalog lives in
+// server/plugins.ts; this is the board-facing shape (no secrets).
+export interface PluginInfo {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  docsUrl?: string;
+  // Whether the plugin needs an API key configured after install (Linear does).
+  requiresApiKey: boolean;
 }
 
 export interface Repo {
