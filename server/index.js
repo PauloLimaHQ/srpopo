@@ -8,6 +8,7 @@ const { broadcast, sse } = require('./bus');
 const git = require('./git');
 const runner = require('./runner');
 const addons = require('./addons');
+const permissions = require('./permissions');
 const personas = require('./personas');
 const groomer = require('./groomer');
 const github = require('./github');
@@ -48,7 +49,11 @@ app.get('/api/health', (req, res) => {
 app.get('/api/state', (req, res) => {
   res.json({
     repos: db.repos,
-    tasks: db.tasks.filter((t) => !t.archived),
+    // Annotate each task with any live permission prompts so a board that loads
+    // (or reconnects) mid-run immediately shows what's waiting on the user.
+    tasks: db.tasks
+      .filter((t) => !t.archived)
+      .map((t) => ({ ...t, pendingPermissions: permissions.listForTask(t.id) })),
     settings: db.settings,
   });
 });
@@ -131,6 +136,9 @@ app.post('/api/tasks', (req, res) => {
     model: model || 'default',
     permissionMode: permissionMode || 'acceptEdits',
     allowedTools: runner.normalizeAllowedTools(req.body.allowedTools),
+    // Ask the user to approve otherwise-denied tools instead of silently finishing
+    // without running them. Defaults on; opt out for fully-unattended runs.
+    promptPermissions: 'promptPermissions' in req.body ? !!req.body.promptPermissions : true,
     status: status === 'ready' ? 'ready' : 'backlog',
     sessionId: null,
     resolvedModel: null,
@@ -182,6 +190,7 @@ app.post('/api/briefs', (req, res) => {
     model: req.body.model || 'default',
     permissionMode: 'acceptEdits',
     allowedTools: '',
+    promptPermissions: true, // applies once dispatched; grooming itself is read-only
     status: 'grooming',
     sessionId: null,
     resolvedModel: null,
@@ -221,13 +230,15 @@ app.patch('/api/tasks/:id', (req, res) => {
   if (!task) return err(res, 404, 'Task not found');
   if (runner.isRunning(task.id)) return err(res, 409, 'Task is running; stop it first');
 
-  const allowed = ['title', 'prompt', 'model', 'permissionMode', 'allowedTools', 'useWorktree', 'status', 'addons', 'personas'];
+  const allowed = ['title', 'prompt', 'model', 'permissionMode', 'allowedTools', 'promptPermissions', 'useWorktree', 'status', 'addons', 'personas'];
   for (const key of allowed) {
     if (key in req.body) {
       if (key === 'addons') {
         task.addons = addons.sanitize(req.body.addons);
       } else if (key === 'allowedTools') {
         task.allowedTools = runner.normalizeAllowedTools(req.body.allowedTools);
+      } else if (key === 'promptPermissions') {
+        task.promptPermissions = !!req.body.promptPermissions;
       } else if (key === 'personas') {
         task.personas = personas.sanitize(req.body.personas);
       } else if (key === 'status') {
@@ -287,6 +298,42 @@ app.post('/api/tasks/:id/stop', (req, res) => {
   if (!task) return err(res, 404, 'Task not found');
   if (!runner.stop(task.id)) return err(res, 409, 'Task is not running');
   res.json({ ok: true });
+});
+
+// ---------- interactive tool-permission prompts ----------
+
+// Called by the permission-prompt MCP bridge (localhost only, see permission-mcp.js).
+// Registers a pending approval and holds the response open until the user decides
+// in the board, then replies with the CLI's { behavior, ... } decision contract.
+// Never errors out: a not-running task or a dropped connection resolves to a deny.
+app.post('/api/tasks/:id/permission', (req, res) => {
+  const task = getTask(req.params.id);
+  if (!task || !runner.isRunning(task.id)) {
+    return res.json({ behavior: 'deny', message: 'Task is not running' });
+  }
+  const toolName = String((req.body && req.body.tool_name) || 'tool');
+  const input = (req.body && req.body.input) || {};
+  const { id: reqId, promise } = permissions.create(task.id, toolName, input);
+  // If the bridge disconnects before we answer (the claude child died), settle it.
+  // Guard on writableEnded: res 'close' also fires on a normal completed response,
+  // and note req 'close' is unusable here — it fires as soon as the POST body is
+  // read, long before any decision.
+  res.on('close', () => { if (!res.writableEnded) permissions.abandon(task.id, reqId); });
+  promise.then((decision) => { if (!res.writableEnded) res.json(decision); });
+});
+
+// The user's answer to a pending prompt, from the board UI. Resolves the request
+// the bridge is waiting on. Idempotent: a stale/duplicate decision is a no-op.
+app.post('/api/tasks/:id/permissions/:reqId', (req, res) => {
+  const task = getTask(req.params.id);
+  if (!task) return err(res, 404, 'Task not found');
+  const behavior = req.body && req.body.behavior === 'allow' ? 'allow' : 'deny';
+  const ok = permissions.decide(task.id, req.params.reqId, {
+    behavior,
+    message: req.body && req.body.message,
+    updatedInput: req.body && req.body.updatedInput,
+  });
+  res.json({ ok });
 });
 
 app.post('/api/tasks/:id/archive', (req, res) => {
@@ -349,7 +396,10 @@ function start(port = process.env.PORT || 7777) {
   return new Promise((resolve, reject) => {
     const server = app.listen(port, '127.0.0.1', () => {
       const actual = server.address().port;
-      resolve({ server, port: actual, url: `http://127.0.0.1:${actual}` });
+      const url = `http://127.0.0.1:${actual}`;
+      // Tell the runner where the permission bridge should POST approval requests.
+      runner.setBaseUrl(url);
+      resolve({ server, port: actual, url });
     });
     server.on('error', reject);
   });

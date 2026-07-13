@@ -81,20 +81,143 @@ test('runner: allowedTools normalizes and maps to --allowedTools', () => {
   assert.strictEqual(runner.normalizeAllowedTools(''), '', 'empty string yields ""');
   assert.strictEqual(runner.normalizeAllowedTools(undefined), '', 'non-string yields ""');
 
-  // buildArgs appends the flag with the normalized value when set...
+  // buildArgs appends the flag; the user's tools lead, then the safe defaults.
   const withAllow = runner.buildArgs(
     { permissionMode: 'acceptEdits', allowedTools: 'Bash(npm test:*)' },
     false,
   );
   const i = withAllow.indexOf('--allowedTools');
   assert.ok(i !== -1, '--allowedTools should be present');
-  assert.strictEqual(withAllow[i + 1], 'Bash(npm test:*)', 'value follows the flag');
+  const value = withAllow[i + 1];
+  assert.ok(value.startsWith('Bash(npm test:*),'), 'user tools come first');
+  for (const def of runner.DEFAULT_ALLOWED_TOOLS) {
+    assert.ok(value.includes(def), `default ${def} is auto-approved`);
+  }
   assert.ok(withAllow.includes('--permission-mode') && withAllow.includes('acceptEdits'),
     'permission mode is still emitted');
 
-  // ...and omits it entirely when unset.
+  // Package managers are allowed by default even when the user sets nothing.
   const noAllow = runner.buildArgs({ permissionMode: 'acceptEdits' }, false);
-  assert.ok(!noAllow.includes('--allowedTools'), 'no flag without allowedTools');
+  const j = noAllow.indexOf('--allowedTools');
+  assert.ok(j !== -1, 'defaults still emit the flag with no user tools');
+  assert.deepStrictEqual(
+    noAllow[j + 1].split(','),
+    runner.DEFAULT_ALLOWED_TOOLS,
+    'exactly the defaults when nothing else is selected',
+  );
+});
+
+test('runner: mergeAllowedTools dedupes across sources and add-ons layer in', () => {
+  const runner = require('../server/runner');
+
+  // Strings and arrays merge; duplicates and blanks are dropped; order preserved.
+  assert.strictEqual(
+    runner.mergeAllowedTools('Bash(npm:*), Read', ['Read', 'Edit'], ' '),
+    'Bash(npm:*),Read,Edit',
+  );
+
+  // Selecting "open a PR" auto-approves gh + git on top of the defaults.
+  const args = runner.buildArgs(
+    { permissionMode: 'acceptEdits', addons: ['pull_request'] },
+    false,
+  );
+  const value = args[args.indexOf('--allowedTools') + 1];
+  assert.ok(value.includes('Bash(gh:*)'), 'gh is auto-approved for the PR add-on');
+  assert.ok(value.includes('Bash(git push:*)'), 'git push is auto-approved for the PR add-on');
+  assert.ok(value.includes('Bash(npm:*)'), 'package-manager defaults are still present');
+});
+
+test('runner: promptPermissions wires the approval MCP bridge (and skips it on bypass)', () => {
+  const runner = require('../server/runner');
+
+  const on = runner.buildArgs({ id: 'abc123', permissionMode: 'acceptEdits', promptPermissions: true }, false);
+  const ti = on.indexOf('--permission-prompt-tool');
+  assert.ok(ti !== -1, '--permission-prompt-tool is present when opted in');
+  assert.strictEqual(on[ti + 1], runner.PERMISSION_TOOL, 'points at the srpopo approve tool');
+  const ci = on.indexOf('--mcp-config');
+  assert.ok(ci !== -1, '--mcp-config registers the bridge');
+  const cfg = JSON.parse(on[ci + 1]);
+  assert.ok(cfg.mcpServers && cfg.mcpServers.srpopo, 'config declares the srpopo server');
+  assert.match(cfg.mcpServers.srpopo.env.SRPOPO_APPROVAL_URL, /\/api\/tasks\/abc123\/permission$/, 'bridge points back at this task');
+
+  // Opting in is a no-op under bypassPermissions — there is nothing to prompt for.
+  const bypass = runner.buildArgs({ id: 'abc123', permissionMode: 'bypassPermissions', promptPermissions: true }, false);
+  assert.ok(!bypass.includes('--permission-prompt-tool'), 'no prompt tool under bypass');
+  assert.ok(bypass.includes('--dangerously-skip-permissions'), 'bypass still skips permissions');
+
+  // Off by opt-out.
+  const off = runner.buildArgs({ id: 'abc123', permissionMode: 'acceptEdits', promptPermissions: false }, false);
+  assert.ok(!off.includes('--permission-prompt-tool'), 'no prompt tool when not opted in');
+});
+
+test('permission-mcp: respond builds MCP replies and routes tools/call to the decider', async () => {
+  const mcp = require('../server/permission-mcp');
+
+  const init = await mcp.respond({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } });
+  assert.strictEqual(init.result.protocolVersion, '2025-06-18', 'echoes the client protocol version');
+  assert.ok(init.result.capabilities.tools, 'advertises tool capability');
+
+  const list = await mcp.respond({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
+  assert.strictEqual(list.result.tools[0].name, mcp.TOOL_NAME, 'lists the approve tool');
+
+  // notifications get no reply; ping is answered.
+  assert.strictEqual(await mcp.respond({ method: 'notifications/initialized' }), null, 'notifications are not answered');
+  assert.deepStrictEqual((await mcp.respond({ jsonrpc: '2.0', id: 3, method: 'ping' })).result, {}, 'ping replies empty');
+
+  // tools/call runs the injected decider and returns its decision as JSON text.
+  const seen = [];
+  const call = await mcp.respond(
+    { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: mcp.TOOL_NAME, arguments: { tool_name: 'Bash', input: { command: 'ls' } } } },
+    async (args) => { seen.push(args); return { behavior: 'allow' }; },
+  );
+  assert.deepStrictEqual(seen[0], { tool_name: 'Bash', input: { command: 'ls' } }, 'decider receives the tool request');
+  assert.deepStrictEqual(JSON.parse(call.result.content[0].text), { behavior: 'allow' }, 'decision is returned as text content');
+
+  // An unknown tool denies rather than throwing.
+  const bad = await mcp.respond({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'nope', arguments: {} } });
+  assert.strictEqual(JSON.parse(bad.result.content[0].text).behavior, 'deny', 'unknown tool is denied');
+});
+
+test('permissions: a pending prompt resolves with the user decision and is listed until settled', async () => {
+  const permissions = require('../server/permissions');
+  const taskId = 'perm-task-1';
+
+  const { id: reqId, promise } = permissions.create(taskId, 'Bash', { command: 'rm -rf build' });
+  assert.strictEqual(permissions.listForTask(taskId).length, 1, 'the request is pending');
+  assert.strictEqual(permissions.listForTask(taskId)[0].toolName, 'Bash', 'exposes the requested tool');
+
+  assert.ok(permissions.decide(taskId, reqId, { behavior: 'allow', updatedInput: { command: 'ls' } }), 'decide settles it');
+  assert.deepStrictEqual(await promise, { behavior: 'allow', updatedInput: { command: 'ls' } }, 'promise resolves with the normalized allow');
+  assert.strictEqual(permissions.listForTask(taskId).length, 0, 'no longer pending once settled');
+
+  // A second decision on the same request is a no-op.
+  assert.strictEqual(permissions.decide(taskId, reqId, { behavior: 'deny' }), false, 'already-settled decide is ignored');
+});
+
+test('permissions: deny normalizes a message; rejectForTask clears everything pending', async () => {
+  const permissions = require('../server/permissions');
+  const taskId = 'perm-task-2';
+
+  const denied = permissions.create(taskId, 'Write', { file_path: '/etc/hosts' });
+  permissions.decide(taskId, denied.id, { behavior: 'deny' });
+  assert.deepStrictEqual(await denied.promise, { behavior: 'deny', message: 'Denied by user' }, 'deny gets a default reason');
+
+  const a = permissions.create(taskId, 'Bash', {});
+  const b = permissions.create(taskId, 'Edit', {});
+  assert.strictEqual(permissions.listForTask(taskId).length, 2, 'both are pending');
+  permissions.rejectForTask(taskId, 'Run ended');
+  assert.strictEqual((await a.promise).behavior, 'deny', 'first is denied on reject');
+  assert.strictEqual((await b.promise).message, 'Run ended', 'reject reason is passed through');
+  assert.strictEqual(permissions.listForTask(taskId).length, 0, 'nothing left pending');
+});
+
+test('permissions: an unanswered prompt auto-denies after the timeout', async () => {
+  const permissions = require('../server/permissions');
+  permissions._setTimeoutMs(20); // shrink the 30-minute default for the test
+  const { promise } = permissions.create('perm-task-3', 'Bash', {});
+  const decision = await promise;
+  assert.deepStrictEqual(decision, { behavior: 'deny', message: 'Timed out waiting for approval' }, 'times out to a deny');
+  permissions._setTimeoutMs(permissions.DEFAULT_TIMEOUT_MS); // restore
 });
 
 test('personas: sanitize keeps only known ids and preamble is prepended', () => {

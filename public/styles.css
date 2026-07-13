@@ -162,10 +162,27 @@ body {
 .health-chip.ok { color: var(--green); border-color: var(--green-soft); }
 .health-chip.bad { color: var(--red); border-color: var(--red-soft); }
 
+/* ── icons (Lucide inline SVG — see icons.js; no emojis in the UI) ── */
+/* Icons inherit currentColor and sit on the text baseline. `.i` wraps the
+   static [data-icon] placeholders that icons.js hydrates on load. */
+.icon {
+  width: 16px; height: 16px; flex: none;
+  display: inline-block; vertical-align: -0.18em;
+}
+.i { display: inline-flex; }
+.icon-spin { animation: spin .8s linear infinite; }
+/* Denser contexts want a smaller glyph than the 16px default. */
+.chip .icon, .ev-meta .icon, .tool-state .icon, .persona-check .icon,
+.pr-refresh .icon, .persona-tag-label .icon, .filter-clear .icon,
+.subagent-head .icon, .persona-add-btn .icon {
+  width: 13px; height: 13px; vertical-align: -0.12em;
+}
+
 /* ── buttons ── */
 .btn {
   border: 1px solid var(--border); background: var(--bg-card); color: var(--text);
   padding: 8px 15px; border-radius: 9px; cursor: pointer; font-size: 13px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
   transition: background .15s, border-color .15s;
 }
 .btn:hover { background: var(--bg-hover); }
@@ -190,7 +207,8 @@ body {
   transition: border-color .15s;
 }
 .filter-search:focus-within { border-color: var(--accent); }
-.filter-search-icon { font-size: 12px; opacity: .7; }
+.filter-search-icon { display: inline-flex; color: var(--text-dim); }
+.filter-search-icon .icon { width: 15px; height: 15px; }
 .filter-search input {
   border: none; background: transparent; padding: 8px 0; width: 100%;
 }
@@ -214,6 +232,7 @@ body {
 .filter-pill.active .filter-pill-count { color: var(--accent); }
 
 .filter-clear {
+  display: inline-flex; align-items: center; gap: 5px;
   background: transparent; border: 1px solid var(--border); color: var(--text-dim);
   padding: 5px 12px; border-radius: 20px; cursor: pointer; font-size: 12px;
 }
@@ -290,8 +309,9 @@ a.chip.pr:hover { border-color: currentColor; }
 .chip.pr.pr-closed { color: var(--red); border-color: var(--red-soft); }
 .chip.pr.pr-muted { color: var(--text-dim); opacity: .7; }
 .pr-refresh {
+  display: inline-flex; align-items: center;
   background: transparent; border: none; color: var(--text-dim); cursor: pointer;
-  font-size: 12px; line-height: 1; padding: 0 2px; margin-left: 1px;
+  line-height: 1; padding: 0 2px; margin-left: 1px;
 }
 .pr-refresh:hover { color: var(--text); }
 .card-status { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 11px; color: var(--text-dim); }
@@ -330,6 +350,26 @@ a.chip.pr:hover { border-color: currentColor; }
 }
 .drawer-prompt .tag { font-size: 10px; color: var(--purple); font-weight: 700; letter-spacing: 1px; margin-bottom: 4px; }
 .drawer-prompt-body { font-size: 13px; white-space: pre-wrap; word-break: break-word; }
+
+/* Interactive tool-permission prompts — a run is blocked waiting on the user. */
+.permission-prompts {
+  padding: 12px 22px; display: flex; flex-direction: column; gap: 10px;
+  border-bottom: 1px solid var(--border); background: var(--accent-soft);
+}
+.perm-prompt {
+  background: var(--bg-card); border: 1px solid var(--accent); border-radius: 10px;
+  padding: 10px 12px; display: flex; flex-direction: column; gap: 8px;
+}
+.perm-head { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; }
+.perm-head code { font-family: var(--mono); font-size: 12px; color: var(--accent); }
+.perm-summary {
+  margin: 0; font-family: var(--mono); font-size: 11px; color: var(--text-dim);
+  white-space: pre-wrap; word-break: break-word; max-height: 120px; overflow-y: auto;
+}
+.perm-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.chip.needs-approval { color: var(--accent); border-color: var(--accent); font-weight: 600; }
+.perm-log.ok { color: var(--green); }
+.perm-log.no { color: var(--red); }
 
 .timeline { flex: 1; overflow-y: auto; padding: 18px 22px; display: flex; flex-direction: column; gap: 12px; }
 
@@ -405,7 +445,7 @@ a.chip.pr:hover { border-color: currentColor; }
   padding: 26px; display: flex; flex-direction: column; gap: 15px;
   box-shadow: var(--shadow-menu);
 }
-.modal-box h2 { font-family: var(--serif); font-size: 20px; font-weight: 600; }
+.modal-box h2 { font-family: var(--serif); font-size: 20px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
 .modal-box label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--text-dim); }
 .modal-box label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--text); }
 .addons {
@@ -430,10 +470,12 @@ a.chip.pr:hover { border-color: currentColor; }
 }
 .persona-tag-label { line-height: 1.4; }
 .persona-tag-x {
+  display: inline-flex; align-items: center;
   border: none; background: transparent; color: var(--text-dim); cursor: pointer;
-  font-size: 11px; line-height: 1; padding: 3px 5px; border-radius: 50%;
+  line-height: 1; padding: 3px 5px; border-radius: 50%;
   transition: background .15s, color .15s;
 }
+.persona-tag-x .icon { width: 12px; height: 12px; }
 .persona-tag-x:hover { color: var(--red); background: var(--red-soft); }
 .persona-add-btn {
   align-self: flex-start;
