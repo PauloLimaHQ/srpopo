@@ -19,6 +19,7 @@ import * as personas from './personas';
 import * as groomer from './groomer';
 import * as github from './github';
 import * as linear from './linear';
+import * as plugins from './plugins';
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -46,6 +47,7 @@ function publicSettings(): PublicSettings {
     notifications: db.settings.notifications,
     sounds: db.settings.sounds,
     linearConfigured: !!(db.settings.linearApiToken && db.settings.linearApiToken.trim()),
+    installedPlugins: plugins.sanitize(db.settings.installedPlugins),
   };
 }
 
@@ -159,6 +161,9 @@ app.patch('/api/settings', (req: Request, res: Response) => {
   if ('sounds' in req.body) db.settings.sounds = !!req.body.sounds;
   // The Linear token is a secret: accept it here (trimmed) but never echo it back.
   if ('linearApiToken' in req.body) db.settings.linearApiToken = String(req.body.linearApiToken || '').trim();
+  // Marketplace: the board sends the full desired set of installed plugin ids;
+  // unknown ids are dropped so only real plugins can be toggled on.
+  if ('installedPlugins' in req.body) db.settings.installedPlugins = plugins.sanitize(req.body.installedPlugins);
   save();
   const settings = publicSettings();
   broadcast({ type: 'settings', settings });
@@ -170,6 +175,12 @@ app.get('/api/addons', (req: Request, res: Response) => res.json(addons.catalog(
 
 // Catalog of expert personas the UI renders as selectable role checkboxes.
 app.get('/api/personas', (req: Request, res: Response) => res.json(personas.catalog()));
+
+// Marketplace catalog. `installed` is the current set so the UI can render each
+// plugin as installed/available; installing/uninstalling goes through PATCH
+// /api/settings (installedPlugins), keeping settings' single writer.
+app.get('/api/plugins', (req: Request, res: Response) =>
+  res.json({ plugins: plugins.catalog(), installed: plugins.sanitize(db.settings.installedPlugins) }));
 
 // ---------- repos ----------
 

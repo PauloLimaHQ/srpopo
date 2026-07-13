@@ -9,7 +9,8 @@
     openTaskId: null, // task shown in drawer
     addons: [],       // catalog of optional task behaviors (from /api/addons)
     personas: [],     // catalog of expert personas (from /api/personas)
-    settings: { notifications: true, sounds: true }, // user preferences (from /api/settings)
+    plugins: [],      // marketplace catalog (from /api/plugins)
+    settings: { notifications: true, sounds: true, installedPlugins: [] }, // user preferences (from /api/settings)
     filters: { search: '', repoIds: new Set() }, // board filters (project + text)
     prByTask: new Map(), // taskId -> 'loading' | { pr, reason } from /api/tasks/:id/pr
     permissions: new Map(), // taskId -> [ pending tool-approval requests ]
@@ -1310,7 +1311,7 @@
   });
   $('#linear-open-settings').addEventListener('click', () => {
     $('#modal-linear').classList.add('hidden');
-    openSettingsModal();
+    openSettingsModal('plugins');
   });
 
   // ---------- sounds ----------
@@ -1443,23 +1444,126 @@
     }
   }
 
-  // Reflect the redacted `linearConfigured` flag — we never render the raw token
-  // back into the DOM. The password field always starts empty; typing a value
-  // and saving replaces the stored key.
-  function updateLinearSettingNote() {
-    const note = $('#setting-linear-note');
-    note.textContent = linearConfigured()
-      ? 'A Linear API key is saved. Enter a new one to replace it, or clear it.'
-      : 'Create a personal API key in Linear (Settings → Security & access → Personal API keys).';
-    $('#setting-linear-clear').classList.toggle('hidden', !linearConfigured());
+  // ---------- plugins / marketplace ----------
+  const installedPluginIds = () => state.settings.installedPlugins || [];
+  const pluginInstalled = (id) => installedPluginIds().includes(id);
+
+  // Show/hide plugin-gated UI on the board. A plugin's features only surface once
+  // it's installed — right now that's the "From Linear" header button.
+  function renderPluginState() {
+    $('#btn-linear').classList.toggle('hidden', !pluginInstalled('linear'));
   }
 
-  function openSettingsModal() {
+  // A plugin's config block (only Linear needs one today — its API key). Rendered
+  // inside the plugin card when installed. The password field always starts empty:
+  // we never echo the stored token back, only the redacted `linearConfigured` flag.
+  function pluginConfigHtml(p) {
+    if (p.id !== 'linear' || !p.requiresApiKey) return '';
+    const configured = linearConfigured();
+    const note = configured
+      ? 'A Linear API key is saved. Enter a new one to replace it, or clear it.'
+      : 'Create a personal API key in Linear (Settings → Security & access → Personal API keys).';
+    return `
+      <div class="plugin-config">
+        <label>Personal API key <span class="field-hint">— stored locally, used to import issues</span>
+          <input class="plugin-key-input" type="password" placeholder="lin_api_…" autocomplete="off" />
+        </label>
+        <p class="addon-hint plugin-key-note">${esc(note)}</p>
+        <div class="row">
+          <button class="btn plugin-key-save">Save key</button>
+          <button class="btn ghost plugin-key-clear${configured ? '' : ' hidden'}">Clear</button>
+        </div>
+      </div>`;
+  }
+
+  function pluginCardHtml(p, installed) {
+    const badge = installed ? '<span class="plugin-badge">Installed</span>' : '';
+    const action = installed
+      ? '<button class="btn ghost plugin-uninstall">Uninstall</button>'
+      : '<button class="btn primary plugin-install">Install</button>';
+    return `
+      <div class="plugin-card" data-plugin="${esc(p.id)}">
+        <div class="plugin-card-icon">${icon(p.icon)}</div>
+        <div class="plugin-card-body">
+          <div class="plugin-card-head"><span class="plugin-card-name">${esc(p.name)}</span>${badge}</div>
+          <p class="plugin-card-desc">${esc(p.description)}</p>
+          ${installed ? pluginConfigHtml(p) : ''}
+        </div>
+        <div class="plugin-card-actions">${action}</div>
+      </div>`;
+  }
+
+  // Two groups, Claude-desktop style: what's installed, and the rest of the
+  // marketplace still available to add.
+  function renderPlugins() {
+    const body = $('#settings-plugins-body');
+    if (!body) return;
+    const installed = state.plugins.filter((p) => pluginInstalled(p.id));
+    const available = state.plugins.filter((p) => !pluginInstalled(p.id));
+    body.innerHTML = `
+      <div class="plugin-group">
+        <div class="plugin-group-title">Installed</div>
+        ${installed.length
+          ? installed.map((p) => pluginCardHtml(p, true)).join('')
+          : '<p class="plugin-empty">No plugins installed yet.</p>'}
+      </div>
+      <div class="plugin-group">
+        <div class="plugin-group-title">Marketplace</div>
+        ${available.length
+          ? available.map((p) => pluginCardHtml(p, false)).join('')
+          : '<p class="plugin-empty">You\'ve installed everything available.</p>'}
+      </div>`;
+  }
+
+  async function setInstalledPlugins(ids) {
+    await saveSettings({ installedPlugins: ids });
+    renderPlugins();
+    renderPluginState();
+  }
+
+  // Delegated handlers for the dynamically-rendered plugin cards.
+  $('#settings-plugins-body').addEventListener('click', async (e) => {
+    const card = e.target.closest('.plugin-card');
+    if (!card) return;
+    const id = card.dataset.plugin;
+    if (e.target.closest('.plugin-install')) {
+      await setInstalledPlugins([...installedPluginIds(), id]);
+      toast('Plugin installed', 'info');
+    } else if (e.target.closest('.plugin-uninstall')) {
+      await setInstalledPlugins(installedPluginIds().filter((x) => x !== id));
+      toast('Plugin uninstalled', 'info');
+    } else if (e.target.closest('.plugin-key-save')) {
+      const input = card.querySelector('.plugin-key-input');
+      const token = (input && input.value.trim()) || '';
+      if (!token) { toast('Paste your Linear API key first'); return; }
+      await saveSettings({ linearApiToken: token });
+      renderPlugins();
+      toast('Linear API key saved', 'info');
+    } else if (e.target.closest('.plugin-key-clear')) {
+      await saveSettings({ linearApiToken: '' });
+      renderPlugins();
+      toast('Linear API key cleared', 'info');
+    }
+  });
+
+  // ---------- settings modal ----------
+  function showSettingsSection(name) {
+    for (const item of document.querySelectorAll('.settings-nav-item')) {
+      item.classList.toggle('active', item.dataset.section === name);
+    }
+    for (const sec of document.querySelectorAll('.settings-section')) {
+      sec.classList.toggle('hidden', sec.dataset.section !== name);
+    }
+  }
+
+  // `section` may be a string ('general' | 'plugins') or a DOM event (from the
+  // header button); anything non-string falls back to the General section.
+  function openSettingsModal(section) {
     $('#setting-notifications').checked = notificationsOn();
     $('#setting-sounds').checked = soundsOn();
     updateNotifNote();
-    $('#setting-linear-token').value = '';
-    updateLinearSettingNote();
+    renderPlugins();
+    showSettingsSection(typeof section === 'string' ? section : 'general');
     $('#modal-settings').classList.remove('hidden');
   }
 
@@ -1469,7 +1573,10 @@
     } catch (e) { toast(e.message); }
   }
 
-  $('#btn-settings').addEventListener('click', openSettingsModal);
+  for (const item of document.querySelectorAll('.settings-nav-item')) {
+    item.addEventListener('click', () => showSettingsSection(item.dataset.section));
+  }
+  $('#btn-settings').addEventListener('click', () => openSettingsModal());
   $('#settings-close').addEventListener('click', () => $('#modal-settings').classList.add('hidden'));
   $('#setting-notifications').addEventListener('change', async (e) => {
     const enabled = e.target.checked;
@@ -1485,20 +1592,6 @@
     await saveSettings({ sounds: e.target.checked });
   });
   $('#setting-sound-test').addEventListener('click', () => playSound('finish', true));
-  $('#setting-linear-save').addEventListener('click', async () => {
-    const token = $('#setting-linear-token').value.trim();
-    if (!token) { toast('Paste your Linear API key first'); return; }
-    await saveSettings({ linearApiToken: token });
-    $('#setting-linear-token').value = '';
-    updateLinearSettingNote();
-    toast('Linear API key saved', 'info');
-  });
-  $('#setting-linear-clear').addEventListener('click', async () => {
-    await saveSettings({ linearApiToken: '' });
-    $('#setting-linear-token').value = '';
-    updateLinearSettingNote();
-    toast('Linear API key cleared', 'info');
-  });
 
   // ---------- repos modal ----------
   function renderRepoList() {
@@ -1576,6 +1669,14 @@
     $('#filter-search').focus();
   });
 
+  // Cmd/Ctrl+, opens Settings — the platform-standard shortcut (⌘, on macOS).
+  document.addEventListener('keydown', (e) => {
+    if (e.key === ',' && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      if ($('#modal-settings').classList.contains('hidden')) openSettingsModal();
+    }
+  });
+
   // ---------- drawer close ----------
   $('#drawer-close').addEventListener('click', closeDrawer);
   $('#drawer-overlay').addEventListener('click', closeDrawer);
@@ -1600,11 +1701,12 @@
         maybePlayTaskSound(prev, msg.task);
       } else if (msg.type === 'settings') {
         state.settings = msg.settings;
+        renderPluginState();
         if (!$('#modal-settings').classList.contains('hidden')) {
           $('#setting-notifications').checked = notificationsOn();
           $('#setting-sounds').checked = soundsOn();
           updateNotifNote();
-          updateLinearSettingNote();
+          renderPlugins();
         }
         if (!$('#modal-linear').classList.contains('hidden')) renderLinearConfigState();
       } else if (msg.type === 'task-removed') {
@@ -1702,6 +1804,11 @@
     try {
       state.personas = await api('GET', '/api/personas');
     } catch { state.personas = []; }
+
+    try {
+      state.plugins = (await api('GET', '/api/plugins')).plugins || [];
+    } catch { state.plugins = []; }
+    renderPluginState();
 
     try {
       const h = await api('GET', '/api/health');
