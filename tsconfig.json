@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "lib": ["ES2022", "DOM"],
+    "outDir": "dist",
+    "rootDir": ".",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "sourceMap": true,
+    "forceConsistentCasingInFileNames": true,
+    "declaration": false,
+    // Let tsc copy the plain-Node permission bridge (server/permission-mcp.js)
+    // into dist/ untouched; it stays JS so it runs without a TS loader when the
+    // `claude` CLI spawns it as a standalone process (see server/runner.ts).
+    "allowJs": true,
+    "checkJs": false
+  },
+  "include": ["server/**/*", "electron/**/*", "tests/**/*"],
+  "exclude": ["public", "node_modules", "release", "dist", "build", "data"]
+}

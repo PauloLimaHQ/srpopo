@@ -10,9 +10,12 @@ that keep it **simple, dependency-light, and obviously safe** are the most welco
   off-device.
 - The server binds to `127.0.0.1` only. There is no auth layer; that binding is the
   security boundary. Don't loosen it.
-- The UI is intentionally dependency-free vanilla JS with no build step. Please keep it
-  that way — no frameworks, no bundler.
-- `express` is the only runtime dependency. Adding another needs a strong reason.
+- The Node-side code (`server/`, `electron/`, `tests/`) is TypeScript, compiled with
+  `tsc` to `dist/` and run in dev with `tsx`. The browser UI in `public/` is
+  intentionally dependency-free vanilla JS with **no build step** — please keep it that
+  way (no frameworks, no bundler).
+- `express` is the only runtime dependency. Everything TypeScript-related lives in
+  `devDependencies`. Adding another runtime dependency needs a strong reason.
 
 See [`CLAUDE.md`](./CLAUDE.md) for the full architecture map and the invariants any
 change must preserve.
@@ -36,10 +39,10 @@ npm start        # the Electron desktop app
 2. Make the smallest change that solves the problem. Match the surrounding style.
 3. Gate every change on:
    ```bash
-   npm run lint && npm test
+   npm run typecheck && npm run lint && npm test
    ```
-4. Open a pull request against `main` and fill in the template. CI runs lint + test and
-   packages the app on macOS and Windows.
+4. Open a pull request against `main` and fill in the template. CI runs typecheck + lint
+   + test and packages the app on macOS and Windows.
 
 You can also dogfood the tool: register this repo in Sr. Popo and dispatch the change as
 a task (worktree + self-review add-on). See the "Maintaining this repo with Claude"

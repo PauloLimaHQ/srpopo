@@ -1,11 +1,11 @@
-const { execFile } = require('child_process');
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
+import { execFile } from 'child_process';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
 
 const WORKTREES_DIR = path.join(os.homedir(), '.srpopo', 'worktrees');
 
-function git(repoPath, args) {
+function git(repoPath: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile('git', ['-C', repoPath, ...args], { timeout: 30000 }, (err, stdout, stderr) => {
       if (err) reject(new Error(stderr.trim() || err.message));
@@ -14,7 +14,7 @@ function git(repoPath, args) {
   });
 }
 
-async function isGitRepo(dir) {
+async function isGitRepo(dir: string): Promise<boolean> {
   try {
     return (await git(dir, ['rev-parse', '--is-inside-work-tree'])) === 'true';
   } catch {
@@ -22,7 +22,7 @@ async function isGitRepo(dir) {
   }
 }
 
-async function currentBranch(repoPath) {
+async function currentBranch(repoPath: string): Promise<string | null> {
   try {
     return await git(repoPath, ['rev-parse', '--abbrev-ref', 'HEAD']);
   } catch {
@@ -31,7 +31,11 @@ async function currentBranch(repoPath) {
 }
 
 // Creates a worktree with a new branch off the repo's current HEAD.
-async function addWorktree(repoPath, taskId, slug) {
+async function addWorktree(
+  repoPath: string,
+  taskId: string,
+  slug: string,
+): Promise<{ wtPath: string; branch: string }> {
   fs.mkdirSync(WORKTREES_DIR, { recursive: true });
   const repoName = path.basename(repoPath);
   const wtPath = path.join(WORKTREES_DIR, `${repoName}--${slug}-${taskId}`);
@@ -40,11 +44,11 @@ async function addWorktree(repoPath, taskId, slug) {
   return { wtPath, branch };
 }
 
-async function removeWorktree(repoPath, wtPath) {
+async function removeWorktree(repoPath: string, wtPath: string): Promise<void> {
   await git(repoPath, ['worktree', 'remove', '--force', wtPath]);
 }
 
-async function worktreeStatus(wtPath) {
+async function worktreeStatus(wtPath: string): Promise<{ dirty: boolean; files: number } | null> {
   try {
     const status = await git(wtPath, ['status', '--porcelain']);
     return { dirty: status.length > 0, files: status ? status.split('\n').length : 0 };
@@ -53,4 +57,4 @@ async function worktreeStatus(wtPath) {
   }
 }
 
-module.exports = { isGitRepo, currentBranch, addWorktree, removeWorktree, worktreeStatus, WORKTREES_DIR };
+export { isGitRepo, currentBranch, addWorktree, removeWorktree, worktreeStatus, WORKTREES_DIR };

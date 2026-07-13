@@ -1,12 +1,14 @@
-const { spawn } = require('child_process');
-const readline = require('readline');
-const path = require('path');
+import { spawn } from 'child_process';
+import type { ChildProcess } from 'child_process';
+import readline from 'readline';
+import path from 'path';
 
-const { db, save, now, appendLog } = require('./store');
-const { broadcast } = require('./bus');
-const groomer = require('./groomer');
-const addons = require('./addons');
-const permissions = require('./permissions');
+import { save, now, appendLog } from './store';
+import { broadcast } from './bus';
+import * as groomer from './groomer';
+import * as addons from './addons';
+import * as permissions from './permissions';
+import type { LogEvent, Task } from './types';
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
 
@@ -17,25 +19,29 @@ const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
 // top of these (see addons.allowedToolsFor).
 const DEFAULT_ALLOWED_TOOLS = ['Bash(npm:*)', 'Bash(pnpm:*)', 'Bash(yarn:*)'];
 
-// Interactive permission prompting (see permissions.js + permission-mcp.js). When
+// Interactive permission prompting (see permissions.ts + permission-mcp.js). When
 // a task opts in, we register our MCP bridge and tell the CLI to route any tool it
 // would otherwise auto-deny through it, so the user can approve from the board.
 const MCP_SERVER_NAME = 'srpopo';
 const PERMISSION_TOOL = `mcp__${MCP_SERVER_NAME}__approve`;
+// The bridge stays plain JavaScript so it runs without a TS loader when the CLI
+// spawns it as a standalone Node process (in dev under tsx and in the packaged
+// app). It sits beside this file in both source (server/) and compiled (dist/
+// server/) layouts, so a __dirname-relative path resolves in both.
 const PERMISSION_MCP_SCRIPT = path.join(__dirname, 'permission-mcp.js');
 
 // The server's own base URL, set once the port is known (see index.start). The
 // permission bridge POSTs approval requests back here.
-let baseUrl = null;
-function setBaseUrl(url) { baseUrl = url; }
-function resolvedBaseUrl() {
+let baseUrl: string | null = null;
+function setBaseUrl(url: string): void { baseUrl = url; }
+function resolvedBaseUrl(): string {
   return baseUrl || `http://127.0.0.1:${process.env.PORT || 7777}`;
 }
 
 // The `--mcp-config` JSON that registers the permission bridge for a task. The
 // bridge runs as plain Node even inside the packaged Electron binary via
 // ELECTRON_RUN_AS_NODE, and learns where to POST via SRPOPO_APPROVAL_URL.
-function permissionMcpConfig(task) {
+function permissionMcpConfig(task: Partial<Task>): string {
   return JSON.stringify({
     mcpServers: {
       [MCP_SERVER_NAME]: {
@@ -50,14 +56,18 @@ function permissionMcpConfig(task) {
   });
 }
 
-// taskId -> child process
-const running = new Map();
+// A live claude child, tagged so the exit handler can tell a user-requested stop
+// (SIGTERM we sent) from a natural exit.
+type RunningChild = ChildProcess & { wasStopped?: boolean };
 
-function isRunning(taskId) {
+// taskId -> child process
+const running = new Map<string, RunningChild>();
+
+function isRunning(taskId: string): boolean {
   return running.has(taskId);
 }
 
-function childEnv() {
+function childEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
   // Force subscription auth: never let an API key leak into task runs.
   delete env.ANTHROPIC_API_KEY;
@@ -67,13 +77,13 @@ function childEnv() {
   return env;
 }
 
-function emitTask(task) {
+function emitTask(task: Task): void {
   task.updatedAt = now();
   save();
   broadcast({ type: 'task', task });
 }
 
-function record(task, event) {
+function record(task: Task, event: LogEvent): void {
   event.ts = event.ts || now();
   appendLog(task.id, event);
   broadcast({ type: 'log', taskId: task.id, event });
@@ -82,7 +92,7 @@ function record(task, event) {
 // Normalize a free-text allow-list into a clean comma-joined string for
 // `--allowedTools`. Patterns may contain spaces (e.g. `Bash(npm run lint:*)`),
 // so we split only on commas and newlines — never spaces.
-function normalizeAllowedTools(value) {
+function normalizeAllowedTools(value: unknown): string {
   if (typeof value !== 'string') return '';
   const list = value
     .split(/[,\n]/)
@@ -94,9 +104,9 @@ function normalizeAllowedTools(value) {
 // Merge any number of allow-list sources (comma/newline strings or arrays of
 // patterns) into one deduped, comma-joined `--allowedTools` value. Order is
 // preserved and the total is capped like normalizeAllowedTools.
-function mergeAllowedTools(...sources) {
-  const seen = new Set();
-  const out = [];
+function mergeAllowedTools(...sources: unknown[]): string {
+  const seen = new Set<string>();
+  const out: string[] = [];
   for (const src of sources) {
     const list = Array.isArray(src) ? src : String(src || '').split(/[,\n]/);
     for (const raw of list) {
@@ -113,7 +123,7 @@ function mergeAllowedTools(...sources) {
 // The full set of tools auto-approved for a dispatched task: the user's own
 // allow-list, the safe package-manager defaults, and whatever the selected
 // add-ons need to run (e.g. `gh` + git for "open a PR").
-function effectiveAllowedTools(task) {
+function effectiveAllowedTools(task: Partial<Task>): string {
   return mergeAllowedTools(
     task.allowedTools,
     DEFAULT_ALLOWED_TOOLS,
@@ -121,7 +131,7 @@ function effectiveAllowedTools(task) {
   );
 }
 
-function buildArgs(task, resume) {
+function buildArgs(task: Partial<Task>, resume: boolean): string[] {
   const args = ['-p', '--output-format', 'stream-json', '--verbose'];
   if (task.model && task.model !== 'default') args.push('--model', task.model);
   if (task.permissionMode === 'bypassPermissions') args.push('--dangerously-skip-permissions');
@@ -141,11 +151,27 @@ function buildArgs(task, resume) {
 // Read-only args for a grooming session: it explores the repo to write a better
 // prompt but must never modify it. Only the safe research tools are auto-approved
 // in this headless run, so any write tool is denied.
-function groomArgs(task) {
+function groomArgs(task: Partial<Task>): string[] {
   const args = ['-p', '--output-format', 'stream-json', '--verbose'];
   if (task.model && task.model !== 'default') args.push('--model', task.model);
   args.push('--allowedTools', 'Read,Grep,Glob,Bash(git log:*),Bash(git diff:*),Bash(git show:*)');
   return args;
+}
+
+interface ExitInfo {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  stopped: boolean;
+  sawResult: any;
+  stderrTail: string;
+}
+
+interface LaunchOpts {
+  args: string[];
+  workDir: string;
+  prompt: string;
+  promptEvent: LogEvent;
+  resolveExit: (info: ExitInfo) => void;
 }
 
 /**
@@ -154,30 +180,30 @@ function groomArgs(task) {
  * the task's starting fields and provides `resolveExit`, which decides the final
  * status once the process exits (the process error/cleanup path is handled here).
  */
-function launch(task, { args, workDir, prompt, promptEvent, resolveExit }) {
+function launch(task: Task, { args, workDir, prompt, promptEvent, resolveExit }: LaunchOpts): Task {
   if (running.has(task.id)) throw new Error('Task is already running');
 
   record(task, promptEvent);
 
-  const child = spawn(CLAUDE_BIN, args, {
+  const child: RunningChild = spawn(CLAUDE_BIN, args, {
     cwd: workDir,
     env: childEnv(),
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   running.set(task.id, child);
 
-  child.stdin.on('error', () => {}); // claude may exit before reading stdin
-  child.stdin.write(prompt);
-  child.stdin.end();
+  child.stdin?.on('error', () => {}); // claude may exit before reading stdin
+  child.stdin?.write(prompt);
+  child.stdin?.end();
 
-  let sawResult = null;
+  let sawResult: any = null;
   let stderrTail = '';
-  const openSubagents = new Set();
+  const openSubagents = new Set<string>();
 
-  const rl = readline.createInterface({ input: child.stdout });
+  const rl = readline.createInterface({ input: child.stdout! });
   rl.on('line', (line) => {
     if (!line.trim()) return;
-    let event;
+    let event: any;
     try {
       event = JSON.parse(line);
     } catch {
@@ -220,7 +246,7 @@ function launch(task, { args, workDir, prompt, promptEvent, resolveExit }) {
     record(task, event);
   });
 
-  const rlErr = readline.createInterface({ input: child.stderr });
+  const rlErr = readline.createInterface({ input: child.stderr! });
   rlErr.on('line', (line) => {
     stderrTail = (stderrTail + '\n' + line).slice(-4000);
     record(task, { type: 'stderr', text: line });
@@ -255,7 +281,7 @@ function launch(task, { args, workDir, prompt, promptEvent, resolveExit }) {
  * stream its NDJSON output into the task log + SSE bus.
  * `prompt` is the text sent on stdin; `resume` continues an existing session.
  */
-function dispatch(task, prompt, { resume = false } = {}) {
+function dispatch(task: Task, prompt: string, { resume = false }: { resume?: boolean } = {}): Task {
   if (running.has(task.id)) throw new Error('Task is already running');
 
   task.status = 'running';
@@ -301,7 +327,7 @@ function dispatch(task, prompt, { resume = false } = {}) {
  * moves to `ready` with the groomed title/prompt; the `grooming` status (like
  * `running`) is entered only here, never via the API.
  */
-function groom(task, brief) {
+function groom(task: Task, brief: string): Task {
   if (running.has(task.id)) throw new Error('Task is already running');
 
   task.status = 'grooming';
@@ -367,7 +393,7 @@ function groom(task, brief) {
   });
 }
 
-function stop(taskId) {
+function stop(taskId: string): boolean {
   const child = running.get(taskId);
   if (!child) return false;
   child.wasStopped = true;
@@ -378,11 +404,11 @@ function stop(taskId) {
   return true;
 }
 
-function stopAll() {
+function stopAll(): void {
   for (const [taskId] of running) stop(taskId);
 }
 
-module.exports = {
+export {
   dispatch,
   groom,
   stop,
@@ -393,6 +419,7 @@ module.exports = {
   mergeAllowedTools,
   effectiveAllowedTools,
   setBaseUrl,
+  childEnv,
   PERMISSION_TOOL,
   DEFAULT_ALLOWED_TOOLS,
   CLAUDE_BIN,

@@ -15,7 +15,16 @@
  * finish without doing the work when the default permission mode would otherwise
  * block a Bash command. Keep each list tight — only what the instruction requires.
  */
-const ADDONS = [
+
+interface Addon {
+  id: string;
+  label: string;
+  hint: string;
+  instruction: string;
+  allow?: string[];
+}
+
+const ADDONS: Addon[] = [
   {
     id: 'pull_request',
     label: 'Create a Pull Request at the end',
@@ -66,20 +75,20 @@ const ADDONS = [
 const byId = new Map(ADDONS.map((a) => [a.id, a]));
 
 // Lightweight catalog for the UI — the full instruction text stays server-side.
-function catalog() {
+function catalog(): Array<Pick<Addon, 'id' | 'label' | 'hint'>> {
   return ADDONS.map(({ id, label, hint }) => ({ id, label, hint }));
 }
 
 // Keep only known ids, deduped, in catalog order.
-function sanitize(ids) {
+function sanitize(ids: unknown): string[] {
   if (!Array.isArray(ids)) return [];
   return ADDONS.filter((a) => ids.includes(a.id)).map((a) => a.id);
 }
 
 // Build the block of extra instructions appended to a prompt for the given ids.
 // Returns '' when nothing is selected so the prompt is left untouched.
-function instructionsFor(ids = []) {
-  const chosen = sanitize(ids).map((i) => byId.get(i));
+function instructionsFor(ids: string[] = []): string {
+  const chosen = sanitize(ids).map((i) => byId.get(i)!);
   if (!chosen.length) return '';
   const blocks = chosen.map((a) => `## ${a.label}\n${a.instruction}`);
   return '\n\n---\n\n# Additional instructions\n\n' + blocks.join('\n\n');
@@ -87,10 +96,10 @@ function instructionsFor(ids = []) {
 
 // The `--allowedTools` patterns the selected add-ons need auto-approved so their
 // instructions can actually run headless. Deduped, in catalog order.
-function allowedToolsFor(ids = []) {
-  const chosen = sanitize(ids).map((i) => byId.get(i));
-  const seen = new Set();
-  const out = [];
+function allowedToolsFor(ids: string[] = []): string[] {
+  const chosen = sanitize(ids).map((i) => byId.get(i)!);
+  const seen = new Set<string>();
+  const out: string[] = [];
   for (const a of chosen) {
     for (const tool of a.allow || []) {
       if (!seen.has(tool)) {
@@ -102,4 +111,4 @@ function allowedToolsFor(ids = []) {
   return out;
 }
 
-module.exports = { ADDONS, catalog, sanitize, instructionsFor, allowedToolsFor };
+export { ADDONS, catalog, sanitize, instructionsFor, allowedToolsFor };

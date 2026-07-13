@@ -1,10 +1,12 @@
-const test = require('node:test');
-const assert = require('node:assert');
-const os = require('os');
-const path = require('path');
-const fs = require('fs');
+import test from 'node:test';
+import assert from 'node:assert';
+import os from 'os';
+import path from 'path';
+import fs from 'fs';
 
-// Keep the store's on-disk writes out of the repo during tests.
+// Keep the store's on-disk writes out of the repo during tests. Set BEFORE any
+// server module is required (the requires below are deliberately lazy so the
+// store reads this env var, not the repo default).
 process.env.SRPOPO_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'srpopo-test-'));
 
 test('store exposes id/now helpers', () => {
@@ -165,10 +167,10 @@ test('permission-mcp: respond builds MCP replies and routes tools/call to the de
   assert.deepStrictEqual((await mcp.respond({ jsonrpc: '2.0', id: 3, method: 'ping' })).result, {}, 'ping replies empty');
 
   // tools/call runs the injected decider and returns its decision as JSON text.
-  const seen = [];
+  const seen: unknown[] = [];
   const call = await mcp.respond(
     { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: mcp.TOOL_NAME, arguments: { tool_name: 'Bash', input: { command: 'ls' } } } },
-    async (args) => { seen.push(args); return { behavior: 'allow' }; },
+    async (args: unknown) => { seen.push(args); return { behavior: 'allow' }; },
   );
   assert.deepStrictEqual(seen[0], { tool_name: 'Bash', input: { command: 'ls' } }, 'decider receives the tool request');
   assert.deepStrictEqual(JSON.parse(call.result.content[0].text), { behavior: 'allow' }, 'decision is returned as text content');
@@ -215,14 +217,23 @@ test('permissions: an unanswered prompt auto-denies after the timeout', async ()
   const permissions = require('../server/permissions');
   permissions._setTimeoutMs(20); // shrink the 30-minute default for the test
   const { promise } = permissions.create('perm-task-3', 'Bash', {});
-  const decision = await promise;
-  assert.deepStrictEqual(decision, { behavior: 'deny', message: 'Timed out waiting for approval' }, 'times out to a deny');
-  permissions._setTimeoutMs(permissions.DEFAULT_TIMEOUT_MS); // restore
+  // The module's auto-deny timer is .unref()'d (so a pending prompt never keeps
+  // the real server alive). In the bare test process that timer would then be
+  // the only handle left, and Node would exit before it fires. Hold a ref'd
+  // handle open across the await so the timeout actually resolves under CI.
+  const keepAlive = setInterval(() => {}, 5);
+  try {
+    const decision = await promise;
+    assert.deepStrictEqual(decision, { behavior: 'deny', message: 'Timed out waiting for approval' }, 'times out to a deny');
+  } finally {
+    clearInterval(keepAlive);
+    permissions._setTimeoutMs(permissions.DEFAULT_TIMEOUT_MS); // restore
+  }
 });
 
 test('personas: sanitize keeps only known ids and preamble is prepended', () => {
   const personas = require('../server/personas');
-  const ids = personas.catalog().map((p) => p.id);
+  const ids = personas.catalog().map((p: { id: string }) => p.id);
   assert.ok(ids.length > 0, 'there should be at least one persona');
 
   assert.deepStrictEqual(personas.sanitize(['nope', 'bad']), [], 'unknown ids dropped');
