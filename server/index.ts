@@ -9,7 +9,7 @@ import type { AddressInfo } from 'net';
 import { db, save, id, now, readLog, getTask, getRepo } from './store';
 import { broadcast, sse } from './bus';
 import { appRoot } from './paths';
-import type { Task, Attachment } from './types';
+import type { Task, Attachment, Repo, PublicSettings } from './types';
 import * as git from './git';
 import * as runner from './runner';
 import * as attachments from './attachments';
@@ -18,6 +18,7 @@ import * as permissions from './permissions';
 import * as personas from './personas';
 import * as groomer from './groomer';
 import * as github from './github';
+import * as linear from './linear';
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -35,6 +36,87 @@ function slugify(text: unknown): string {
 
 function err(res: Response, code: number, message: string): void {
   res.status(code).json({ error: message });
+}
+
+// The board-facing view of settings: never leak the raw Linear token, only a
+// derived boolean. This is the ONLY shape sent to the UI (GET /api/settings,
+// GET /api/state, and the `settings` broadcast); PATCH is the only writer.
+function publicSettings(): PublicSettings {
+  return {
+    notifications: db.settings.notifications,
+    sounds: db.settings.sounds,
+    linearConfigured: !!(db.settings.linearApiToken && db.settings.linearApiToken.trim()),
+  };
+}
+
+// Map a linear.ts failure reason to an HTTP status + user-facing message.
+function linearFail(res: Response, reason: linear.LinearReason): void {
+  const map: Record<linear.LinearReason, [number, string]> = {
+    'no-token': [400, 'Add your Linear API key in Settings first'],
+    unauthorized: [401, 'Linear rejected the API key — check it in Settings'],
+    'not-found': [404, 'Linear issue not found'],
+    error: [502, 'Could not reach Linear — try again'],
+  };
+  const [code, message] = map[reason] || [502, 'Linear request failed'];
+  err(res, code, message);
+}
+
+// Build a grooming task from a composed brief and kick off runner.groom — the
+// single source of truth for the "create a grooming task and dispatch it" dance,
+// shared by POST /api/briefs and the Linear import path. Like dispatch, the
+// `grooming` status is entered only here (via runner.groom), never via PATCH.
+// On a groom failure the task is rolled back to backlog and the error rethrown.
+function startGrooming(repo: Repo, brief: string, model: unknown, extra?: Partial<Task>): Task {
+  const task: Task = {
+    id: id(),
+    title: groomer.deriveTitle(brief),
+    prompt: brief, // the composed brief, until grooming rewrites it
+    brief, // preserved even after grooming (the drawer renders it)
+    repoId: repo.id,
+    repoName: repo.name,
+    repoPath: repo.path,
+    addons: [],
+    personas: [],
+    useWorktree: true,
+    worktreePath: null,
+    branch: null,
+    model: (model as string) || 'default',
+    permissionMode: 'acceptEdits',
+    allowedTools: '',
+    promptPermissions: true, // applies once dispatched; grooming itself is read-only
+    status: 'grooming',
+    sessionId: null,
+    resolvedModel: null,
+    costUsd: 0,
+    numTurns: null,
+    durationMs: null,
+    runCount: 0,
+    activeSubagents: 0,
+    lastOutcome: null,
+    lastError: null,
+    archived: false,
+    createdAt: now(),
+    updatedAt: now(),
+    startedAt: null,
+    finishedAt: null,
+    ...extra,
+  };
+  db.tasks.push(task);
+  save();
+  broadcast({ type: 'task', task });
+
+  try {
+    runner.groom(task, brief);
+  } catch (e) {
+    task.status = 'backlog';
+    task.lastOutcome = 'error';
+    task.lastError = (e as Error).message;
+    task.updatedAt = now();
+    save();
+    broadcast({ type: 'task', task });
+    throw e;
+  }
+  return task;
 }
 
 // ---------- health ----------
@@ -60,7 +142,7 @@ app.get('/api/state', (req: Request, res: Response) => {
     tasks: db.tasks
       .filter((t) => !t.archived)
       .map((t) => ({ ...t, pendingPermissions: permissions.listForTask(t.id) })),
-    settings: db.settings,
+    settings: publicSettings(),
   });
 });
 
@@ -70,14 +152,17 @@ app.get('/api/events', (req: Request, res: Response) => sse(req, res));
 
 // User preferences (e.g. desktop notifications). Persisted in db.json and
 // broadcast so every connected board — and the Electron shell — stays in sync.
-app.get('/api/settings', (req: Request, res: Response) => res.json(db.settings));
+app.get('/api/settings', (req: Request, res: Response) => res.json(publicSettings()));
 
 app.patch('/api/settings', (req: Request, res: Response) => {
   if ('notifications' in req.body) db.settings.notifications = !!req.body.notifications;
   if ('sounds' in req.body) db.settings.sounds = !!req.body.sounds;
+  // The Linear token is a secret: accept it here (trimmed) but never echo it back.
+  if ('linearApiToken' in req.body) db.settings.linearApiToken = String(req.body.linearApiToken || '').trim();
   save();
-  broadcast({ type: 'settings', settings: db.settings });
-  res.json(db.settings);
+  const settings = publicSettings();
+  broadcast({ type: 'settings', settings });
+  res.json(settings);
 });
 
 // Catalog of optional task behaviors the UI renders as checkboxes.
@@ -182,53 +267,42 @@ app.post('/api/briefs', (req: Request, res: Response) => {
   const repo = getRepo(req.body.repoId);
   if (!repo) return err(res, 400, 'Unknown repo');
 
-  const task: Task = {
-    id: id(),
-    title: groomer.deriveTitle(brief),
-    prompt: brief, // the rough idea, until grooming rewrites it
-    brief, // the original idea, preserved even after grooming
-    repoId: repo.id,
-    repoName: repo.name,
-    repoPath: repo.path,
-    addons: [],
-    personas: [],
-    useWorktree: true,
-    worktreePath: null,
-    branch: null,
-    model: req.body.model || 'default',
-    permissionMode: 'acceptEdits',
-    allowedTools: '',
-    promptPermissions: true, // applies once dispatched; grooming itself is read-only
-    status: 'grooming',
-    sessionId: null,
-    resolvedModel: null,
-    costUsd: 0,
-    numTurns: null,
-    durationMs: null,
-    runCount: 0,
-    activeSubagents: 0,
-    lastOutcome: null,
-    lastError: null,
-    archived: false,
-    createdAt: now(),
-    updatedAt: now(),
-    startedAt: null,
-    finishedAt: null,
-  };
-  db.tasks.push(task);
-  save();
-  broadcast({ type: 'task', task });
-
   try {
-    runner.groom(task, brief);
-    res.json(task);
+    res.json(startGrooming(repo, brief, req.body.model));
   } catch (e) {
-    task.status = 'backlog';
-    task.lastOutcome = 'error';
-    task.lastError = (e as Error).message;
-    task.updatedAt = now();
-    save();
-    broadcast({ type: 'task', task });
+    err(res, 500, (e as Error).message);
+  }
+});
+
+// ---------- linear (import a Linear issue as a groomed task) ----------
+
+// The current viewer's assigned issues, for the "browse my issues" list. Typed,
+// non-throwing: a missing token / auth failure / network error maps to a 4xx/5xx
+// the UI can show rather than crashing.
+app.get('/api/linear/issues', async (req: Request, res: Response) => {
+  const result = await linear.listMyIssues();
+  if (!result.ok) return linearFail(res, result.reason);
+  res.json({ issues: result.issues });
+});
+
+// Turn a Linear issue (by UUID or identifier like ABC-123) into a groomed task.
+// Fetches the issue server-side, composes a brief from it, and routes it through
+// the same grooming pipeline as POST /api/briefs.
+app.post('/api/linear/briefs', async (req: Request, res: Response) => {
+  const repo = getRepo(req.body.repoId);
+  if (!repo) return err(res, 400, 'Unknown repo');
+  const issueId = String(req.body.issueId || '').trim();
+  if (!issueId) return err(res, 400, 'issueId is required');
+
+  const result = await linear.getIssue(issueId);
+  if (!result.ok) return linearFail(res, result.reason);
+
+  const brief = linear.briefFromIssue(result.issue);
+  try {
+    res.json(startGrooming(repo, brief, req.body.model, {
+      linearIssue: { identifier: result.issue.identifier, url: result.issue.url },
+    }));
+  } catch (e) {
     err(res, 500, (e as Error).message);
   }
 });

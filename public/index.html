@@ -32,6 +32,7 @@
       <button class="btn ghost" id="btn-settings" title="Settings" aria-label="Settings"><span class="i" data-icon="settings"></span></button>
       <button class="btn ghost" id="btn-repos"><span class="i" data-icon="folder"></span>Repos</button>
       <button class="btn ghost" id="btn-brief"><span class="i" data-icon="lightbulb"></span>Brief an Idea</button>
+      <button class="btn ghost" id="btn-linear"><span class="i" data-icon="linear"></span>From Linear</button>
       <button class="btn primary" id="btn-new-task"><span class="i" data-icon="plus"></span>New Task</button>
     </div>
   </header>
@@ -198,6 +199,50 @@
     </div>
   </div>
 
+  <!-- Create Task from Linear modal -->
+  <div id="modal-linear" class="modal hidden">
+    <div class="modal-box">
+      <h2><span class="i" data-icon="linear"></span>Create Task from Linear</h2>
+      <p class="muted">Pick a project, then paste a Linear issue ID or choose one of your assigned
+        issues. Sr. Popo pulls the issue and grooms it into a well-formed task in <strong>Ready</strong>.</p>
+      <div id="linear-unconfigured" class="linear-note hidden">
+        No Linear API key yet — add one in
+        <button type="button" class="linkish" id="linear-open-settings">Settings</button>
+        to browse and import your issues.
+      </div>
+      <div id="linear-config">
+        <label id="linear-repo-field">Repository
+          <div class="row">
+            <select id="linear-repo"></select>
+            <button class="btn ghost" id="linear-add-repo" title="Add a repository" aria-label="Add a repository"><span class="i" data-icon="plus"></span></button>
+          </div>
+        </label>
+        <label>Issue ID
+          <input id="linear-issue-id" placeholder="e.g. ABC-123" autocomplete="off" />
+        </label>
+        <div class="linear-browse">
+          <div class="linear-browse-head">
+            <span>Or pick one of your issues</span>
+            <button type="button" class="btn ghost" id="linear-refresh" title="Refresh"><span class="i" data-icon="rotate-cw"></span></button>
+          </div>
+          <div id="linear-issue-list" class="linear-issue-list"></div>
+        </div>
+        <label>Model <span class="field-hint">— used for the grooming session</span>
+          <select id="linear-model">
+            <option value="default">Account default</option>
+            <option value="sonnet">Sonnet</option>
+            <option value="opus">Opus</option>
+            <option value="haiku">Haiku</option>
+          </select>
+        </label>
+      </div>
+      <div class="modal-actions">
+        <button class="btn ghost" id="linear-cancel">Cancel</button>
+        <button class="btn primary" id="linear-submit">Groom it <span class="i" data-icon="sparkles"></span></button>
+      </div>
+    </div>
+  </div>
+
   <!-- Settings modal -->
   <div id="modal-settings" class="modal hidden">
     <div class="modal-box">
@@ -224,6 +269,17 @@
           </span>
         </label>
         <button class="btn ghost" id="setting-sound-test">Play a test sound</button>
+      </fieldset>
+      <fieldset class="addons">
+        <legend>Linear</legend>
+        <label>Personal API key <span class="field-hint">— stored locally, used to import issues</span>
+          <input id="setting-linear-token" type="password" placeholder="lin_api_…" autocomplete="off" />
+        </label>
+        <p class="addon-hint" id="setting-linear-note"></p>
+        <div class="row linear-settings-actions">
+          <button class="btn" id="setting-linear-save">Save key</button>
+          <button class="btn ghost hidden" id="setting-linear-clear">Clear</button>
+        </div>
       </fieldset>
       <div class="modal-actions">
         <button class="btn ghost" id="settings-close">Close</button>

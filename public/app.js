@@ -473,6 +473,9 @@
       `<span class="chip">${esc(t.permissionMode)}</span>`,
     ];
     if (t.promptPermissions) meta.push(`<span class="chip" title="Asks you to approve otherwise-denied tools">${icon('shield')} asks</span>`);
+    if (t.linearIssue && t.linearIssue.identifier) {
+      meta.push(`<a class="chip linear-chip" href="${esc(t.linearIssue.url)}" target="_blank" rel="noopener" title="Open in Linear">${icon('linear')} ${esc(t.linearIssue.identifier)}</a>`);
+    }
     if (t.worktreePath) meta.push(`<span class="chip worktree" title="${esc(t.worktreePath)}">${icon('git-branch')} ${esc(t.branch)}</span>`);
     if (t.sessionId) meta.push(`<span class="chip" title="session id">${esc(t.sessionId.slice(0, 8))}…</span>`);
     if (t.costUsd > 0) meta.push(`<span class="chip cost">$${t.costUsd.toFixed(2)} total</span>`);
@@ -1213,6 +1216,103 @@
     openReposModal();
   });
 
+  // ---------- create task from linear ----------
+  const linearConfigured = () => !!state.settings.linearConfigured;
+  let linearSelectedId = null; // the Linear UUID picked from the browse list, if any
+
+  function refreshLinearRepoSelect() {
+    const sel = $('#linear-repo');
+    if (!sel) return;
+    sel.innerHTML = state.repos.length
+      ? state.repos.map((r) => `<option value="${r.id}">${esc(r.name)} — ${esc(r.path)}</option>`).join('')
+      : '<option value="">No repos yet — add one first</option>';
+  }
+
+  // Toggle between the configured form and the "add a key first" note.
+  function renderLinearConfigState() {
+    const configured = linearConfigured();
+    $('#linear-unconfigured').classList.toggle('hidden', configured);
+    $('#linear-config').classList.toggle('hidden', !configured);
+  }
+
+  function openLinearModal() {
+    refreshLinearRepoSelect();
+    const last = loadLastUsed();
+    $('#linear-issue-id').value = '';
+    $('#linear-model').value = last.model || 'default';
+    if (last.repoId && state.repos.some((r) => r.id === last.repoId)) $('#linear-repo').value = last.repoId;
+    linearSelectedId = null;
+    $('#linear-issue-list').innerHTML = '';
+    renderLinearConfigState();
+    $('#modal-linear').classList.remove('hidden');
+    if (linearConfigured()) { loadLinearIssues(); $('#linear-issue-id').focus(); }
+  }
+
+  async function loadLinearIssues() {
+    const list = $('#linear-issue-list');
+    list.innerHTML = '<div class="muted linear-loading">Loading your issues…</div>';
+    try {
+      const { issues } = await api('GET', '/api/linear/issues');
+      if (!issues || !issues.length) {
+        list.innerHTML = '<div class="muted">No assigned issues found.</div>';
+        return;
+      }
+      list.innerHTML = issues.map((i) => `
+        <button type="button" class="linear-issue" data-id="${esc(i.id)}" data-identifier="${esc(i.identifier)}">
+          <span class="linear-issue-id">${esc(i.identifier)}</span>
+          <span class="linear-issue-title">${esc(i.title)}</span>
+          ${i.state ? `<span class="chip">${esc(i.state)}</span>` : ''}
+        </button>`).join('');
+    } catch (e) {
+      list.innerHTML = `<div class="muted">${esc(e.message)}</div>`;
+    }
+  }
+
+  // Clicking an issue selects it: fill the id field with its identifier and
+  // remember its UUID. Typing in the id field clears the selection (typed wins).
+  $('#linear-issue-list').addEventListener('click', (e) => {
+    const btn = e.target.closest('.linear-issue');
+    if (!btn) return;
+    linearSelectedId = btn.dataset.id;
+    $('#linear-issue-id').value = btn.dataset.identifier;
+    for (const el of $('#linear-issue-list').querySelectorAll('.linear-issue')) el.classList.remove('selected');
+    btn.classList.add('selected');
+  });
+  $('#linear-issue-id').addEventListener('input', () => {
+    linearSelectedId = null;
+    for (const el of $('#linear-issue-list').querySelectorAll('.linear-issue')) el.classList.remove('selected');
+  });
+
+  async function submitLinear() {
+    const repoId = $('#linear-repo').value;
+    const typed = $('#linear-issue-id').value.trim();
+    const issueId = typed || linearSelectedId;
+    if (!repoId) { toast('Add a repository first'); return; }
+    if (!issueId) { toast('Paste an issue ID or pick one from the list'); return; }
+    try {
+      const task = await api('POST', '/api/linear/briefs', { issueId, repoId, model: $('#linear-model').value });
+      $('#modal-linear').classList.add('hidden');
+      toast('Importing the Linear issue…', 'info');
+      openDrawer(task.id);
+    } catch (e) { toast(e.message); }
+  }
+
+  $('#btn-linear').addEventListener('click', openLinearModal);
+  $('#linear-cancel').addEventListener('click', () => $('#modal-linear').classList.add('hidden'));
+  $('#linear-submit').addEventListener('click', submitLinear);
+  $('#linear-refresh').addEventListener('click', loadLinearIssues);
+  $('#linear-issue-id').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submitLinear();
+  });
+  $('#linear-add-repo').addEventListener('click', () => {
+    $('#modal-linear').classList.add('hidden');
+    openReposModal();
+  });
+  $('#linear-open-settings').addEventListener('click', () => {
+    $('#modal-linear').classList.add('hidden');
+    openSettingsModal();
+  });
+
   // ---------- sounds ----------
   // Short synthesized cues for two moments: a tool needs approval, and a task
   // finishes. Built with the Web Audio API so there are no audio assets to ship
@@ -1343,10 +1443,23 @@
     }
   }
 
+  // Reflect the redacted `linearConfigured` flag — we never render the raw token
+  // back into the DOM. The password field always starts empty; typing a value
+  // and saving replaces the stored key.
+  function updateLinearSettingNote() {
+    const note = $('#setting-linear-note');
+    note.textContent = linearConfigured()
+      ? 'A Linear API key is saved. Enter a new one to replace it, or clear it.'
+      : 'Create a personal API key in Linear (Settings → Security & access → Personal API keys).';
+    $('#setting-linear-clear').classList.toggle('hidden', !linearConfigured());
+  }
+
   function openSettingsModal() {
     $('#setting-notifications').checked = notificationsOn();
     $('#setting-sounds').checked = soundsOn();
     updateNotifNote();
+    $('#setting-linear-token').value = '';
+    updateLinearSettingNote();
     $('#modal-settings').classList.remove('hidden');
   }
 
@@ -1372,6 +1485,20 @@
     await saveSettings({ sounds: e.target.checked });
   });
   $('#setting-sound-test').addEventListener('click', () => playSound('finish', true));
+  $('#setting-linear-save').addEventListener('click', async () => {
+    const token = $('#setting-linear-token').value.trim();
+    if (!token) { toast('Paste your Linear API key first'); return; }
+    await saveSettings({ linearApiToken: token });
+    $('#setting-linear-token').value = '';
+    updateLinearSettingNote();
+    toast('Linear API key saved', 'info');
+  });
+  $('#setting-linear-clear').addEventListener('click', async () => {
+    await saveSettings({ linearApiToken: '' });
+    $('#setting-linear-token').value = '';
+    updateLinearSettingNote();
+    toast('Linear API key cleared', 'info');
+  });
 
   // ---------- repos modal ----------
   function renderRepoList() {
@@ -1477,7 +1604,9 @@
           $('#setting-notifications').checked = notificationsOn();
           $('#setting-sounds').checked = soundsOn();
           updateNotifNote();
+          updateLinearSettingNote();
         }
+        if (!$('#modal-linear').classList.contains('hidden')) renderLinearConfigState();
       } else if (msg.type === 'task-removed') {
         state.tasks.delete(msg.taskId);
         renderBoard();
@@ -1486,6 +1615,7 @@
         renderRepoList();
         refreshRepoSelect();
         refreshBriefRepoSelect();
+        refreshLinearRepoSelect();
         renderFilters();
       } else if (msg.type === 'log' && msg.taskId === state.openTaskId) {
         appendEvent(msg.event);
