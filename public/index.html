@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sr. Popo — Claude Code Orchestrator</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧞</text></svg>" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-icon">🧞</span>
+      <div>
+        <h1>Sr. Popo</h1>
+        <span class="tagline">your local Claude Code orchestrator</span>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <span id="health" class="health-chip" title="Claude CLI status">checking…</span>
+      <button class="btn ghost" id="btn-repos">📁 Repos</button>
+      <button class="btn primary" id="btn-new-task">＋ New Task</button>
+    </div>
+  </header>
+
+  <main>
+    <div id="board" class="board"></div>
+  </main>
+
+  <!-- Task detail drawer -->
+  <div id="drawer-overlay" class="overlay hidden"></div>
+  <aside id="drawer" class="drawer hidden">
+    <div class="drawer-head">
+      <div class="drawer-title-row">
+        <h2 id="drawer-title"></h2>
+        <button class="btn icon" id="drawer-close" title="Close">✕</button>
+      </div>
+      <div id="drawer-meta" class="drawer-meta"></div>
+      <div id="drawer-actions" class="drawer-actions"></div>
+    </div>
+    <div id="timeline" class="timeline"></div>
+    <div class="composer">
+      <textarea id="followup-input" placeholder="Send a follow-up to this session…" rows="2"></textarea>
+      <button class="btn primary" id="followup-send">Send &amp; Run</button>
+    </div>
+  </aside>
+
+  <!-- New task modal -->
+  <div id="modal-task" class="modal hidden">
+    <div class="modal-box">
+      <h2>New Task</h2>
+      <label>Repository
+        <div class="row">
+          <select id="task-repo"></select>
+          <button class="btn ghost" id="task-add-repo" title="Add a repository">＋</button>
+        </div>
+      </label>
+      <label>Title
+        <input id="task-title" placeholder="e.g. Add dark mode toggle" maxlength="120" />
+      </label>
+      <label>Prompt for Claude
+        <textarea id="task-prompt" rows="6" placeholder="Describe the task exactly as you would tell Claude Code…"></textarea>
+      </label>
+      <div class="grid-2">
+        <label>Model
+          <select id="task-model">
+            <option value="default">Account default</option>
+            <option value="sonnet">Sonnet</option>
+            <option value="opus">Opus</option>
+            <option value="haiku">Haiku</option>
+          </select>
+        </label>
+        <label>Permissions
+          <select id="task-perm">
+            <option value="acceptEdits">Accept edits (recommended)</option>
+            <option value="bypassPermissions">Bypass all (YOLO)</option>
+            <option value="plan">Plan only</option>
+            <option value="default">Default (may block)</option>
+          </select>
+        </label>
+      </div>
+      <label class="check">
+        <input type="checkbox" id="task-worktree" checked />
+        Run in an isolated git worktree (branch <code>srpopo/&lt;task&gt;</code>)
+      </label>
+      <div class="modal-actions">
+        <button class="btn ghost" id="task-cancel">Cancel</button>
+        <button class="btn" id="task-create">Create in Backlog</button>
+        <button class="btn primary" id="task-create-run">Create &amp; Run ▶</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Repos modal -->
+  <div id="modal-repos" class="modal hidden">
+    <div class="modal-box">
+      <h2>Repositories</h2>
+      <div class="row">
+        <input id="repo-path" placeholder="/absolute/path/to/repo or ~/git/…" />
+        <button class="btn ghost hidden" id="repo-browse">Browse…</button>
+        <button class="btn primary" id="repo-add">Add</button>
+      </div>
+      <ul id="repo-list" class="repo-list"></ul>
+      <div class="modal-actions">
+        <button class="btn ghost" id="repos-close">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Follow-up modal (re-dispatch a finished task) -->
+  <div id="modal-followup" class="modal hidden">
+    <div class="modal-box">
+      <h2>Continue session</h2>
+      <p class="muted" id="followup-modal-sub"></p>
+      <textarea id="followup-modal-input" rows="4" placeholder="What should Claude do next in this session?"></textarea>
+      <div class="modal-actions">
+        <button class="btn ghost" id="followup-modal-cancel">Cancel</button>
+        <button class="btn primary" id="followup-modal-send">Run ▶</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toasts" class="toasts"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

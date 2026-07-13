@@ -1,0 +1,76 @@
+{
+  "name": "srpopo",
+  "version": "0.1.0",
+  "description": "Sr. Popo — local orchestrator hub for Claude Code tasks across your repos",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "server": "node server/index.js",
+    "server:dev": "node --watch server/index.js",
+    "dist": "electron-builder --mac",
+    "pack": "electron-builder --dir"
+  },
+  "keywords": [
+    "claude-code",
+    "orchestrator",
+    "kanban",
+    "electron"
+  ],
+  "author": "Paulo",
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "electron": "^43.1.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.pauloperego.srpopo",
+    "productName": "Sr. Popo",
+    "copyright": "Copyright © 2026 Paulo",
+    "asar": true,
+    "files": [
+      "electron/**/*",
+      "server/**/*",
+      "public/**/*",
+      "assets/**/*",
+      "build/icon.png",
+      "package.json"
+    ],
+    "directories": {
+      "buildResources": "build",
+      "output": "release"
+    },
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "build/icon.icns",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "extendInfo": {
+        "LSUIElement": false,
+        "NSSupportsAutomaticGraphicsSwitching": true
+      }
+    },
+    "dmg": {
+      "title": "Sr. Popo ${version}"
+    }
+  }
+}
