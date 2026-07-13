@@ -1,23 +1,28 @@
-const express = require('express');
-const path = require('path');
-const fs = require('fs');
-const { execFile } = require('child_process');
+import express from 'express';
+import type { Request, Response } from 'express';
+import path from 'path';
+import fs from 'fs';
+import { execFile } from 'child_process';
+import type { Server } from 'http';
+import type { AddressInfo } from 'net';
 
-const { db, save, id, now, readLog, getTask, getRepo } = require('./store');
-const { broadcast, sse } = require('./bus');
-const git = require('./git');
-const runner = require('./runner');
-const addons = require('./addons');
-const permissions = require('./permissions');
-const personas = require('./personas');
-const groomer = require('./groomer');
-const github = require('./github');
+import { db, save, id, now, readLog, getTask, getRepo } from './store';
+import { broadcast, sse } from './bus';
+import { appRoot } from './paths';
+import type { Task } from './types';
+import * as git from './git';
+import * as runner from './runner';
+import * as addons from './addons';
+import * as permissions from './permissions';
+import * as personas from './personas';
+import * as groomer from './groomer';
+import * as github from './github';
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
-app.use(express.static(path.join(__dirname, '..', 'public')));
+app.use(express.static(path.join(appRoot(), 'public')));
 
-function slugify(text) {
+function slugify(text: unknown): string {
   return (
     String(text)
       .toLowerCase()
@@ -27,13 +32,13 @@ function slugify(text) {
   );
 }
 
-function err(res, code, message) {
+function err(res: Response, code: number, message: string): void {
   res.status(code).json({ error: message });
 }
 
 // ---------- health ----------
 
-app.get('/api/health', (req, res) => {
+app.get('/api/health', (req: Request, res: Response) => {
   execFile(runner.CLAUDE_BIN, ['--version'], { timeout: 10000 }, (e, stdout) => {
     res.json({
       ok: !e,
@@ -46,7 +51,7 @@ app.get('/api/health', (req, res) => {
 
 // ---------- state / events ----------
 
-app.get('/api/state', (req, res) => {
+app.get('/api/state', (req: Request, res: Response) => {
   res.json({
     repos: db.repos,
     // Annotate each task with any live permission prompts so a board that loads
@@ -58,15 +63,15 @@ app.get('/api/state', (req, res) => {
   });
 });
 
-app.get('/api/events', (req, res) => sse(req, res));
+app.get('/api/events', (req: Request, res: Response) => sse(req, res));
 
 // ---------- settings ----------
 
 // User preferences (e.g. desktop notifications). Persisted in db.json and
 // broadcast so every connected board — and the Electron shell — stays in sync.
-app.get('/api/settings', (req, res) => res.json(db.settings));
+app.get('/api/settings', (req: Request, res: Response) => res.json(db.settings));
 
-app.patch('/api/settings', (req, res) => {
+app.patch('/api/settings', (req: Request, res: Response) => {
   if ('notifications' in req.body) db.settings.notifications = !!req.body.notifications;
   save();
   broadcast({ type: 'settings', settings: db.settings });
@@ -74,14 +79,14 @@ app.patch('/api/settings', (req, res) => {
 });
 
 // Catalog of optional task behaviors the UI renders as checkboxes.
-app.get('/api/addons', (req, res) => res.json(addons.catalog()));
+app.get('/api/addons', (req: Request, res: Response) => res.json(addons.catalog()));
 
 // Catalog of expert personas the UI renders as selectable role checkboxes.
-app.get('/api/personas', (req, res) => res.json(personas.catalog()));
+app.get('/api/personas', (req: Request, res: Response) => res.json(personas.catalog()));
 
 // ---------- repos ----------
 
-app.post('/api/repos', async (req, res) => {
+app.post('/api/repos', async (req: Request, res: Response) => {
   const raw = String(req.body.path || '').trim();
   if (!raw) return err(res, 400, 'path is required');
   const repoPath = raw.replace(/^~(?=\/|$)/, process.env.HOME || '~');
@@ -102,7 +107,7 @@ app.post('/api/repos', async (req, res) => {
   res.json(repo);
 });
 
-app.delete('/api/repos/:id', (req, res) => {
+app.delete('/api/repos/:id', (req: Request, res: Response) => {
   const idx = db.repos.findIndex((r) => r.id === req.params.id);
   if (idx === -1) return err(res, 404, 'Repo not found');
   const active = db.tasks.some((t) => t.repoId === req.params.id && !t.archived);
@@ -115,13 +120,13 @@ app.delete('/api/repos/:id', (req, res) => {
 
 // ---------- tasks ----------
 
-app.post('/api/tasks', (req, res) => {
+app.post('/api/tasks', (req: Request, res: Response) => {
   const { title, prompt, repoId, model, useWorktree, permissionMode, status } = req.body;
   if (!title || !prompt) return err(res, 400, 'title and prompt are required');
   const repo = getRepo(repoId);
   if (!repo) return err(res, 400, 'Unknown repo');
 
-  const task = {
+  const task: Task = {
     id: id(),
     title: String(title).trim(),
     prompt: String(prompt),
@@ -168,13 +173,13 @@ app.post('/api/tasks', (req, res) => {
 // Claude session in the repo that rewrites the idea into a well-structured
 // prompt; when it finishes the task moves to `ready`. Like dispatch, the
 // grooming state is entered only here — never via PATCH /api/tasks/:id.
-app.post('/api/briefs', (req, res) => {
+app.post('/api/briefs', (req: Request, res: Response) => {
   const brief = String(req.body.brief || '').trim();
   if (!brief) return err(res, 400, 'brief is required');
   const repo = getRepo(req.body.repoId);
   if (!repo) return err(res, 400, 'Unknown repo');
 
-  const task = {
+  const task: Task = {
     id: id(),
     title: groomer.deriveTitle(brief),
     prompt: brief, // the rough idea, until grooming rewrites it
@@ -217,20 +222,20 @@ app.post('/api/briefs', (req, res) => {
   } catch (e) {
     task.status = 'backlog';
     task.lastOutcome = 'error';
-    task.lastError = e.message;
+    task.lastError = (e as Error).message;
     task.updatedAt = now();
     save();
     broadcast({ type: 'task', task });
-    err(res, 500, e.message);
+    err(res, 500, (e as Error).message);
   }
 });
 
-app.patch('/api/tasks/:id', (req, res) => {
+app.patch('/api/tasks/:id', (req: Request, res: Response) => {
   const task = getTask(req.params.id);
   if (!task) return err(res, 404, 'Task not found');
   if (runner.isRunning(task.id)) return err(res, 409, 'Task is running; stop it first');
 
-  const allowed = ['title', 'prompt', 'model', 'permissionMode', 'allowedTools', 'promptPermissions', 'useWorktree', 'status', 'addons', 'personas'];
+  const allowed = ['title', 'prompt', 'model', 'permissionMode', 'allowedTools', 'promptPermissions', 'useWorktree', 'status', 'addons', 'personas'] as const;
   for (const key of allowed) {
     if (key in req.body) {
       if (key === 'addons') {
@@ -250,7 +255,7 @@ app.patch('/api/tasks/:id', (req, res) => {
       } else if (key === 'useWorktree' && task.worktreePath) {
         // worktree already materialized; ignore toggle
       } else {
-        task[key] = req.body[key];
+        (task as unknown as Record<string, unknown>)[key] = req.body[key];
       }
     }
   }
@@ -260,7 +265,7 @@ app.patch('/api/tasks/:id', (req, res) => {
   res.json(task);
 });
 
-app.post('/api/tasks/:id/dispatch', async (req, res) => {
+app.post('/api/tasks/:id/dispatch', async (req: Request, res: Response) => {
   const task = getTask(req.params.id);
   if (!task) return err(res, 404, 'Task not found');
   if (runner.isRunning(task.id)) return err(res, 409, 'Task is already running');
@@ -285,15 +290,15 @@ app.post('/api/tasks/:id/dispatch', async (req, res) => {
   } catch (e) {
     task.status = 'failed';
     task.lastOutcome = 'error';
-    task.lastError = e.message;
+    task.lastError = (e as Error).message;
     task.updatedAt = now();
     save();
     broadcast({ type: 'task', task });
-    err(res, 500, e.message);
+    err(res, 500, (e as Error).message);
   }
 });
 
-app.post('/api/tasks/:id/stop', (req, res) => {
+app.post('/api/tasks/:id/stop', (req: Request, res: Response) => {
   const task = getTask(req.params.id);
   if (!task) return err(res, 404, 'Task not found');
   if (!runner.stop(task.id)) return err(res, 409, 'Task is not running');
@@ -306,7 +311,7 @@ app.post('/api/tasks/:id/stop', (req, res) => {
 // Registers a pending approval and holds the response open until the user decides
 // in the board, then replies with the CLI's { behavior, ... } decision contract.
 // Never errors out: a not-running task or a dropped connection resolves to a deny.
-app.post('/api/tasks/:id/permission', (req, res) => {
+app.post('/api/tasks/:id/permission', (req: Request, res: Response) => {
   const task = getTask(req.params.id);
   if (!task || !runner.isRunning(task.id)) {
     return res.json({ behavior: 'deny', message: 'Task is not running' });
@@ -324,7 +329,7 @@ app.post('/api/tasks/:id/permission', (req, res) => {
 
 // The user's answer to a pending prompt, from the board UI. Resolves the request
 // the bridge is waiting on. Idempotent: a stale/duplicate decision is a no-op.
-app.post('/api/tasks/:id/permissions/:reqId', (req, res) => {
+app.post('/api/tasks/:id/permissions/:reqId', (req: Request, res: Response) => {
   const task = getTask(req.params.id);
   if (!task) return err(res, 404, 'Task not found');
   const behavior = req.body && req.body.behavior === 'allow' ? 'allow' : 'deny';
@@ -336,7 +341,7 @@ app.post('/api/tasks/:id/permissions/:reqId', (req, res) => {
   res.json({ ok });
 });
 
-app.post('/api/tasks/:id/archive', (req, res) => {
+app.post('/api/tasks/:id/archive', (req: Request, res: Response) => {
   const task = getTask(req.params.id);
   if (!task) return err(res, 404, 'Task not found');
   if (runner.isRunning(task.id)) return err(res, 409, 'Stop the task before archiving');
@@ -347,7 +352,7 @@ app.post('/api/tasks/:id/archive', (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/tasks/:id/worktree/remove', async (req, res) => {
+app.post('/api/tasks/:id/worktree/remove', async (req: Request, res: Response) => {
   const task = getTask(req.params.id);
   if (!task) return err(res, 404, 'Task not found');
   if (runner.isRunning(task.id)) return err(res, 409, 'Stop the task first');
@@ -360,11 +365,11 @@ app.post('/api/tasks/:id/worktree/remove', async (req, res) => {
     broadcast({ type: 'task', task });
     res.json(task);
   } catch (e) {
-    err(res, 500, e.message);
+    err(res, 500, (e as Error).message);
   }
 });
 
-app.get('/api/tasks/:id/logs', (req, res) => {
+app.get('/api/tasks/:id/logs', (req: Request, res: Response) => {
   const task = getTask(req.params.id);
   if (!task) return err(res, 404, 'Task not found');
   res.json({ task, events: readLog(task.id) });
@@ -373,13 +378,13 @@ app.get('/api/tasks/:id/logs', (req, res) => {
 // Read-only lookup of the GitHub PR for a task's branch, via the `gh` CLI.
 // Never mutates task state or requires the task to be running; returns a typed
 // { pr, reason } result so a missing/failed `gh` never crashes the endpoint.
-app.get('/api/tasks/:id/pr', async (req, res) => {
+app.get('/api/tasks/:id/pr', async (req: Request, res: Response) => {
   const task = getTask(req.params.id);
   if (!task) return err(res, 404, 'Task not found');
   res.json(await github.prForTask(task));
 });
 
-app.get('/api/tasks/:id/worktree/status', async (req, res) => {
+app.get('/api/tasks/:id/worktree/status', async (req: Request, res: Response) => {
   const task = getTask(req.params.id);
   if (!task || !task.worktreePath) return err(res, 404, 'No worktree');
   res.json((await git.worktreeStatus(task.worktreePath)) || {});
@@ -389,13 +394,12 @@ app.get('/api/tasks/:id/worktree/status', async (req, res) => {
 
 /**
  * Start the HTTP server on 127.0.0.1.
- * @param {number} [port] - desired port; pass 0 for an OS-assigned free port.
- * @returns {Promise<{server: import('http').Server, port: number, url: string}>}
+ * @param port - desired port; pass 0 for an OS-assigned free port.
  */
-function start(port = process.env.PORT || 7777) {
+function start(port: string | number = process.env.PORT || 7777): Promise<{ server: Server; port: number; url: string }> {
   return new Promise((resolve, reject) => {
-    const server = app.listen(port, '127.0.0.1', () => {
-      const actual = server.address().port;
+    const server = app.listen(Number(port), '127.0.0.1', () => {
+      const actual = (server.address() as AddressInfo).port;
       const url = `http://127.0.0.1:${actual}`;
       // Tell the runner where the permission bridge should POST approval requests.
       runner.setBaseUrl(url);
@@ -405,9 +409,10 @@ function start(port = process.env.PORT || 7777) {
   });
 }
 
-module.exports = { app, start, runner };
+export { app, start, runner };
 
-// When run directly (`node server/index.js`), boot as a standalone server.
+// When run directly (`node server/index.js` / `tsx server/index.ts`), boot as a
+// standalone server.
 if (require.main === module) {
   start().then(({ port }) => {
     console.log(`\n  Sr. Popo is watching over your tasks at http://localhost:${port}\n`);

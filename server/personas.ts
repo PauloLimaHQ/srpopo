@@ -5,13 +5,21 @@
  *   - the checkboxes rendered in the New/Edit Task modal (via GET /api/personas), and
  *   - a role preamble PREPENDED to the prompt at dispatch time.
  *
- * Personas differ from add-ons (see addons.js) in where the text lands: a persona
+ * Personas differ from add-ons (see addons.ts) in where the text lands: a persona
  * frames *who* Claude is before it reads the task, so its instruction is injected
  * at the very beginning of the prompt. Add-ons frame *what to do at the end*, so
  * they are appended. To add a persona later, just append an entry below — nothing
  * else needs to change. Keep `instruction` a clear, standalone role directive.
  */
-const PERSONAS = [
+
+interface Persona {
+  id: string;
+  label: string;
+  hint: string;
+  instruction: string;
+}
+
+const PERSONAS: Persona[] = [
   {
     id: 'senior_engineer',
     label: 'Senior Engineer',
@@ -101,20 +109,20 @@ const PERSONAS = [
 const byId = new Map(PERSONAS.map((p) => [p.id, p]));
 
 // Lightweight catalog for the UI — the full instruction text stays server-side.
-function catalog() {
+function catalog(): Array<Pick<Persona, 'id' | 'label' | 'hint'>> {
   return PERSONAS.map(({ id, label, hint }) => ({ id, label, hint }));
 }
 
 // Keep only known ids, deduped, in catalog order.
-function sanitize(ids) {
+function sanitize(ids: unknown): string[] {
   if (!Array.isArray(ids)) return [];
   return PERSONAS.filter((p) => ids.includes(p.id)).map((p) => p.id);
 }
 
 // Build the role preamble prepended to a prompt for the given ids.
 // Returns '' when nothing is selected so the prompt is left untouched.
-function preambleFor(ids = []) {
-  const chosen = sanitize(ids).map((i) => byId.get(i));
+function preambleFor(ids: string[] = []): string {
+  const chosen = sanitize(ids).map((i) => byId.get(i)!);
   if (!chosen.length) return '';
   const blocks = chosen.map((p) => `## ${p.label}\n${p.instruction}`);
   const intro = chosen.length > 1
@@ -123,4 +131,4 @@ function preambleFor(ids = []) {
   return '# Personas\n\n' + intro + '\n\n' + blocks.join('\n\n') + '\n\n---\n\n';
 }
 
-module.exports = { PERSONAS, catalog, sanitize, preambleFor };
+export { PERSONAS, catalog, sanitize, preambleFor };

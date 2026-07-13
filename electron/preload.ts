@@ -1,6 +1,4 @@
-'use strict';
-
-const { contextBridge, ipcRenderer } = require('electron');
+import { contextBridge, ipcRenderer } from 'electron';
 
 // Minimal, safe bridge. The UI talks to the embedded server over HTTP as before;
 // this just lets it discover it's running inside Sr. Popo (and the base URL).
@@ -13,7 +11,7 @@ contextBridge.exposeInMainWorld('srpopo', {
 // Electron-only presentation tweaks — untouched when the UI runs in a browser.
 // 1) shift the top bar clear of the mac traffic lights (hiddenInset title bar)
 // 2) make the top bar a draggable window region; keep controls clickable.
-function applyElectronChrome() {
+function applyElectronChrome(): void {
   document.documentElement.classList.add('is-electron');
   const style = document.createElement('style');
   style.textContent = `

@@ -1,6 +1,8 @@
-const fs = require('fs');
-const path = require('path');
-const crypto = require('crypto');
+import fs from 'fs';
+import path from 'path';
+import crypto from 'crypto';
+
+import type { Db, LogEvent, Repo, Settings, Task } from './types';
 
 // When embedded in Electron the packaged app dir is read-only, so the main
 // process points us at a writable per-user location via SRPOPO_DATA_DIR.
@@ -12,14 +14,17 @@ fs.mkdirSync(LOGS_DIR, { recursive: true });
 
 // User-level preferences, persisted alongside repos/tasks in db.json. New keys
 // added here get their default backfilled on load, so old db.json files upgrade.
-const DEFAULT_SETTINGS = { notifications: true };
+const DEFAULT_SETTINGS: Settings = { notifications: true };
 
-let db = { repos: [], tasks: [], settings: { ...DEFAULT_SETTINGS } };
+let db: Db = { repos: [], tasks: [], settings: { ...DEFAULT_SETTINGS } };
 if (fs.existsSync(DB_PATH)) {
   try {
-    db = Object.assign({ repos: [], tasks: [], settings: {} }, JSON.parse(fs.readFileSync(DB_PATH, 'utf8')));
+    db = Object.assign(
+      { repos: [], tasks: [], settings: {} },
+      JSON.parse(fs.readFileSync(DB_PATH, 'utf8')),
+    ) as Db;
   } catch (err) {
-    console.error('[store] failed to read db.json, starting fresh:', err.message);
+    console.error('[store] failed to read db.json, starting fresh:', (err as Error).message);
   }
 }
 // Backfill any missing setting so the rest of the app can read them directly.
@@ -35,8 +40,8 @@ for (const t of db.tasks) {
   }
 }
 
-let saveTimer = null;
-function save() {
+let saveTimer: NodeJS.Timeout | null = null;
+function save(): void {
   if (saveTimer) return;
   saveTimer = setTimeout(() => {
     saveTimer = null;
@@ -46,26 +51,26 @@ function save() {
   }, 50);
 }
 
-function id() {
+function id(): string {
   return crypto.randomBytes(5).toString('hex');
 }
 
-function now() {
+function now(): string {
   return new Date().toISOString();
 }
 
-function logPath(taskId) {
+function logPath(taskId: string): string {
   return path.join(LOGS_DIR, `${taskId}.ndjson`);
 }
 
-function appendLog(taskId, event) {
+function appendLog(taskId: string, event: LogEvent): void {
   fs.appendFileSync(logPath(taskId), JSON.stringify(event) + '\n');
 }
 
-function readLog(taskId) {
+function readLog(taskId: string): unknown[] {
   const p = logPath(taskId);
   if (!fs.existsSync(p)) return [];
-  const out = [];
+  const out: unknown[] = [];
   for (const line of fs.readFileSync(p, 'utf8').split('\n')) {
     if (!line.trim()) continue;
     try { out.push(JSON.parse(line)); } catch { /* skip partial line */ }
@@ -73,12 +78,12 @@ function readLog(taskId) {
   return out;
 }
 
-function getTask(taskId) {
+function getTask(taskId: string): Task | undefined {
   return db.tasks.find((t) => t.id === taskId);
 }
 
-function getRepo(repoId) {
+function getRepo(repoId: string): Repo | undefined {
   return db.repos.find((r) => r.id === repoId);
 }
 
-module.exports = { db, save, id, now, appendLog, readLog, logPath, getTask, getRepo, DATA_DIR, DEFAULT_SETTINGS };
+export { db, save, id, now, appendLog, readLog, logPath, getTask, getRepo, DATA_DIR, DEFAULT_SETTINGS };

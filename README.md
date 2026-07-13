@@ -22,17 +22,22 @@ background so your tasks aren't interrupted when you close the window.
 
 ```bash
 npm install
-npm start          # launches the Electron app
+npm start          # compiles TypeScript (tsc) then launches the Electron app
 ```
 
 The embedded server binds to `127.0.0.1` (port `7777` in dev, a free port when
-packaged). To run the plain web server instead (no desktop shell):
+packaged). To run the plain web server instead (no desktop shell) — this runs the
+TypeScript directly with [`tsx`](https://tsx.is), no build step needed:
 
 ```bash
 npm run server     # http://localhost:7777
+npm run server:dev # same, with watch reload
 ```
 
 Options: `CLAUDE_BIN=/path/to/claude npm start`
+
+The Node-side code (`server/`, `electron/`, `tests/`) is **TypeScript**; the
+browser UI in `public/` stays vanilla JS with no build step.
 
 ## Build
 
@@ -50,11 +55,13 @@ Output lands in `release/`. Builds are **unsigned** for now (open-source tool):
 
 To sign/notarize later, add credentials to `package.json > build.mac` / `build.win`.
 
-## Lint & test
+## Type-check, lint & test
 
 ```bash
-npm run lint       # ESLint (flat config in eslint.config.js)
-npm test           # node --test smoke suite (tests/)
+npm run typecheck  # tsc --noEmit (type-check only)
+npm run lint       # ESLint (flat config in eslint.config.js — TS + public/ JS)
+npm test           # node:test smoke suite (tests/), run through tsx
+npm run build      # tsc → compile server/ + electron/ to dist/
 ```
 
 ## Continuous integration & releases
@@ -123,12 +130,15 @@ Run as many tasks in parallel as you like — each is an independent `claude` pr
 
 ## Architecture
 
-- `server/index.js` — Express API + static UI (binds to 127.0.0.1 only)
-- `server/runner.js` — spawns/kills `claude` CLI processes, parses the stream-json session feed
-- `server/git.js` — worktree lifecycle
-- `server/bus.js` — SSE fan-out for live board + timeline updates
-- `server/addons.js` — catalog of opt-in task behaviors (self-review, open a PR, …)
-- `public/` — dependency-free vanilla JS UI
+- `server/index.ts` — Express API + static UI (binds to 127.0.0.1 only)
+- `server/runner.ts` — spawns/kills `claude` CLI processes, parses the stream-json session feed
+- `server/git.ts` — worktree lifecycle
+- `server/bus.ts` — SSE fan-out for live board + timeline updates
+- `server/addons.ts` — catalog of opt-in task behaviors (self-review, open a PR, …)
+- `public/` — dependency-free vanilla JS UI (no build step)
+
+The Node-side is TypeScript (`tsx` in dev, `tsc` → `dist/` for builds); `public/`
+is served static as-is.
 
 For the full architecture map, invariants, and conventions, see [`CLAUDE.md`](./CLAUDE.md) —
 it's the guide Claude Code (and contributors) follow when working in this repo.
@@ -144,7 +154,7 @@ Sr. Popo is open source (MIT) and built to be maintained with Claude Code itself
 - [`SECURITY.md`](./SECURITY.md) — design guarantees and how to report a vulnerability.
 - [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md) — community expectations.
 
-Every change is gated on `npm run lint && npm test`; CI re-runs both and packages the
+Every change is gated on `npm run typecheck && npm run lint && npm test`; CI re-runs all three and packages the
 app on macOS + Windows.
 
 ## License

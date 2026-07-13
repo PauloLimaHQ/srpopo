@@ -17,42 +17,58 @@ Ship changes that keep it: **local-first, dependency-light, and obviously safe.*
 
 ## Repository map
 
+The Node-side code (`server/**`, `electron/**`, `tests/**`) is **TypeScript**,
+compiled by `tsc` to `dist/` and run in dev with [`tsx`](https://tsx.is) (no
+pre-compile step in dev). `public/**` stays vanilla browser JavaScript, served
+static with **no build step** (see Conventions).
+
 | Path | Role |
 |---|---|
-| `server/index.js` | Express REST API + static UI host. Binds `127.0.0.1` only. |
-| `server/runner.js` | Spawns/kills the `claude` CLI, parses its `stream-json` session feed. |
-| `server/store.js` | JSON persistence (`db.json`) + append-only per-task NDJSON logs. |
-| `server/git.js` | Worktree lifecycle (`git worktree add/remove`). |
-| `server/bus.js` | Server-Sent Events fan-out for the live board + timeline. |
-| `server/addons.js` | Catalog of opt-in task behaviors (see "Add-ons" below). |
-| `server/permissions.js` | In-memory registry of pending tool-approval prompts (see "Interactive permissions"). |
-| `server/permission-mcp.js` | Standalone MCP stdio bridge `claude` calls to ask the user before running a tool. |
-| `server/groomer.js` | Meta-prompt + result parser for "Brief an Idea" (see "Grooming" below). |
-| `electron/main.js` | macOS tray/menu-bar app shell; boots the server on a local port. |
-| `electron/preload.js` | Minimal, safe `contextBridge` (folder picker, base URL). |
-| `public/` | Dependency-free vanilla-JS Kanban UI (`app.js`, `index.html`, `styles.css`). |
+| `server/index.ts` | Express REST API + static UI host. Binds `127.0.0.1` only. |
+| `server/runner.ts` | Spawns/kills the `claude` CLI, parses its `stream-json` session feed. |
+| `server/store.ts` | JSON persistence (`db.json`) + append-only per-task NDJSON logs. |
+| `server/git.ts` | Worktree lifecycle (`git worktree add/remove`). |
+| `server/github.ts` | Read-only `gh` CLI lookup of a task's pull request. |
+| `server/bus.ts` | Server-Sent Events fan-out for the live board + timeline. |
+| `server/addons.ts` | Catalog of opt-in task behaviors (see "Add-ons" below). |
+| `server/personas.ts` | Catalog of expert-persona role preambles. |
+| `server/permissions.ts` | In-memory registry of pending tool-approval prompts (see "Interactive permissions"). |
+| `server/permission-mcp.js` | **Stays plain JS.** Standalone MCP stdio bridge `claude` spawns to ask before running a tool — kept JS so it runs without a TS loader in both dev and the packaged app. `tsc` copies it into `dist/` untouched (`allowJs`). |
+| `server/groomer.ts` | Meta-prompt + result parser for "Brief an Idea" (see "Grooming" below). |
+| `server/types.ts` | Shared interfaces (`Task`, `Repo`, `Db`, `Decision`, …). Typing only. |
+| `server/paths.ts` | Resolves the app root (`public/`, `assets/`, `build/`) from source or `dist/`. |
+| `electron/main.ts` | macOS tray/menu-bar app shell; boots the server on a local port. |
+| `electron/preload.ts` | Minimal, safe `contextBridge` (folder picker, base URL). |
+| `public/` | Dependency-free vanilla-JS Kanban UI (`app.js`, `index.html`, `styles.css`). No build step. |
 | `public/icons.js` | Inline-SVG icon set (Lucide) + a tiny renderer/hydrator. The only source of UI glyphs — no emojis. |
-| `tests/` | `node --test` smoke suite. |
+| `tests/smoke.test.ts` | `node:test` smoke suite, run via `tsx`. |
+| `tsconfig.json` | `tsc` config: CommonJS output → `dist/`, `strict`, `rootDir: "."`. |
+| `dist/` | Compiled JS (gitignored). What Electron + electron-builder load. |
 
 ## Commands
 
 ```bash
-npm start          # launch the Electron desktop app (dev, fixed port 7777)
-npm run server     # plain web server only, http://localhost:7777
-npm run server:dev # server with --watch reload
-npm run lint       # ESLint (flat config, eslint.config.js)
-npm test           # node --test smoke suite
-npm run pack       # unpacked app build (quick local check)
-npm run dist:mac   # signed-less macOS .dmg/.zip → release/
-npm run dist:win   # Windows installer → release/
+npm start          # build (tsc) then launch the Electron desktop app (dev, fixed port 7777)
+npm run server     # plain web server only, via tsx — http://localhost:7777
+npm run server:dev # server with tsx watch reload
+npm run build      # tsc → compile server/ + electron/ to dist/
+npm run typecheck  # tsc --noEmit (type-check only, no output)
+npm run lint       # ESLint (flat config, eslint.config.js — TS + public/ JS)
+npm test           # node:test smoke suite, run through tsx
+npm run pack       # build, then unpacked app (quick local check)
+npm run dist:mac   # build, then signed-less macOS .dmg/.zip → release/
+npm run dist:win   # build, then Windows installer → release/
 ```
 
-Always run `npm run lint && npm test` before proposing a change is done.
+Always run `npm run typecheck && npm run lint && npm test` before proposing a
+change is done. `npm run server` / `npm test` run the TypeScript directly with
+`tsx` (no build needed); the Electron and `dist:*`/`pack` scripts compile to
+`dist/` first.
 
 ## The task lifecycle (the product's core "workflow")
 
 A task moves through fixed board columns. Preserve these names and semantics — the
-UI, the API, and `runner.js` all agree on them:
+UI, the API, and `runner.ts` all agree on them:
 
 `backlog` → `ready` → **`running`** → `review` → `done`, with **`grooming`** as an
 entry state (from "Brief an Idea") and `failed` as a side state.
@@ -89,9 +105,20 @@ would require it.
 
 ## Conventions
 
-- **CommonJS** (`require`/`module.exports`), Node 18+. No ESM, no TypeScript.
-- **Keep runtime dependencies minimal.** `express` is the only one. Do not add a
-  frontend framework or a build step — the UI is intentionally vanilla JS served static.
+- **TypeScript, CommonJS output** for all Node-side code (`server/**`,
+  `electron/**`, `tests/**`), Node 18+. `tsconfig.json` emits `module: commonjs`
+  so `require`/`module.exports` still resolve exactly as before — `dist/` must
+  stay loadable the same way today's JS is. Write ESM `import`/`export` in the
+  `.ts` sources; keep `strict` on and type things properly. Dev/test run via
+  `tsx` (no pre-compile); `tsc` builds `dist/` for Electron and packaging.
+  Exception: `server/permission-mcp.js` stays plain JS (it's spawned as a
+  standalone Node process and must run without a TS loader).
+- **`public/**` stays vanilla browser JS with no build step** — no bundler, no
+  framework, served static. That invariant is unchanged by the TS migration.
+- **Keep runtime dependencies minimal.** `express` is the only entry in
+  `dependencies`. Everything TypeScript-related (`typescript`, `tsx`,
+  `typescript-eslint`, `@types/*`) is a **devDependency** — nothing new ships at
+  runtime. Don't add a frontend framework.
 - 2-space indent, single quotes, semicolons — match the existing files and ESLint.
 - **No emojis in the UI — use icons.** Glyphs come from `public/icons.js`, a small
   inline-SVG set of [Lucide](https://lucide.dev) icons (the same open source set
@@ -110,7 +137,7 @@ would require it.
 
 ## Add-ons: how to extend task behavior
 
-`server/addons.js` is the single source of truth for optional per-task behaviors
+`server/addons.ts` is the single source of truth for optional per-task behaviors
 (e.g. "open a PR at the end", "self-review the diff"). Each entry drives **both** the
 UI checkbox (`GET /api/addons`) and the extra prompt text injected at dispatch. To add
 one, append an entry with `{ id, label, hint, instruction, allow? }` — nothing else
@@ -137,7 +164,7 @@ The wiring:
 - When `claude` needs approval it calls the bridge's `approve` tool; the bridge POSTs
   `{ tool_name, input }` to `POST /api/tasks/:id/permission` (the server's base URL is
   handed to the runner via `runner.setBaseUrl` on boot) and **blocks** on the response.
-- That endpoint registers a pending request in **`server/permissions.js`**, broadcasts a
+- That endpoint registers a pending request in **`server/permissions.ts`**, broadcasts a
   `permission` event, and holds the connection open until the user answers. The board
   renders Allow/Deny; `POST /api/tasks/:id/permissions/:reqId` resolves it. The reply to
   the bridge is the CLI's contract: `{ behavior:'allow', updatedInput? }` or
@@ -158,10 +185,10 @@ handshake against a real run — the smoke suite covers the pieces but not the l
 kicks off `runner.groom`. That runs a **read-only** `claude -p` session in the repo
 (only research tools are auto-approved — see `groomArgs`, no worktree, never a write)
 whose whole job is prompt engineering: explore the code, then rewrite the idea into a
-self-contained task prompt. `server/groomer.js` owns the meta-prompt and the parser
+self-contained task prompt. `server/groomer.ts` owns the meta-prompt and the parser
 that recovers the `{ title, prompt }` spec (emitted between `@@SRPOPO_SPEC_*@@`
 sentinels). On success the task lands in `ready` with the groomed prompt; the original
-idea is preserved on `task.brief`. To change how ideas are groomed, edit `groomer.js` —
+idea is preserved on `task.brief`. To change how ideas are groomed, edit `groomer.ts` —
 it is the single source of truth for that flow.
 
 ## Maintaining this repo with Claude (the meta-workflow)
@@ -176,10 +203,10 @@ Sr. Popo is built to maintain itself. Prefer this loop for non-trivial changes:
    diff, the tool calls, and the final cost/turns before accepting.
 4. Locally, whether the change came from Sr. Popo or a direct session, gate it on:
    ```bash
-   npm run lint && npm test
+   npm run typecheck && npm run lint && npm test
    ```
 5. Keep commits small and conventional; open a PR (see `CONTRIBUTING.md`). CI
-   (`.github/workflows/ci.yml`) re-runs lint/test and packages on macOS + Windows.
+   (`.github/workflows/ci.yml`) re-runs typecheck/lint/test and packages on macOS + Windows.
 
 When you (Claude) work here directly: make the smallest change that satisfies the task,
 respect the invariants above, run lint + test, and summarize the diff and any risks.

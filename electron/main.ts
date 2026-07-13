@@ -1,25 +1,27 @@
-'use strict';
+import path from 'path';
+import { app, BrowserWindow, Tray, Menu, nativeImage, shell, ipcMain, dialog, Notification } from 'electron';
 
-const path = require('path');
-const { app, BrowserWindow, Tray, Menu, nativeImage, shell, ipcMain, dialog, Notification } = require('electron');
+import { appRoot } from '../server/paths';
 
 // Pin the name so dev and packaged builds resolve the SAME userData folder
 // (~/Library/Application Support/Sr. Popo) instead of splitting on package name.
 app.setName('Sr. Popo');
 
 // Persist Sr. Popo's data (db.json + logs) in a writable per-user location.
-// The server module reads this before it touches the filesystem.
+// The server module reads this before it touches the filesystem — so require it
+// (in place) only AFTER the env var is set, rather than importing it at the top
+// where the binding would hoist above this assignment.
 process.env.SRPOPO_DATA_DIR = path.join(app.getPath('userData'), 'data');
 
-const server = require('../server/index');
-const store = require('../server/store'); // read live task state for the tray
-const bus = require('../server/bus'); // task/log events → refresh the tray menu
+const server = require('../server/index') as typeof import('../server/index');
+const store = require('../server/store') as typeof import('../server/store'); // read live task state for the tray
+const bus = require('../server/bus') as typeof import('../server/bus'); // task/log events → refresh the tray menu
 
 const isDev = !app.isPackaged;
 
-let mainWindow = null;
-let tray = null;
-let httpUrl = null;
+let mainWindow: BrowserWindow | null = null;
+let tray: Tray | null = null;
+let httpUrl = '';
 let isQuitting = false;
 
 // Single-instance: focus the existing window instead of spawning a second app.
@@ -29,7 +31,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on('second-instance', () => showWindow());
 }
 
-function createWindow() {
+function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 860,
@@ -39,7 +41,7 @@ function createWindow() {
     backgroundColor: '#1a1436',
     titleBarStyle: 'hiddenInset', // native mac traffic lights over the UI
     show: false,
-    icon: path.join(__dirname, '..', 'build', 'icon.png'),
+    icon: path.join(appRoot(), 'build', 'icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -49,7 +51,7 @@ function createWindow() {
 
   mainWindow.loadURL(httpUrl);
 
-  mainWindow.once('ready-to-show', () => mainWindow.show());
+  mainWindow.once('ready-to-show', () => mainWindow!.show());
 
   // Open external links (e.g. claude.com) in the default browser, not in-app.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -64,8 +66,8 @@ function createWindow() {
   mainWindow.on('close', (e) => {
     if (!isQuitting) {
       e.preventDefault();
-      mainWindow.hide();
-      if (process.platform === 'darwin') app.dock.hide();
+      mainWindow!.hide();
+      if (process.platform === 'darwin') app.dock?.hide();
     }
   });
 
@@ -74,23 +76,23 @@ function createWindow() {
   });
 }
 
-function showWindow() {
+function showWindow(): void {
   if (!mainWindow) {
     createWindow();
   } else {
     mainWindow.show();
     mainWindow.focus();
   }
-  if (process.platform === 'darwin') app.dock.show();
+  if (process.platform === 'darwin') app.dock?.show();
 }
 
 // Show the board and jump straight to a task's drawer via the #task/<id> deep
 // link the renderer understands. Waits for the page if it's still loading.
-function openTask(taskId) {
+function openTask(taskId: string): void {
   showWindow();
   if (!mainWindow) return;
   const go = () =>
-    mainWindow.webContents
+    mainWindow!.webContents
       .executeJavaScript(
         `location.hash = ${JSON.stringify('#task/' + taskId)};` +
           `window.dispatchEvent(new HashChangeEvent('hashchange'));`
@@ -104,7 +106,7 @@ function openTask(taskId) {
 }
 
 // Human-friendly elapsed time since an ISO timestamp, e.g. "3m 20s".
-function formatElapsed(startedAt) {
+function formatElapsed(startedAt: string | null): string {
   if (!startedAt) return '';
   const secs = Math.max(0, Math.round((Date.now() - new Date(startedAt).getTime()) / 1000));
   if (secs < 60) return `${secs}s`;
@@ -123,22 +125,22 @@ function runningTasks() {
 // state a run (or grooming session) has just finished. We remember each task's
 // last-seen status so we can fire a native notification on that transition only.
 const LIVE_STATUSES = new Set(['running', 'grooming']);
-const lastStatus = new Map(); // taskId -> last status seen on the bus
+const lastStatus = new Map<string, string>(); // taskId -> last status seen on the bus
 
-function notificationsEnabled() {
+function notificationsEnabled(): boolean {
   return !store.db.settings || store.db.settings.notifications !== false;
 }
 
 // Fire a native notification when a task finishes. Only on a live→finished
 // transition, and never for a user-initiated stop (they already know).
-function maybeNotify(task) {
+function maybeNotify(task: import('../server/types').Task): void {
   const prev = lastStatus.get(task.id);
   lastStatus.set(task.id, task.status);
-  if (!LIVE_STATUSES.has(prev) || LIVE_STATUSES.has(task.status)) return;
+  if (!LIVE_STATUSES.has(prev as string) || LIVE_STATUSES.has(task.status)) return;
   if (task.lastOutcome === 'stopped') return;
   if (!notificationsEnabled() || !Notification.isSupported()) return;
 
-  let title, body;
+  let title: string, body: string;
   if (task.status === 'failed') {
     title = `❌ Task failed — ${task.title}`;
     body = task.lastError ? String(task.lastError).slice(0, 140) : task.repoName;
@@ -160,11 +162,11 @@ function maybeNotify(task) {
 
 // Rebuild the tray context menu from the current set of running tasks so the
 // list (and each task's elapsed time) stays live in the menu bar.
-function refreshTray() {
+function refreshTray(): void {
   if (!tray) return;
   const running = runningTasks();
 
-  const items = [];
+  const items: Electron.MenuItemConstructorOptions[] = [];
   if (running.length) {
     items.push({ label: `Running (${running.length})`, enabled: false });
     for (const t of running) {
@@ -212,13 +214,13 @@ function refreshTray() {
   }
 }
 
-function createTray() {
+function createTray(): void {
   // Monochrome menu-bar glyph. It's a macOS *template* image: a single-color
   // silhouette that macOS recolors to match the menu bar (light/dark/selected),
   // the way ChatGPT, Docker, and Dropbox render theirs. (@2x is picked up
   // automatically on retina — the size actually shown on modern Macs.)
   const trayIcon = nativeImage.createFromPath(
-    path.join(__dirname, '..', 'assets', 'tray.png')
+    path.join(appRoot(), 'assets', 'tray.png')
   );
   trayIcon.setTemplateImage(true);
 
@@ -227,7 +229,7 @@ function createTray() {
 
   // Rebuild on task lifecycle changes (log spam is ignored so we don't thrash),
   // and surface a desktop notification when a run finishes.
-  bus.subscribe((msg) => {
+  bus.subscribe((msg: any) => {
     if (!msg) return;
     if (msg.type === 'task') {
       maybeNotify(msg.task);
@@ -246,7 +248,7 @@ function createTray() {
   tray.on('click', () => {
     if (mainWindow && mainWindow.isVisible()) {
       mainWindow.hide();
-      if (process.platform === 'darwin') app.dock.hide();
+      if (process.platform === 'darwin') app.dock?.hide();
     } else {
       showWindow();
     }
@@ -257,7 +259,7 @@ app.whenReady().then(async () => {
   try {
     const started = await server.start(isDev ? 7777 : 0); // fixed port in dev, free port when packaged
     httpUrl = started.url;
-  } catch (e) {
+  } catch (_e) {
     // Fall back to an OS-assigned port if the preferred one is taken.
     const started = await server.start(0);
     httpUrl = started.url;
@@ -278,7 +280,7 @@ app.on('before-quit', () => {
   isQuitting = true;
   try {
     server.runner.stopAll(); // terminate any live claude processes
-  } catch (_) {}
+  } catch (_) { /* nothing to stop */ }
 });
 
 // Let the renderer ask the main process for its own base URL if it ever needs it.
@@ -287,7 +289,7 @@ ipcMain.handle('srpopo:get-url', () => httpUrl);
 // Open the native folder picker so the user can select a repo instead of
 // typing an absolute path. Returns the chosen path, or null if cancelled.
 ipcMain.handle('srpopo:pick-folder', async () => {
-  const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+  const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow!, {
     title: 'Select a repository folder',
     buttonLabel: 'Add Repository',
     properties: ['openDirectory', 'createDirectory'],

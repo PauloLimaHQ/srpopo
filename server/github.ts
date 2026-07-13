@@ -2,22 +2,31 @@
  * GitHub integration — surface the pull request that exists for a task's branch.
  *
  * This is a small, self-contained integration module (not a general plugin
- * framework): it mirrors the single-source-of-truth pattern of addons.js /
- * personas.js so a future plugin system could grow around it. All GitHub access
+ * framework): it mirrors the single-source-of-truth pattern of addons.ts /
+ * personas.ts so a future plugin system could grow around it. All GitHub access
  * goes through the `gh` CLI (`execFile`, no shell), reusing the user's existing
  * `gh auth` — no tokens are stored and nothing leaves the machine beyond what
  * `gh` already does. Every lookup is read-only and non-throwing.
  */
-const { execFile } = require('child_process');
+import { execFile } from 'child_process';
+import type { ExecFileException } from 'child_process';
+
+import type { PrInfo, Task } from './types';
 
 const GH_TIMEOUT_MS = 30000;
 
 // Fields we ask `gh pr list` to emit; parsePrList expects exactly these.
 const PR_JSON_FIELDS = 'number,url,state,title,isDraft,updatedAt';
 
+interface GhResult {
+  err: ExecFileException | null;
+  stdout: string;
+  stderr: string;
+}
+
 // Run `gh` with an argument array (never a shell string) in the given cwd.
 // Resolves — never rejects — with the raw outcome so callers can classify it.
-function gh(cwd, args) {
+function gh(cwd: string | undefined, args: string[]): Promise<GhResult> {
   return new Promise((resolve) => {
     execFile('gh', args, { cwd, timeout: GH_TIMEOUT_MS }, (err, stdout, stderr) => {
       resolve({ err, stdout: stdout || '', stderr: stderr || '' });
@@ -26,7 +35,7 @@ function gh(cwd, args) {
 }
 
 // Best-effort mapping of a failed `gh` invocation to a typed reason.
-function classifyError({ err, stderr }) {
+function classifyError({ err, stderr }: Pick<GhResult, 'err' | 'stderr'>): string {
   if (err && err.code === 'ENOENT') return 'gh-missing';
   const msg = String(stderr || '').toLowerCase();
   if (/auth|logged in|log in|login/.test(msg)) return 'not-authed';
@@ -39,8 +48,8 @@ function classifyError({ err, stderr }) {
 // Pure helper: normalize a raw `gh pr list --json ...` payload into our small PR
 // shape, or return null for an empty/unparsable list. State is lower-cased
 // (open/closed/merged); draftness is kept separately on `isDraft`.
-function parsePrList(stdout) {
-  let arr;
+function parsePrList(stdout: string): PrInfo | null {
+  let arr: unknown;
   try {
     arr = JSON.parse(stdout);
   } catch {
@@ -61,7 +70,7 @@ function parsePrList(stdout) {
 
 // Resolve the PR (if any) associated with a task's head branch. Returns a typed,
 // non-throwing result: { pr: {...} } on success, otherwise { pr: null, reason }.
-async function prForTask(task) {
+async function prForTask(task: Partial<Task>): Promise<{ pr: PrInfo | null; reason?: string }> {
   const branch = task && task.branch;
   if (!branch) return { pr: null, reason: 'no-branch' };
 
@@ -80,4 +89,4 @@ async function prForTask(task) {
   return { pr };
 }
 
-module.exports = { prForTask, parsePrList, PR_JSON_FIELDS };
+export { prForTask, parsePrList, PR_JSON_FIELDS };

@@ -19,7 +19,7 @@ const SPEC_END = '@@SRPOPO_SPEC_END@@';
 // The prompt-engineer brief handed to the read-only grooming session. It is
 // grounded in the repo (the session explores it) and must end with the spec
 // JSON between the sentinels so parseResult can recover it reliably.
-function metaPrompt(brief) {
+function metaPrompt(brief: unknown): string {
   return [
     'You are an expert prompt engineer and staff-level software lead working inside a git repository.',
     'A developer has a rough idea for a change they want to make in THIS codebase, but it is not yet',
@@ -58,7 +58,7 @@ function metaPrompt(brief) {
 // A short, safe title derived straight from the raw idea. Used as the task's
 // placeholder title while grooming runs, and as a fallback if grooming can't
 // produce a structured title.
-function deriveTitle(brief) {
+function deriveTitle(brief: unknown): string {
   const line = String(brief || '')
     .split('\n')
     .map((s) => s.trim())
@@ -69,10 +69,10 @@ function deriveTitle(brief) {
 // Recover the { title, prompt } spec from the grooming session's final text.
 // Prefers the sentinel-delimited JSON; falls back to a ```json fence, then to a
 // bare {…} span. Returns null when no usable prompt can be parsed.
-function parseResult(text) {
+function parseResult(text: unknown): { title: string; prompt: string } | null {
   if (typeof text !== 'string' || !text) return null;
 
-  let json = null;
+  let json: string | null = null;
   const start = text.lastIndexOf(SPEC_START);
   const end = text.lastIndexOf(SPEC_END);
   if (start !== -1 && end > start) {
@@ -100,4 +100,4 @@ function parseResult(text) {
   }
 }
 
-module.exports = { metaPrompt, parseResult, deriveTitle, SPEC_START, SPEC_END };
+export { metaPrompt, parseResult, deriveTitle, SPEC_START, SPEC_END };
