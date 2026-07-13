@@ -217,9 +217,18 @@ test('permissions: an unanswered prompt auto-denies after the timeout', async ()
   const permissions = require('../server/permissions');
   permissions._setTimeoutMs(20); // shrink the 30-minute default for the test
   const { promise } = permissions.create('perm-task-3', 'Bash', {});
-  const decision = await promise;
-  assert.deepStrictEqual(decision, { behavior: 'deny', message: 'Timed out waiting for approval' }, 'times out to a deny');
-  permissions._setTimeoutMs(permissions.DEFAULT_TIMEOUT_MS); // restore
+  // The module's auto-deny timer is .unref()'d (so a pending prompt never keeps
+  // the real server alive). In the bare test process that timer would then be
+  // the only handle left, and Node would exit before it fires. Hold a ref'd
+  // handle open across the await so the timeout actually resolves under CI.
+  const keepAlive = setInterval(() => {}, 5);
+  try {
+    const decision = await promise;
+    assert.deepStrictEqual(decision, { behavior: 'deny', message: 'Timed out waiting for approval' }, 'times out to a deny');
+  } finally {
+    clearInterval(keepAlive);
+    permissions._setTimeoutMs(permissions.DEFAULT_TIMEOUT_MS); // restore
+  }
 });
 
 test('personas: sanitize keeps only known ids and preamble is prepended', () => {
