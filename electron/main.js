@@ -1,7 +1,7 @@
 'use strict';
 
 const path = require('path');
-const { app, BrowserWindow, Tray, Menu, nativeImage, shell, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, shell, ipcMain, dialog, Notification } = require('electron');
 
 // Pin the name so dev and packaged builds resolve the SAME userData folder
 // (~/Library/Application Support/Sr. Popo) instead of splitting on package name.
@@ -118,6 +118,46 @@ function runningTasks() {
   return store.db.tasks.filter((t) => t.status === 'running' && !t.archived);
 }
 
+// ── desktop notifications ──
+// A task is "live" while its claude child process runs; when it leaves that
+// state a run (or grooming session) has just finished. We remember each task's
+// last-seen status so we can fire a native notification on that transition only.
+const LIVE_STATUSES = new Set(['running', 'grooming']);
+const lastStatus = new Map(); // taskId -> last status seen on the bus
+
+function notificationsEnabled() {
+  return !store.db.settings || store.db.settings.notifications !== false;
+}
+
+// Fire a native notification when a task finishes. Only on a live→finished
+// transition, and never for a user-initiated stop (they already know).
+function maybeNotify(task) {
+  const prev = lastStatus.get(task.id);
+  lastStatus.set(task.id, task.status);
+  if (!LIVE_STATUSES.has(prev) || LIVE_STATUSES.has(task.status)) return;
+  if (task.lastOutcome === 'stopped') return;
+  if (!notificationsEnabled() || !Notification.isSupported()) return;
+
+  let title, body;
+  if (task.status === 'failed') {
+    title = `❌ Task failed — ${task.title}`;
+    body = task.lastError ? String(task.lastError).slice(0, 140) : task.repoName;
+  } else if (task.lastOutcome === 'groomed') {
+    title = `✨ Idea groomed — ${task.title}`;
+    body = `${task.repoName} · ready to run`;
+  } else {
+    title = `✅ Task finished — ${task.title}`;
+    const bits = [task.repoName];
+    if (task.costUsd > 0) bits.push(`$${task.costUsd.toFixed(2)}`);
+    if (task.numTurns != null) bits.push(`${task.numTurns} turns`);
+    body = bits.join(' · ');
+  }
+
+  const note = new Notification({ title, body, silent: false });
+  note.on('click', () => openTask(task.id)); // jump straight to the task
+  note.show();
+}
+
 // Rebuild the tray context menu from the current set of running tasks so the
 // list (and each task's elapsed time) stays live in the menu bar.
 function refreshTray() {
@@ -185,9 +225,16 @@ function createTray() {
   tray = new Tray(trayIcon);
   refreshTray();
 
-  // Rebuild on task lifecycle changes (log spam is ignored so we don't thrash).
+  // Rebuild on task lifecycle changes (log spam is ignored so we don't thrash),
+  // and surface a desktop notification when a run finishes.
   bus.subscribe((msg) => {
-    if (msg && (msg.type === 'task' || msg.type === 'task-removed')) refreshTray();
+    if (!msg) return;
+    if (msg.type === 'task') {
+      maybeNotify(msg.task);
+      refreshTray();
+    } else if (msg.type === 'task-removed') {
+      refreshTray();
+    }
   });
 
   // Keep elapsed times ticking, but only while something is actually running.

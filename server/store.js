@@ -10,14 +10,20 @@ const LOGS_DIR = path.join(DATA_DIR, 'logs');
 
 fs.mkdirSync(LOGS_DIR, { recursive: true });
 
-let db = { repos: [], tasks: [] };
+// User-level preferences, persisted alongside repos/tasks in db.json. New keys
+// added here get their default backfilled on load, so old db.json files upgrade.
+const DEFAULT_SETTINGS = { notifications: true };
+
+let db = { repos: [], tasks: [], settings: { ...DEFAULT_SETTINGS } };
 if (fs.existsSync(DB_PATH)) {
   try {
-    db = Object.assign({ repos: [], tasks: [] }, JSON.parse(fs.readFileSync(DB_PATH, 'utf8')));
+    db = Object.assign({ repos: [], tasks: [], settings: {} }, JSON.parse(fs.readFileSync(DB_PATH, 'utf8')));
   } catch (err) {
     console.error('[store] failed to read db.json, starting fresh:', err.message);
   }
 }
+// Backfill any missing setting so the rest of the app can read them directly.
+db.settings = Object.assign({ ...DEFAULT_SETTINGS }, db.settings || {});
 
 // Any task marked running/grooming when the server starts is an orphan from a
 // previous run — its child claude process died with the server.
@@ -75,4 +81,4 @@ function getRepo(repoId) {
   return db.repos.find((r) => r.id === repoId);
 }
 
-module.exports = { db, save, id, now, appendLog, readLog, logPath, getTask, getRepo, DATA_DIR };
+module.exports = { db, save, id, now, appendLog, readLog, logPath, getTask, getRepo, DATA_DIR, DEFAULT_SETTINGS };

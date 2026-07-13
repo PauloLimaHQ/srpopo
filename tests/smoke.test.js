@@ -14,6 +14,13 @@ test('store exposes id/now helpers', () => {
   assert.ok(store.db && Array.isArray(store.db.tasks), 'db.tasks should be an array');
 });
 
+test('store: settings default to notifications on and are backfilled', () => {
+  const store = require('../server/store');
+  assert.ok(store.db.settings && typeof store.db.settings === 'object', 'db.settings is an object');
+  assert.strictEqual(store.db.settings.notifications, true, 'notifications default on');
+  assert.strictEqual(store.DEFAULT_SETTINGS.notifications, true, 'DEFAULT_SETTINGS is exported');
+});
+
 test('server modules load without throwing', () => {
   assert.doesNotThrow(() => {
     require('../server/git');

@@ -9,8 +9,13 @@
     openTaskId: null, // task shown in drawer
     addons: [],       // catalog of optional task behaviors (from /api/addons)
     personas: [],     // catalog of expert personas (from /api/personas)
+    settings: { notifications: true }, // user preferences (from /api/settings)
     filters: { search: '', repoIds: new Set() }, // board filters (project + text)
   };
+
+  // In the desktop app native notifications are fired by the Electron shell; in a
+  // plain browser we fall back to the Web Notifications API from here.
+  const isElectron = !!(window.srpopo && window.srpopo.isElectron);
 
   const COLUMNS = [
     { key: 'backlog', label: 'Backlog', dot: '#8b93a8' },
@@ -858,6 +863,97 @@
     openReposModal();
   });
 
+  // ---------- settings ----------
+  const notificationsOn = () => state.settings.notifications !== false;
+
+  function browserNotifySupported() {
+    return typeof Notification !== 'undefined';
+  }
+
+  // Ask the browser for notification permission (no-op / already-resolved cases
+  // return synchronously via the resolved promise). Not needed under Electron.
+  async function ensureNotifyPermission() {
+    if (isElectron || !browserNotifySupported()) return false;
+    if (Notification.permission === 'granted') return true;
+    if (Notification.permission === 'denied') return false;
+    try { return (await Notification.requestPermission()) === 'granted'; }
+    catch { return false; }
+  }
+
+  // Show a Web Notification (browser mode only). `force` surfaces a toast when we
+  // can't — used by the "test" button so the click always gives feedback.
+  function showBrowserNotification(title, opts, force = false) {
+    if (!browserNotifySupported()) {
+      if (force) toast('This browser does not support notifications', 'info');
+      return;
+    }
+    if (Notification.permission === 'granted') {
+      try { new Notification(title, opts); } catch { /* ignore */ }
+    } else if (force) {
+      ensureNotifyPermission().then((ok) => {
+        if (ok) { try { new Notification(title, opts); } catch { /* ignore */ } }
+        else toast('Allow notifications for this site in your browser first', 'info');
+      });
+    }
+  }
+
+  const LIVE_STATUSES = new Set(['running', 'grooming']);
+  // Browser fallback: notify when a task leaves a live state (finished/failed/
+  // groomed). Under Electron the shell handles this natively, so skip it here.
+  function maybeNotifyBrowser(prev, task) {
+    if (isElectron || !notificationsOn()) return;
+    if (!prev || !LIVE_STATUSES.has(prev.status) || LIVE_STATUSES.has(task.status)) return;
+    if (task.lastOutcome === 'stopped') return;
+    let title, body;
+    if (task.status === 'failed') {
+      title = `❌ Task failed — ${task.title}`;
+      body = task.lastError ? String(task.lastError).slice(0, 140) : task.repoName;
+    } else if (task.lastOutcome === 'groomed') {
+      title = `✨ Idea groomed — ${task.title}`;
+      body = `${task.repoName} · ready to run`;
+    } else {
+      title = `✅ Task finished — ${task.title}`;
+      body = task.repoName;
+    }
+    showBrowserNotification(title, { body, tag: `srpopo-${task.id}` });
+  }
+
+  function updateNotifNote() {
+    const note = $('#setting-notif-note');
+    if (isElectron) { note.textContent = 'Delivered through your system’s notification center.'; return; }
+    if (!browserNotifySupported()) { note.textContent = 'This browser does not support notifications.'; return; }
+    if (Notification.permission === 'denied') {
+      note.textContent = 'Blocked — enable notifications for this site in your browser settings.';
+    } else {
+      note.textContent = 'Shown by your browser while Sr. Popo is open.';
+    }
+  }
+
+  function openSettingsModal() {
+    $('#setting-notifications').checked = notificationsOn();
+    updateNotifNote();
+    $('#modal-settings').classList.remove('hidden');
+  }
+
+  async function saveSettings(patch) {
+    try {
+      state.settings = await api('PATCH', '/api/settings', patch);
+    } catch (e) { toast(e.message); }
+  }
+
+  $('#btn-settings').addEventListener('click', openSettingsModal);
+  $('#settings-close').addEventListener('click', () => $('#modal-settings').classList.add('hidden'));
+  $('#setting-notifications').addEventListener('change', async (e) => {
+    const enabled = e.target.checked;
+    if (enabled) await ensureNotifyPermission(); // prompt on opt-in (browser only)
+    await saveSettings({ notifications: enabled });
+    updateNotifNote();
+  });
+  $('#setting-notif-test').addEventListener('click', () => {
+    // Works in both modes: under Electron the Web Notification routes to a native one.
+    showBrowserNotification('Sr. Popo', { body: 'Notifications are working. 🎉' }, true);
+  });
+
   // ---------- repos modal ----------
   function renderRepoList() {
     const ul = $('#repo-list');
@@ -950,9 +1046,17 @@
     es.onmessage = (e) => {
       const msg = JSON.parse(e.data);
       if (msg.type === 'task') {
+        const prev = state.tasks.get(msg.task.id);
         state.tasks.set(msg.task.id, msg.task);
         renderBoard();
         if (state.openTaskId === msg.task.id) renderDrawerHead(msg.task);
+        maybeNotifyBrowser(prev, msg.task);
+      } else if (msg.type === 'settings') {
+        state.settings = msg.settings;
+        if (!$('#modal-settings').classList.contains('hidden')) {
+          $('#setting-notifications').checked = notificationsOn();
+          updateNotifNote();
+        }
       } else if (msg.type === 'task-removed') {
         state.tasks.delete(msg.taskId);
         renderBoard();
@@ -982,9 +1086,10 @@
   // ---------- boot ----------
   async function boot() {
     try {
-      const { repos, tasks } = await api('GET', '/api/state');
+      const { repos, tasks, settings } = await api('GET', '/api/state');
       state.repos = repos;
       state.tasks = new Map(tasks.map((t) => [t.id, t]));
+      if (settings) state.settings = settings;
       loadFilters();
       $('#filter-search').value = state.filters.search;
       renderFilters();

@@ -288,6 +288,8 @@ main { flex: 1; min-height: 0; overflow: hidden; }
 #task-addon-list { display: flex; flex-direction: column; gap: 10px; }
 #task-addon-list:empty { display: none; }
 #task-personas > p.addon-hint { margin: 2px 0 0; }
+#setting-notif-note { margin: 0; }
+#setting-notif-test { align-self: flex-start; }
 
 /* ── persona picker: compact multi-select, Claude-desktop style ── */
 .persona-picker { position: relative; display: flex; flex-direction: column; gap: 8px; }

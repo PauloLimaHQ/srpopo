@@ -48,10 +48,24 @@ app.get('/api/state', (req, res) => {
   res.json({
     repos: db.repos,
     tasks: db.tasks.filter((t) => !t.archived),
+    settings: db.settings,
   });
 });
 
 app.get('/api/events', (req, res) => sse(req, res));
+
+// ---------- settings ----------
+
+// User preferences (e.g. desktop notifications). Persisted in db.json and
+// broadcast so every connected board — and the Electron shell — stays in sync.
+app.get('/api/settings', (req, res) => res.json(db.settings));
+
+app.patch('/api/settings', (req, res) => {
+  if ('notifications' in req.body) db.settings.notifications = !!req.body.notifications;
+  save();
+  broadcast({ type: 'settings', settings: db.settings });
+  res.json(db.settings);
+});
 
 // Catalog of optional task behaviors the UI renders as checkboxes.
 app.get('/api/addons', (req, res) => res.json(addons.catalog()));
