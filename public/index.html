@@ -284,6 +284,13 @@
               </label>
               <button class="btn ghost" id="setting-sound-test">Play a test sound</button>
             </fieldset>
+            <fieldset class="addons">
+              <legend>Concurrency</legend>
+              <label>Max parallel sessions <span class="field-hint">— dispatched runs + grooming sessions combined</span>
+                <input id="setting-max-parallel" type="number" min="1" max="20" step="1" />
+              </label>
+              <p class="addon-hint">Caps how many <code>claude</code> sessions run at once so they don't starve each other of CPU. 3 is a good default on a typical laptop.</p>
+            </fieldset>
           </section>
 
           <section class="settings-section hidden" data-section="plugins">
