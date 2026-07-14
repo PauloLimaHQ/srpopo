@@ -46,6 +46,7 @@ import * as github from './github';
 import * as git from './git';
 import * as addons from './addons';
 import * as framing from './framing';
+import * as conflicts from './conflicts';
 import type { AutonomousStatus, AutonomousTaskView, PrCheck, Task } from './types';
 
 // Add-ons every autonomously dispatched task must carry so its single run tests,
@@ -118,6 +119,10 @@ interface Session {
   running: Set<string>;
   // Subset of `running` whose live run is a review pass (a resume), not a build run.
   reviewing: Set<string>;
+  // Subset of `running` whose live run is a conflicts.resolveConflicts resume, so
+  // onBus can re-run the merge decision (not a review pass or a fresh build) once
+  // it lands.
+  resolvingConflicts: Set<string>;
   // Review passes run so far, per task — capped at MAX_REVIEW_ROUNDS.
   reviewRounds: Map<string, number>;
   // HEAD sha captured at the start of the in-flight review pass, per task. Compared
@@ -212,7 +217,14 @@ function taskViews(): AutonomousTaskView[] {
   for (const id of session.owned) {
     const t = getTask(id);
     if (!t) continue;
-    views.push({ id: t.id, title: t.title, status: t.status, costUsd: t.costUsd || 0, running: session.running.has(id) });
+    views.push({
+      id: t.id,
+      title: t.title,
+      status: t.status,
+      costUsd: t.costUsd || 0,
+      running: session.running.has(id),
+      resolvingConflicts: !!t.resolvingConflicts,
+    });
   }
   return views;
 }
@@ -364,8 +376,12 @@ async function resolveReviewPass(task: Task): Promise<void> {
 
 // A task is ready for its merge decision: only if the PR is green, merge it and
 // move to `done` (dropping the worktree, mirroring the existing move-to-done flow).
-// Anything short of green is left in review for the human with a recorded reason.
-// Either way the task is settled so the engine won't pick it up again this session.
+// A conflicting PR is auto-resumed to fix itself when the user opted into that
+// (Settings > autoResolveConflicts) — the task stays owned and goes back to
+// `running`; onBus re-enters this same check once that resume run lands. Anything
+// else short of green is left in review for the human with a recorded reason.
+// Either way (merged, resolving, or left for the human) the task is settled or
+// re-tracked so the engine never picks it up twice for the same decision.
 async function mergeFlow(task: Task): Promise<void> {
   if (!session) return;
   const check = await deps.checkPr(task);
@@ -391,6 +407,13 @@ async function mergeFlow(task: Task): Promise<void> {
       session.settled.add(task.id);
       emit(`merge-failed:${merged.reason || 'error'}`);
     }
+  } else if (check.status === 'conflicts' && db.settings.autoResolveConflicts && conflicts.resolveConflicts(task)) {
+    // Still ours — track until this resume run lands, then mergeFlow runs again
+    // (see onBus) to see whether it's green now, still conflicting, or otherwise
+    // blocked.
+    session.running.add(task.id);
+    session.resolvingConflicts.add(task.id);
+    emit('resolving-conflicts');
   } else {
     // Not safe to merge — leave it in review for the human. It stays owned so the
     // engine won't redispatch it, and its cost still counts toward the budget.
@@ -433,10 +456,13 @@ function onBus(msg: unknown): void {
   if (task.status === 'running') return; // still in flight — many events fire mid-run
   session.running.delete(task.id);
   const wasReviewPass = session.reviewing.delete(task.id);
+  const wasConflictResolve = session.resolvingConflicts.delete(task.id);
 
   if (task.status === 'review') {
-    if (!session.reviewMode) {
-      // Legacy: grade the merge once, no active review loop.
+    if (wasConflictResolve || !session.reviewMode) {
+      // A conflict-resolution resume landed, or legacy (non-review-mode): grade
+      // the merge decision once — mergeFlow will notice if it's still conflicting
+      // and, if so, resume it again itself.
       void handleReview(task);
     } else if (wasReviewPass) {
       // A review pass finished — decide clean-vs-changed and merge or re-review.
@@ -506,6 +532,7 @@ async function start(
     owned: new Set(),
     running: new Set(),
     reviewing: new Set(),
+    resolvingConflicts: new Set(),
     reviewRounds: new Map(),
     reviewBase: new Map(),
     toMerge: new Set(),

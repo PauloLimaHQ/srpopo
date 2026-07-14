@@ -24,6 +24,7 @@ import * as github from './github';
 import * as linear from './linear';
 import * as plugins from './plugins';
 import * as autonomous from './autonomous';
+import * as conflicts from './conflicts';
 import * as framing from './framing';
 import * as terminal from './terminal';
 import * as usage from './usage';
@@ -217,6 +218,7 @@ function publicSettings(): PublicSettings {
     linearConfigured: !!(db.settings.linearApiToken && db.settings.linearApiToken.trim()),
     maxParallelSessions: db.settings.maxParallelSessions,
     installedPlugins: plugins.sanitize(db.settings.installedPlugins),
+    autoResolveConflicts: !!db.settings.autoResolveConflicts,
     remoteAccess: !!db.settings.remoteAccess,
     // Derived boolean only — the raw token never leaves the localhost-only
     // GET /api/remote-access endpoint.
@@ -333,6 +335,7 @@ function spawnGroomedTasks(grooming: Grooming, specs: GroomSpec[]): string[] {
       activeSubagents: 0,
       lastOutcome: null,
       lastError: null,
+      resolvingConflicts: false,
       archived: false,
       createdAt: now(),
       updatedAt: now(),
@@ -438,6 +441,7 @@ app.patch('/api/settings', (req: Request, res: Response) => {
   // Marketplace: the board sends the full desired set of installed plugin ids;
   // unknown ids are dropped so only real plugins can be toggled on.
   if ('installedPlugins' in req.body) db.settings.installedPlugins = plugins.sanitize(req.body.installedPlugins);
+  if ('autoResolveConflicts' in req.body) db.settings.autoResolveConflicts = !!req.body.autoResolveConflicts;
 
   // Remote access: rotate the token on request (revokes all remote sessions),
   // then apply the on/off toggle — generating a token lazily when first enabling
@@ -1129,6 +1133,9 @@ function start(port: string | number = process.env.PORT || 7777): Promise<{ serv
       // MCP bridge runs on this same machine and must never call across the LAN.
       const url = `http://127.0.0.1:${listenPort}`;
       runner.setBaseUrl(url);
+      // Periodic sweep for the opt-in "auto-resolve conflicts" setting (see
+      // server/conflicts.ts) — checks review-column tasks' PRs on an interval.
+      conflicts.start();
       resolve({ server, port: listenPort, url });
       backfillRepoNames();
     });

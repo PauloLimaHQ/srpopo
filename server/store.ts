@@ -28,6 +28,8 @@ const DEFAULT_SETTINGS: Settings = {
   // limits on a typical dev laptop. Configurable in Settings.
   maxParallelSessions: 3,
   installedPlugins: [],
+  // Off by default: auto-resolving conflicts spawns a new `claude` run unattended.
+  autoResolveConflicts: false,
   // Remote access is OFF by default: the server binds 127.0.0.1 only and needs
   // no token, exactly as before. The token stays empty until the first time the
   // user enables remote access (generated lazily in PATCH /api/settings).
@@ -65,6 +67,7 @@ for (const t of db.tasks) {
     t.status = 'failed';
     t.lastOutcome = 'error';
     t.lastError = 'Server restarted while task was running';
+    t.resolvingConflicts = false;
   }
 }
 // Same for grooming cards: a card can't still be running without its child.

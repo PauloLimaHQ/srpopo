@@ -746,7 +746,7 @@
 
   function renderCard(t) {
     const el = document.createElement('div');
-    el.className = `card ${t.status === 'running' ? 'running' : ''} ${t.status === 'failed' ? 'failed' : ''}`;
+    el.className = `card ${t.status === 'running' ? 'running' : ''} ${t.status === 'failed' ? 'failed' : ''} ${t.resolvingConflicts ? 'resolving-conflicts' : ''}`;
     el.draggable = !isLive(t);
     el.dataset.id = t.id;
 
@@ -756,6 +756,7 @@
       `<span class="chip model${modelClass(modelName)}">${esc(modelName)}</span>`,
     ];
     if (t.groomingId) chips.push(`<span class="chip grooming-chip" title="Spawned by a grooming">${icon('lightbulb')} groomed</span>`);
+    if (t.resolvingConflicts) chips.push(`<span class="chip conflict-chip" title="Auto-resolving merge conflicts with main">${icon('git-branch')} Resolving Conflicts</span>`);
     if (t.useWorktree) chips.push(`<span class="chip worktree" title="${esc(t.worktreePath || 'worktree on dispatch')}">${icon('git-branch')} ${esc(t.branch || t.branchName || 'worktree')}</span>`);
     if (t.addons && t.addons.includes('pull_request')) chips.push(`<span class="chip addon-chip" title="Opens a pull request when finished">${icon('git-pull-request')} PR</span>`);
     if (t.addons && t.addons.includes('code_review')) chips.push(`<span class="chip addon-chip" title="Self code-reviews and fixes issues before finishing">${icon('search')} review</span>`);
@@ -779,6 +780,7 @@
       statusRow = `
         <div class="card-status">
           <span class="spinner"></span>
+          ${t.status === 'running' && t.resolvingConflicts ? '<span class="live-label">resolving conflicts</span>' : ''}
           <span class="elapsed" data-start="${esc(t.startedAt)}">${elapsedSince(t.startedAt)}</span>
           <button class="btn icon danger card-stop" data-action="stop" title="Stop run" aria-label="Stop run">${icon('square')}</button>
         </div>`;
@@ -2452,8 +2454,9 @@
     const banner = $('#autonomous-banner');
     const live = (sess.tasks || []).filter((t) => t.running);
     const done = (sess.tasks || []).filter((t) => t.status === 'done').length;
-    const chips = live.map((t) =>
-      `<span class="chip">${icon('loader')} ${esc(t.title)}</span>`).join('');
+    const chips = live.map((t) => t.resolvingConflicts
+      ? `<span class="chip conflict-chip">${icon('git-branch')} ${esc(t.title)} — resolving conflicts</span>`
+      : `<span class="chip">${icon('loader')} ${esc(t.title)}</span>`).join('');
     const state_ = sess.stopping
       ? 'Stopping — letting in-flight runs finish'
       : live.length === 0
@@ -2740,6 +2743,7 @@
     $('#setting-sounds').checked = soundsOn();
     updateNotifNote();
     $('#setting-max-parallel').value = state.settings.maxParallelSessions || 3;
+    $('#setting-auto-resolve-conflicts').checked = !!state.settings.autoResolveConflicts;
     renderPlugins();
     renderRemoteAccess();
     showSettingsSection(typeof section === 'string' ? section : 'general');
@@ -2776,6 +2780,9 @@
     e.target.value = n;
     await saveSettings({ maxParallelSessions: n });
     renderBoard();
+  });
+  $('#setting-auto-resolve-conflicts').addEventListener('change', async (e) => {
+    await saveSettings({ autoResolveConflicts: e.target.checked });
   });
 
   // ---------- remote access (LAN) ----------
@@ -3186,6 +3193,7 @@
           $('#setting-notifications').checked = notificationsOn();
           $('#setting-sounds').checked = soundsOn();
           $('#setting-max-parallel').value = state.settings.maxParallelSessions || 3;
+          $('#setting-auto-resolve-conflicts').checked = !!state.settings.autoResolveConflicts;
           updateNotifNote();
           renderPlugins();
           renderRemoteAccess();

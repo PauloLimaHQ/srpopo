@@ -26,6 +26,8 @@
   /* semantic hues (retuned for light) */
   --groom: #b45cc4;
   --groom-soft: #b45cc433;
+  --conflict: #b5842a;
+  --conflict-soft: #b5842a33;
   --purple: #7c6bd6;
   --purple-soft: #7c6bd633;
   --green: #4f9d68;
@@ -72,6 +74,8 @@
 
     --groom: #d98fe0;
     --groom-soft: #d98fe033;
+    --conflict: #e0a94f;
+    --conflict-soft: #e0a94f33;
     --purple: #a394e6;
     --purple-soft: #a394e633;
     --green: #6fca8c;
@@ -111,6 +115,8 @@
 
   --groom: #d98fe0;
   --groom-soft: #d98fe033;
+  --conflict: #e0a94f;
+  --conflict-soft: #e0a94f33;
   --purple: #a394e6;
   --purple-soft: #a394e633;
   --green: #6fca8c;
@@ -383,6 +389,7 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
 .card:active { cursor: grabbing; }
 .card.dragging { opacity: .4; }
 .card.running { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.card.resolving-conflicts { border-color: var(--conflict); box-shadow: 0 0 0 3px var(--conflict-soft); }
 .card.failed { border-color: var(--red-soft); }
 
 /* Grooming cards never move columns — their status only recolors them in
@@ -430,6 +437,7 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
 .chip.addon-chip { color: var(--purple); border-color: var(--purple-soft); }
 .chip.persona-chip { color: var(--accent); border-color: var(--accent-soft); }
 .chip.grooming-chip { color: var(--groom); border-color: var(--groom-soft); }
+.chip.conflict-chip { color: var(--conflict); border-color: var(--conflict-soft); font-weight: 600; }
 /* GitHub PR chip in the drawer head — a link plus a status dot. */
 a.chip.pr { text-decoration: none; display: inline-flex; align-items: center; gap: 5px; }
 a.chip.pr:hover { border-color: currentColor; }

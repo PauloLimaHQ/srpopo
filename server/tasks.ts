@@ -88,6 +88,7 @@ export function createTask(input: CreateTaskInput): Task {
     activeSubagents: 0,
     lastOutcome: null,
     lastError: null,
+    resolvingConflicts: false,
     archived: false,
     createdAt: now(),
     updatedAt: now(),

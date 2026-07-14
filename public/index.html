@@ -368,6 +368,18 @@
               <p class="addon-hint">Caps how many <code>claude</code> sessions run at once so they don't starve each other of CPU. 3 is a good default on a typical laptop.</p>
             </fieldset>
             <fieldset class="addons">
+              <legend>Pull requests</legend>
+              <label class="check addon">
+                <input type="checkbox" id="setting-auto-resolve-conflicts" />
+                <span class="addon-text">
+                  <span class="addon-label">Auto-resolve conflicts</span>
+                  <span class="addon-hint">When a task's PR has merge conflicts with main, automatically resume its
+                    session to resolve them — the card moves back to Running with a "Resolving Conflicts" label,
+                    then follows the normal lifecycle back to Review. Also used by Autonomous Mode.</span>
+                </span>
+              </label>
+            </fieldset>
+            <fieldset class="addons">
               <legend>About</legend>
               <p class="addon-hint" id="setting-about-version">Sr. Popo</p>
             </fieldset>

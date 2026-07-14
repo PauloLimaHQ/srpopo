@@ -18,6 +18,12 @@ export interface Settings {
   // Ids of plugins the user installed from the marketplace (see server/plugins.ts).
   // A plugin's features (e.g. the "From Linear" import) only surface once it's here.
   installedPlugins: string[];
+  // When on, a task sitting in `review` whose PR has merge conflicts with main is
+  // automatically resumed with an instruction to resolve them (see
+  // server/conflicts.ts). Applies to plain review-column tasks and to Autonomous
+  // Mode's own merge-safety check alike. Opt-in: off by default since it silently
+  // spawns a new `claude` run.
+  autoResolveConflicts: boolean;
   // Opt-in "Remote Access (LAN)" mode. When true the server binds the LAN
   // interface (0.0.0.0) instead of 127.0.0.1 only, and every non-localhost
   // request must carry the shared token below. Off by default — invariant #1
@@ -39,6 +45,7 @@ export interface PublicSettings {
   linearConfigured: boolean;
   maxParallelSessions: number;
   installedPlugins: string[];
+  autoResolveConflicts: boolean;
   // Whether LAN remote access is enabled, and whether a token exists — never the
   // raw token itself (that only flows over the localhost-only GET /api/remote-access).
   remoteAccess: boolean;
@@ -183,6 +190,12 @@ export interface Task {
   updatedAt: string;
   startedAt: string | null;
   finishedAt: string | null;
+  // True while server/conflicts.ts has resumed this task's session to resolve a
+  // merge conflict with main. The task's `status` stays 'running' for that resume
+  // run (it's a real claude session); this is the separate "Resolving Conflicts"
+  // label the board renders on top of it. Cleared once that run lands back in
+  // review/failed/ready, same as the runner would for any other resume.
+  resolvingConflicts: boolean;
   // Annotated onto GET /api/state responses so a reconnecting board rebuilds any
   // live tool-approval prompts. Never persisted to db.json.
   pendingPermissions?: PublicPermissionRequest[];
@@ -331,12 +344,15 @@ export interface PrInfo {
 }
 
 // How safe a task's PR is to merge, as github.classifyPrCheck decides it:
-//   green   — open, not draft, mergeable, no failing/pending checks → safe to merge
-//   pending — checks still running (or mergeability not yet computed) → wait
-//   failing — at least one check failed → never merge
-//   blocked — draft, closed/merged, conflicting, or otherwise not mergeable
-//   no-pr   — no branch / no PR / the `gh` lookup itself failed
-export type PrCheckStatus = 'green' | 'pending' | 'failing' | 'blocked' | 'no-pr';
+//   green     — open, not draft, mergeable, no failing/pending checks → safe to merge
+//   pending   — checks still running (or mergeability not yet computed) → wait
+//   failing   — at least one check failed → never merge
+//   conflicts — merge conflicts with the base branch (GitHub's CONFLICTING/DIRTY) →
+//               server/conflicts.ts can auto-resume the session to resolve them
+//   blocked   — draft, closed/merged, branch-protection-blocked/behind, or
+//               otherwise not mergeable for a reason a resume can't fix
+//   no-pr     — no branch / no PR / the `gh` lookup itself failed
+export type PrCheckStatus = 'green' | 'pending' | 'failing' | 'conflicts' | 'blocked' | 'no-pr';
 
 // The result of github.prCheckForTask: the classification plus the PR it looked
 // at (if any) and, when the lookup failed, the classifyError reason.
@@ -353,6 +369,7 @@ export interface AutonomousTaskView {
   status: TaskStatus;
   costUsd: number;
   running: boolean;
+  resolvingConflicts: boolean;
 }
 
 // The safe, UI-facing snapshot of the autonomous session (see server/autonomous.ts).
