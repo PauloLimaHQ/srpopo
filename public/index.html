@@ -325,6 +325,9 @@
           <button class="settings-nav-item" data-section="git">
             <span class="i" data-icon="git-branch"></span>Git
           </button>
+          <button class="settings-nav-item" data-section="models">
+            <span class="i" data-icon="cpu"></span>Models
+          </button>
           <button class="settings-nav-item" data-section="usage">
             <span class="i" data-icon="bar-chart-3"></span>Usage
           </button>
@@ -408,6 +411,37 @@
                 </select>
               </label>
               <p class="addon-hint">Applies to the "Merge pull request" wrap-up step and to Autonomous Mode's own merges (<code>gh pr merge</code>).</p>
+            </fieldset>
+          </section>
+
+          <section class="settings-section hidden" data-section="models">
+            <h2 class="settings-section-title">Models</h2>
+            <p class="muted">Add your own models on top of the built-in ones (Sonnet, Opus, Haiku,
+              Fable). They show up in every model picker — New Task, Brief an Idea, and Linear import.
+              A custom model is handed to <code>claude --model</code> as-is, and its environment
+              variables are set only for runs on that model.</p>
+            <p class="muted">Use this for an <strong>Amazon Bedrock</strong> model: set the model id
+              and add <code>CLAUDE_CODE_USE_BEDROCK=1</code> plus <code>AWS_REGION</code>. AWS
+              credentials come from your machine's environment (e.g. an <code>AWS_PROFILE</code>) —
+              don't paste secrets here. Sr. Popo never uses an Anthropic API key
+              (<code>ANTHROPIC_API_KEY</code> is always stripped).</p>
+            <div id="settings-models-body" class="models-body"></div>
+            <fieldset class="addons" id="model-add">
+              <legend>Add a model</legend>
+              <div class="grid-2">
+                <label>Name <span class="field-hint">— shown in the picker</span>
+                  <input id="model-add-label" type="text" placeholder="e.g. Claude on Bedrock" />
+                </label>
+                <label>Model id <span class="field-hint">— passed to <code>--model</code></span>
+                  <input id="model-add-id" type="text" placeholder="e.g. us.anthropic.claude-sonnet-4-5-20250929-v1:0" />
+                </label>
+              </div>
+              <label>Environment variables <span class="field-hint">— one <code>KEY=value</code> per line</span>
+                <textarea id="model-add-env" rows="3" placeholder="CLAUDE_CODE_USE_BEDROCK=1&#10;AWS_REGION=us-east-1"></textarea>
+              </label>
+              <div class="remote-actions">
+                <button class="btn" id="model-add-btn"><span class="i" data-icon="plus"></span>Add model</button>
+              </div>
             </fieldset>
           </section>
 

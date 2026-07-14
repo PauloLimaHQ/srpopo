@@ -9,6 +9,25 @@
 // a traditional merge commit, a single squashed commit, or a rebase-and-merge.
 export type MergeStrategy = 'merge' | 'squash' | 'rebase';
 
+// A user-defined model that shows up in the model pickers on top of the built-in
+// ones (Sonnet/Opus/Haiku/Fable). Its `model` is passed verbatim to `claude
+// --model`, and its `env` is layered onto the spawned process's environment — so
+// an Amazon Bedrock model, say, carries `CLAUDE_CODE_USE_BEDROCK=1` plus the AWS
+// region. Never a secret store: `ANTHROPIC_API_KEY` is stripped at spawn
+// (invariant #2), and credentials should come from the ambient environment
+// (e.g. an AWS profile), not be pasted here.
+export interface CustomModel {
+  id: string;
+  // Display label shown in the model dropdowns.
+  label: string;
+  // The value handed to `claude --model` (a model id or a Bedrock inference
+  // profile ARN). Also the key a running task/grooming is matched back to its
+  // custom model by, to know which `env` to apply.
+  model: string;
+  // Extra environment variables set only for runs on this model.
+  env: Record<string, string>;
+}
+
 export interface Settings {
   notifications: boolean;
   sounds: boolean;
@@ -45,6 +64,9 @@ export interface Settings {
   // the first time remote access is enabled, and is never returned to the board
   // (see PublicSettings) — only over the localhost-only GET /api/remote-access.
   remoteAccessToken: string;
+  // User-defined models (e.g. Amazon Bedrock) offered alongside the built-in
+  // ones in every model picker. See CustomModel.
+  customModels: CustomModel[];
 }
 
 // The redacted, board-facing view of Settings. Omits the raw Linear token and
@@ -63,6 +85,9 @@ export interface PublicSettings {
   // raw token itself (that only flows over the localhost-only GET /api/remote-access).
   remoteAccess: boolean;
   remoteAccessConfigured: boolean;
+  // Returned to the board as-is (not a secret) so the pickers and the Models
+  // settings pane can render/edit them.
+  customModels: CustomModel[];
 }
 
 // A marketplace plugin as the UI lists it. The full catalog lives in

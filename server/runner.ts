@@ -3,7 +3,7 @@ import type { ChildProcess } from 'child_process';
 import readline from 'readline';
 import path from 'path';
 
-import { save, now, appendLog } from './store';
+import { save, now, appendLog, db } from './store';
 import { broadcast } from './bus';
 import * as groomer from './groomer';
 import * as addons from './addons';
@@ -73,6 +73,9 @@ const running = new Map<string, RunningChild>();
 interface SessionRecord {
   id: string;
   status: string;
+  // The selected model — a built-in alias, 'default', or a custom model id. Both
+  // Task and Grooming carry it; launch() uses it to layer any custom-model env.
+  model: string;
   sessionId: string | null;
   resolvedModel: string | null;
   costUsd: number;
@@ -104,6 +107,31 @@ function childEnv(): NodeJS.ProcessEnv {
   delete env.CLAUDECODE;
   delete env.CLAUDE_CODE_ENTRYPOINT;
   return env;
+}
+
+// Extra environment variables for a run whose model is a user-defined custom
+// model (Settings → Models) — e.g. `CLAUDE_CODE_USE_BEDROCK=1` and the AWS region
+// for an Amazon Bedrock model. Empty for the built-in models. Matched by the id
+// passed to `--model`; the first custom model with that id wins. ANTHROPIC_API_KEY
+// is already stripped from the stored env (server/index.ts) but is re-guarded here
+// so invariant #2 holds regardless of how the entry got into db.json.
+function modelEnv(model: string | undefined): NodeJS.ProcessEnv {
+  if (!model || model === 'default') return {};
+  const custom = (db.settings.customModels || []).find((m) => m.model === model);
+  if (!custom || !custom.env) return {};
+  const out: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(custom.env)) {
+    if (k === 'ANTHROPIC_API_KEY') continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+// The full environment a run's `claude` child gets: the base childEnv() plus any
+// custom-model vars (modelEnv) on top. ANTHROPIC_API_KEY is dropped by both, so a
+// custom model can never restore it — invariant #2 holds regardless of model.
+function buildTaskEnv(model: string | undefined): NodeJS.ProcessEnv {
+  return { ...childEnv(), ...modelEnv(model) };
 }
 
 function emitTask(task: Task): void {
@@ -232,7 +260,7 @@ function launch<T extends SessionRecord>(rec: T, { args, workDir, prompt, prompt
 
   const child: RunningChild = spawn(CLAUDE_BIN, args, {
     cwd: workDir,
-    env: childEnv(),
+    env: buildTaskEnv(rec.model),
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   running.set(rec.id, child);
@@ -468,6 +496,7 @@ export {
   effectiveAllowedTools,
   setBaseUrl,
   childEnv,
+  buildTaskEnv,
   PERMISSION_TOOL,
   DEFAULT_ALLOWED_TOOLS,
   CLAUDE_BIN,
