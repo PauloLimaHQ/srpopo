@@ -2737,6 +2737,11 @@
       const chip = $('#health');
       chip.textContent = h.ok ? `● ${h.claude}` : '● claude CLI not found';
       chip.classList.add(h.ok ? 'ok' : 'bad');
+      const about = $('#setting-about-version');
+      if (about && h.version) {
+        about.textContent = `Sr. Popo v${h.version} · Node ${h.node}` +
+          (h.ok ? ` · ${h.claude}` : '');
+      }
     } catch { /* server down; toast already shown */ }
 
     connectSSE();

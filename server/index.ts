@@ -28,6 +28,11 @@ const app = express();
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static(path.join(appRoot(), 'public')));
 
+// Read once at boot — package.json never changes underneath a running process.
+const appVersion: string = JSON.parse(
+  fs.readFileSync(path.join(appRoot(), 'package.json'), 'utf8')
+).version;
+
 // Slug + prompt framing live in server/framing.ts so the dispatch route and the
 // Autonomous Mode engine build worktree names and framed prompts identically.
 const slugify = framing.slugify;
@@ -143,6 +148,7 @@ app.get('/api/health', (req: Request, res: Response) => {
       claude: e ? null : stdout.trim(),
       error: e ? `claude CLI not found (${runner.CLAUDE_BIN})` : null,
       node: process.version,
+      version: appVersion,
     });
   });
 });
