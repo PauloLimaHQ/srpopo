@@ -212,8 +212,8 @@ export interface AutonomousStatus {
   startedAt: string | null;
   // True once a user stop was requested but in-flight runs are still finishing.
   stopping: boolean;
-  // Why the session last changed state (e.g. 'started', 'budget-reached',
-  // 'drained', 'stopped') — surfaced in the UI banner.
+  // Why the session last changed state (e.g. 'started', 'standby',
+  // 'budget-reached', 'stopped') — surfaced in the UI banner.
   reason: string | null;
   tasks: AutonomousTaskView[];
 }

@@ -2138,7 +2138,11 @@
     const done = (sess.tasks || []).filter((t) => t.status === 'done').length;
     const chips = live.map((t) =>
       `<span class="chip">${icon('loader')} ${esc(t.title)}</span>`).join('');
-    const state_ = sess.stopping ? 'Stopping — letting in-flight runs finish' : 'Running';
+    const state_ = sess.stopping
+      ? 'Stopping — letting in-flight runs finish'
+      : live.length === 0
+        ? 'Standing by — waiting for Ready tasks'
+        : 'Running';
     banner.innerHTML = `
       <span class="autonomous-banner-head">
         <span class="autonomous-pulse"></span>${icon('bot')} Autonomous Mode
