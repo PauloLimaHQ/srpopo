@@ -139,7 +139,8 @@ function summarizeChecks(rollup: unknown): 'passing' | 'pending' | 'failing' {
 // Pure classifier: given the parsed `gh pr view --json PR_CHECK_FIELDS` object,
 // decide whether the PR is safe for the autonomous engine to merge. Green means
 // open, not a draft, mergeable, and no failing/pending checks; anything else is
-// pending / failing / blocked so the engine leaves the task for the human.
+// pending / failing / conflicts / blocked so the engine leaves the task for the
+// human (or, for 'conflicts', server/conflicts.ts auto-resumes it).
 function classifyPrCheck(pr: unknown): PrCheckStatus {
   if (!pr || typeof pr !== 'object') return 'no-pr';
   const p = pr as Record<string, unknown>;
@@ -153,7 +154,10 @@ function classifyPrCheck(pr: unknown): PrCheckStatus {
 
   const mergeable = String(p.mergeable || '').toUpperCase();
   const mergeState = String(p.mergeStateStatus || '').toUpperCase();
-  if (mergeable === 'CONFLICTING' || mergeState === 'DIRTY') return 'blocked';
+  // A real merge conflict with the base branch — distinct from the other blocked
+  // reasons below so callers (e.g. server/conflicts.ts) can auto-resume the
+  // session to resolve it, which would be pointless for a draft/closed/protected PR.
+  if (mergeable === 'CONFLICTING' || mergeState === 'DIRTY') return 'conflicts';
   // Branch protection (required reviews, etc.) leaves checks green but blocks the
   // merge — hand those to the human rather than trying to force them.
   if (mergeState === 'BLOCKED' || mergeState === 'BEHIND') return 'blocked';

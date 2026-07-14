@@ -23,6 +23,8 @@ const DEFAULT_SETTINGS: Settings = {
   // limits on a typical dev laptop. Configurable in Settings.
   maxParallelSessions: 3,
   installedPlugins: [],
+  // Off by default: auto-resolving conflicts spawns a new `claude` run unattended.
+  autoResolveConflicts: false,
 };
 
 let db: Db = { repos: [], tasks: [], settings: { ...DEFAULT_SETTINGS } };
@@ -52,6 +54,7 @@ for (const t of db.tasks) {
     t.status = 'failed';
     t.lastOutcome = 'error';
     t.lastError = 'Server restarted while task was running';
+    t.resolvingConflicts = false;
   }
 }
 

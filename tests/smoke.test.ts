@@ -25,6 +25,8 @@ test('store: settings default to notifications + sounds on and are backfilled', 
   assert.strictEqual(store.DEFAULT_SETTINGS.sounds, true, 'sounds default is exported');
   assert.strictEqual(store.db.settings.maxParallelSessions, 3, 'maxParallelSessions defaults to 3');
   assert.strictEqual(store.DEFAULT_SETTINGS.maxParallelSessions, 3, 'maxParallelSessions default is exported');
+  assert.strictEqual(store.db.settings.autoResolveConflicts, false, 'autoResolveConflicts defaults off');
+  assert.strictEqual(store.DEFAULT_SETTINGS.autoResolveConflicts, false, 'autoResolveConflicts default is exported');
 });
 
 test('server modules load without throwing', () => {
@@ -108,11 +110,15 @@ test('github: classifyPrCheck grades merge-safety over sample gh payloads', () =
     'a commit-status ERROR is failing',
   );
 
-  // Draft / closed / conflicting / blocked → blocked (leave for the human).
+  // Draft / closed / branch-protection-blocked → blocked (leave for the human).
   assert.strictEqual(github.classifyPrCheck({ ...green, isDraft: true }), 'blocked', 'draft is blocked');
   assert.strictEqual(github.classifyPrCheck({ ...green, state: 'MERGED' }), 'blocked', 'already-merged/closed is blocked');
-  assert.strictEqual(github.classifyPrCheck({ ...green, mergeable: 'CONFLICTING' }), 'blocked', 'conflicting is blocked');
   assert.strictEqual(github.classifyPrCheck({ ...green, mergeStateStatus: 'BLOCKED' }), 'blocked', 'branch-protection blocked is blocked');
+
+  // A real merge conflict with main gets its own status, distinct from 'blocked',
+  // so server/conflicts.ts knows it's the one case a resume can actually fix.
+  assert.strictEqual(github.classifyPrCheck({ ...green, mergeable: 'CONFLICTING' }), 'conflicts', 'conflicting mergeable is conflicts');
+  assert.strictEqual(github.classifyPrCheck({ ...green, mergeStateStatus: 'DIRTY' }), 'conflicts', 'dirty merge state is conflicts');
 
   // Mergeability not yet computed → pending, not green.
   assert.strictEqual(github.classifyPrCheck({ ...green, mergeable: 'UNKNOWN' }), 'pending', 'unknown mergeability is pending');
@@ -150,6 +156,40 @@ test('github: parsePrList normalizes a gh payload and handles the empty list', (
   assert.strictEqual(github.parsePrList('not json'), null, 'unparsable yields null');
   assert.strictEqual(github.parsePrList('{}'), null, 'non-array yields null');
   assert.strictEqual(github.parsePrList(JSON.stringify([{ url: 'x' }])), null, 'a PR without a number is rejected');
+});
+
+test('conflicts: module exports resolveConflicts/sweep and a follow-up prompt', () => {
+  const conflicts = require('../server/conflicts');
+  assert.strictEqual(typeof conflicts.resolveConflicts, 'function', 'resolveConflicts is exported');
+  assert.strictEqual(typeof conflicts.sweep, 'function', 'sweep is exported');
+  assert.strictEqual(typeof conflicts.start, 'function', 'start is exported');
+  assert.match(conflicts.CONFLICT_PROMPT, /conflict/i, 'the follow-up prompt mentions conflicts');
+});
+
+test('conflicts: resolveConflicts is a no-op for a task with no session to resume', () => {
+  const conflicts = require('../server/conflicts');
+  const task = { id: 'no-session-task', sessionId: null, resolvingConflicts: false };
+  assert.strictEqual(conflicts.resolveConflicts(task), false, 'no sessionId means nothing to resume');
+  assert.strictEqual(task.resolvingConflicts, false, 'the label is never set for a run that never started');
+});
+
+test('conflicts: sweep is a no-op when the setting is off, even with a conflicting task in review', async () => {
+  const store = require('../server/store');
+  const conflicts = require('../server/conflicts');
+  const prev = store.db.settings.autoResolveConflicts;
+  store.db.settings.autoResolveConflicts = false;
+  const task = {
+    id: 'sweep-off-task', archived: false, status: 'review', resolvingConflicts: false,
+    branch: 'feature/x', sessionId: 'sess-1',
+  };
+  store.db.tasks.push(task);
+  try {
+    await conflicts.sweep();
+    assert.strictEqual(task.resolvingConflicts, false, 'nothing is dispatched while the setting is off');
+  } finally {
+    store.db.tasks.pop();
+    store.db.settings.autoResolveConflicts = prev;
+  }
 });
 
 test('linear: module exports non-throwing fetchers and pure parse helpers', () => {

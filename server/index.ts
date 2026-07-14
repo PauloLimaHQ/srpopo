@@ -21,6 +21,7 @@ import * as github from './github';
 import * as linear from './linear';
 import * as plugins from './plugins';
 import * as autonomous from './autonomous';
+import * as conflicts from './conflicts';
 import * as framing from './framing';
 import * as terminal from './terminal';
 
@@ -52,6 +53,7 @@ function publicSettings(): PublicSettings {
     linearConfigured: !!(db.settings.linearApiToken && db.settings.linearApiToken.trim()),
     maxParallelSessions: db.settings.maxParallelSessions,
     installedPlugins: plugins.sanitize(db.settings.installedPlugins),
+    autoResolveConflicts: !!db.settings.autoResolveConflicts,
   };
 }
 
@@ -114,6 +116,7 @@ function startGrooming(repo: Repo, brief: string, model: unknown, extra?: Partia
     activeSubagents: 0,
     lastOutcome: null,
     lastError: null,
+    resolvingConflicts: false,
     archived: false,
     createdAt: now(),
     updatedAt: now(),
@@ -193,6 +196,7 @@ app.patch('/api/settings', (req: Request, res: Response) => {
   // Marketplace: the board sends the full desired set of installed plugin ids;
   // unknown ids are dropped so only real plugins can be toggled on.
   if ('installedPlugins' in req.body) db.settings.installedPlugins = plugins.sanitize(req.body.installedPlugins);
+  if ('autoResolveConflicts' in req.body) db.settings.autoResolveConflicts = !!req.body.autoResolveConflicts;
   save();
   const settings = publicSettings();
   broadcast({ type: 'settings', settings });
@@ -428,6 +432,7 @@ app.post('/api/tasks', (req: Request, res: Response) => {
     activeSubagents: 0,
     lastOutcome: null,
     lastError: null,
+    resolvingConflicts: false,
     archived: false,
     createdAt: now(),
     updatedAt: now(),
@@ -764,6 +769,9 @@ function start(port: string | number = process.env.PORT || 7777): Promise<{ serv
       const url = `http://127.0.0.1:${actual}`;
       // Tell the runner where the permission bridge should POST approval requests.
       runner.setBaseUrl(url);
+      // Periodic sweep for the opt-in "auto-resolve conflicts" setting (see
+      // server/conflicts.ts) — checks review-column tasks' PRs on an interval.
+      conflicts.start();
       resolve({ server, port: actual, url });
       backfillRepoNames();
     });

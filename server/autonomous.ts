@@ -31,6 +31,7 @@ import * as github from './github';
 import * as git from './git';
 import * as addons from './addons';
 import * as framing from './framing';
+import * as conflicts from './conflicts';
 import type { AutonomousStatus, AutonomousTaskView, PrCheck, Task } from './types';
 
 // Add-ons every autonomously dispatched task must carry so its single run tests,
@@ -132,7 +133,14 @@ function taskViews(): AutonomousTaskView[] {
   for (const id of session.owned) {
     const t = getTask(id);
     if (!t) continue;
-    views.push({ id: t.id, title: t.title, status: t.status, costUsd: t.costUsd || 0, running: session.running.has(id) });
+    views.push({
+      id: t.id,
+      title: t.title,
+      status: t.status,
+      costUsd: t.costUsd || 0,
+      running: session.running.has(id),
+      resolvingConflicts: !!t.resolvingConflicts,
+    });
   }
   return views;
 }
@@ -220,8 +228,11 @@ async function pump(): Promise<void> {
 
 // A dispatched run reached `review`: look up its PR and, only if it's green,
 // merge it and move the task to `done` (dropping the worktree, mirroring the
-// existing move-to-done flow). Anything short of green is left in review for the
-// human with a recorded reason. Pumps the next task(s) afterward.
+// existing move-to-done flow). A conflicting PR is auto-resumed to fix itself
+// when the user opted into that (Settings > autoResolveConflicts) — the task
+// stays owned and back in `running`, and the next terminal event re-enters this
+// same check. Anything else short of green is left in review for the human with
+// a recorded reason. Pumps the next task(s) afterward.
 async function handleReview(task: Task): Promise<void> {
   const check = await deps.checkPr(task);
   if (check.status === 'green') {
@@ -242,6 +253,10 @@ async function handleReview(task: Task): Promise<void> {
     } else {
       emit(`merge-failed:${merged.reason || 'error'}`);
     }
+  } else if (check.status === 'conflicts' && db.settings.autoResolveConflicts && conflicts.resolveConflicts(task)) {
+    // Still ours — track until this resume run lands, then handleReview runs again.
+    session!.running.add(task.id);
+    emit('resolving-conflicts');
   } else {
     // Not safe to merge — leave it in review for the human. It stays owned so the
     // engine won't redispatch it, and its cost still counts toward the budget.
