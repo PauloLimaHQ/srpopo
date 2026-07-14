@@ -83,6 +83,21 @@
     setTimeout(() => el.remove(), 5000);
   }
 
+  // Persistent "update ready" banner (Electron only) — unlike toast() above it
+  // does not auto-dismiss; it stays until the user relaunches.
+  function showUpdateBanner(version) {
+    if ($('#update-banner')) return;
+    const el = document.createElement('div');
+    el.id = 'update-banner';
+    el.className = 'toast info update-banner';
+    el.innerHTML =
+      `${icon('rotate-cw')}` +
+      `<span>A new version of Sr. Popo is ready${version ? ` (v${esc(version)})` : ''} — Relaunch to update.</span>` +
+      `<button class="btn primary" id="update-banner-btn">Relaunch</button>`;
+    $('#toasts').appendChild(el);
+    $('#update-banner-btn').addEventListener('click', () => window.srpopo.restartToUpdate());
+  }
+
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -2587,6 +2602,14 @@
         case 'toggle-theme': $('#btn-theme').click(); break;
       }
     });
+  }
+
+  // ---------- auto-update (Electron) ----------
+  // The main process downloads updates in the background (electron-updater)
+  // and tells us here once one is ready — never auto-restart without the user
+  // clicking Relaunch.
+  if (isElectron && window.srpopo.onUpdateReady) {
+    window.srpopo.onUpdateReady((version) => showUpdateBanner(version));
   }
 
   // ---------- drawer close ----------

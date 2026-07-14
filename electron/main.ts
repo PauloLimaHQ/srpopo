@@ -1,5 +1,6 @@
 import path from 'path';
 import { app, BrowserWindow, Tray, Menu, nativeImage, shell, ipcMain, dialog, Notification } from 'electron';
+import { autoUpdater } from 'electron-updater';
 
 import { appRoot } from '../server/paths';
 
@@ -23,6 +24,7 @@ let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let httpUrl = '';
 let isQuitting = false;
+let updateReadyVersion: string | null = null; // set once electron-updater has a downloaded update waiting
 
 // Single-instance: focus the existing window instead of spawning a second app.
 if (!app.requestSingleInstanceLock()) {
@@ -304,6 +306,13 @@ function refreshTray(): void {
   const running = runningTasks();
 
   const items: Electron.MenuItemConstructorOptions[] = [];
+  if (updateReadyVersion) {
+    items.push({
+      label: `Restart to Update (v${updateReadyVersion})`,
+      click: () => autoUpdater.quitAndInstall(),
+    });
+    items.push({ type: 'separator' });
+  }
   if (running.length) {
     items.push({ label: `Running (${running.length})`, enabled: false });
     for (const t of running) {
@@ -417,6 +426,24 @@ app.whenReady().then(async () => {
   createTray();
   createWindow();
 
+  // Auto-update: only against a real packaged build — dev has no update feed
+  // and would just throw/log noise every time `npm start` runs.
+  if (app.isPackaged) {
+    autoUpdater.on('update-downloaded', (info) => {
+      updateReadyVersion = info.version;
+      if (mainWindow) mainWindow.webContents.send('srpopo:update-ready', info.version);
+      refreshTray();
+    });
+    autoUpdater.on('error', (err) => {
+      console.error('[autoUpdater]', err);
+    });
+
+    autoUpdater.checkForUpdates().catch((err) => console.error('[autoUpdater]', err));
+    setInterval(() => {
+      autoUpdater.checkForUpdates().catch((err) => console.error('[autoUpdater]', err));
+    }, 4 * 60 * 60 * 1000); // re-check every 4 hours
+  }
+
   app.on('activate', () => showWindow()); // dock icon click on mac
 });
 
@@ -435,6 +462,10 @@ app.on('before-quit', () => {
 
 // Let the renderer ask the main process for its own base URL if it ever needs it.
 ipcMain.handle('srpopo:get-url', () => httpUrl);
+
+// The renderer's "Relaunch to update" banner button — restarts into the
+// already-downloaded update. Only ever reachable once update-downloaded fired.
+ipcMain.handle('srpopo:restart-to-update', () => autoUpdater.quitAndInstall());
 
 // Open the native folder picker so the user can select a repo instead of
 // typing an absolute path. Returns the chosen path, or null if cancelled.
