@@ -27,6 +27,8 @@ static with **no build step** (see Conventions).
 | `server/index.ts` | Express REST API + static UI host. Binds `127.0.0.1` only. |
 | `server/runner.ts` | Spawns/kills the `claude` CLI, parses its `stream-json` session feed. |
 | `server/store.ts` | JSON persistence (`db.json`) + append-only per-task NDJSON logs. |
+| `server/tasks.ts` | Task lifecycle service (`createTask`/`dispatchTask` + capacity gate) shared by the REST API and the MCP server, so both queue/run tasks identically. |
+| `server/mcp.ts` | **Board MCP server** (see "MCP server" below). Streamable-HTTP MCP endpoint mounted on the Express app at `POST /mcp` so outside MCP clients can drive the board while Sr. Popo runs. |
 | `server/git.ts` | Worktree lifecycle (`git worktree add/remove`). |
 | `server/github.ts` | Read-only `gh` CLI lookup of a task's pull request. |
 | `server/bus.ts` | Server-Sent Events fan-out for the live board + timeline. |
@@ -178,6 +180,34 @@ The wiring:
 Note: `--permission-prompt-tool` is a stable but undocumented CLI flag; the request/reply
 shapes here match what the CLI expects. If you change the bridge protocol, re-verify the
 handshake against a real run — the smoke suite covers the pieces but not the live CLI.
+
+## MCP server: drive the board from outside
+
+Sr. Popo exposes its own board as an **MCP server** for as long as it's running, so
+an outside MCP client — e.g. a separate Claude Code session — can list, create,
+dispatch, and stop tasks. It's mounted straight onto the Express app at `POST /mcp`
+using MCP's **Streamable HTTP** transport (`server/mcp.ts`); connect with:
+
+```bash
+claude mcp add --transport http srpopo http://127.0.0.1:7777/mcp
+```
+
+Don't confuse this with `server/permission-mcp.js`: that one is a per-task **stdio**
+bridge the CLI spawns to *ask the user* about a tool; this one is a long-lived
+**HTTP** server that *lets a client drive the board*. Both are hand-rolled JSON-RPC
+2.0 to keep the app dependency-light — no MCP SDK.
+
+- **Tools:** `list_repos`, `list_tasks`, `get_task`, `create_task`, `dispatch_task`,
+  `stop_task`. They go through `server/tasks.ts` (the same code path as the REST
+  routes), so a task queued over MCP is identical to one queued from the board.
+- **Stateless** — no `Mcp-Session-Id`; a client just POSTs each JSON-RPC message and
+  gets a single JSON reply (or `202` for a notification-only batch). `GET`/`DELETE
+  /mcp` return `405` (no server-initiated stream, no sessions).
+- **No new security boundary.** There's no auth — the endpoint rides the same
+  `127.0.0.1`-only bind as `/api`, which *is* the boundary (invariant #1). It exposes
+  exactly the task-control power the local REST API already does. Keep it localhost.
+- To add a tool, append a `TOOL_DEFS` entry (name + JSON `inputSchema`) and a `case`
+  in `callTool`; the pure `respond()` handler and the smoke tests cover the protocol.
 
 ## Grooming: "Brief an Idea"
 

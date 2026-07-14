@@ -38,6 +38,8 @@ test('server modules load without throwing', () => {
     require('../server/github');
     require('../server/linear');
     require('../server/plugins');
+    require('../server/tasks');
+    require('../server/mcp');
     require('../server/index');
   });
 });
@@ -352,6 +354,65 @@ test('permission-mcp: respond builds MCP replies and routes tools/call to the de
   // An unknown tool denies rather than throwing.
   const bad = await mcp.respond({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'nope', arguments: {} } });
   assert.strictEqual(JSON.parse(bad.result.content[0].text).behavior, 'deny', 'unknown tool is denied');
+});
+
+test('mcp: respond builds MCP replies, lists the board tools, and routes tools/call', async () => {
+  const mcp = require('../server/mcp');
+
+  const init = await mcp.respond({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } });
+  assert.strictEqual(init.result.protocolVersion, '2025-06-18', 'echoes the client protocol version');
+  assert.ok(init.result.capabilities.tools, 'advertises tool capability');
+  assert.strictEqual(init.result.serverInfo.name, 'srpopo', 'identifies as srpopo');
+
+  const list = await mcp.respond({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
+  const names = list.result.tools.map((t: { name: string }) => t.name);
+  for (const n of ['list_repos', 'list_tasks', 'get_task', 'create_task', 'dispatch_task', 'stop_task']) {
+    assert.ok(names.includes(n), `${n} is advertised`);
+  }
+
+  // notifications get no reply; ping is answered; unknown methods report not-found.
+  assert.strictEqual(await mcp.respond({ method: 'notifications/initialized' }), null, 'notifications are not answered');
+  assert.deepStrictEqual((await mcp.respond({ jsonrpc: '2.0', id: 3, method: 'ping' })).result, {}, 'ping replies empty');
+  assert.strictEqual((await mcp.respond({ jsonrpc: '2.0', id: 4, method: 'nope' })).error.code, -32601, 'unknown method is not-found');
+
+  // tools/call routes to the injected executor and returns its result.
+  const seen: unknown[] = [];
+  const call = await mcp.respond(
+    { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'list_repos', arguments: {} } },
+    async (name: string, args: unknown) => { seen.push([name, args]); return { content: [{ type: 'text', text: 'ok' }] }; },
+  );
+  assert.deepStrictEqual(seen[0], ['list_repos', {}], 'executor receives the tool name and args');
+  assert.strictEqual(call.result.content[0].text, 'ok', 'the tool result is returned');
+
+  // An unknown tool is a tool-level error (isError), not a JSON-RPC error.
+  const bad = await mcp.respond({ jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'nope', arguments: {} } });
+  assert.strictEqual(bad.result.isError, true, 'unknown tool is an isError result');
+});
+
+test('mcp: create_task / list_tasks / get_task round-trip through the store', async () => {
+  const store = require('../server/store');
+  const mcp = require('../server/mcp');
+
+  const repo = { id: store.id(), path: '/tmp/mcp-repo', name: 'o/mcp', branch: null, addedAt: store.now() };
+  store.db.repos.push(repo);
+
+  // create_task queues a backlog task through the shared task service.
+  const created = JSON.parse((await mcp.callTool('create_task', { repoId: repo.id, title: 'MCP task', prompt: 'do the thing' })).content[0].text);
+  assert.strictEqual(created.status, 'backlog', 'created in backlog by default');
+  assert.strictEqual(created.repoId, repo.id, 'attached to the target repo');
+
+  // list_tasks (filtered by repo) shows the compact summary.
+  const list = JSON.parse((await mcp.callTool('list_tasks', { repoId: repo.id })).content[0].text);
+  assert.ok(list.some((t: { id: string }) => t.id === created.id), 'the new task is listed');
+
+  // get_task returns the full task plus a (bounded) log tail.
+  const got = JSON.parse((await mcp.callTool('get_task', { taskId: created.id })).content[0].text);
+  assert.strictEqual(got.task.id, created.id, 'returns the requested task');
+  assert.ok(Array.isArray(got.events), 'includes a log-event array');
+
+  // Missing input is a plain throw that respond() surfaces as an isError result.
+  await assert.rejects(() => mcp.callTool('get_task', { taskId: 'nope' }), /Task not found/, 'a missing task throws');
+  await assert.rejects(() => mcp.callTool('create_task', { repoId: repo.id, title: 'x' }), /required/, 'a prompt-less create throws');
 });
 
 test('permissions: a pending prompt resolves with the user decision and is listed until settled', async () => {

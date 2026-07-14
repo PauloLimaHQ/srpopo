@@ -23,6 +23,8 @@ import * as plugins from './plugins';
 import * as autonomous from './autonomous';
 import * as framing from './framing';
 import * as terminal from './terminal';
+import * as taskService from './tasks';
+import * as mcp from './mcp';
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -55,18 +57,11 @@ function publicSettings(): PublicSettings {
   };
 }
 
-// True once dispatched runs + grooming sessions together hit the configured
-// cap — checked right before spawning a new `claude` child so headless runs
-// fail fast with a clear message instead of silently piling up and starving
-// each other of CPU / hitting subscription rate limits.
-function atCapacity(): boolean {
-  return runner.runningCount() >= (db.settings.maxParallelSessions || 1);
-}
-
-function capacityError(): string {
-  return `Max parallel sessions reached (${runner.runningCount()}/${db.settings.maxParallelSessions} running). ` +
-    'Stop a running task or raise the limit in Settings.';
-}
+// Capacity gating (max parallel `claude` children) lives in the task service so
+// the REST routes and the MCP server enforce the same cap; these thin aliases
+// keep the existing call sites readable.
+const atCapacity = taskService.atCapacity;
+const capacityError = taskService.capacityError;
 
 // Map a linear.ts failure reason to an HTTP status + user-facing message.
 function linearFail(res: Response, reason: linear.LinearReason): void {
@@ -171,6 +166,25 @@ app.get('/api/state', (req: Request, res: Response) => {
 });
 
 app.get('/api/events', (req: Request, res: Response) => sse(req, res));
+
+// ---------- MCP server ----------
+
+// Board control over MCP's Streamable HTTP transport, live for as long as Sr.
+// Popo is running. An outside MCP client (e.g. `claude mcp add --transport http
+// srpopo http://127.0.0.1:7777/mcp`) can list/create/dispatch/stop tasks through
+// the same code paths as the REST API. See server/mcp.ts; localhost binding is
+// the only security boundary, exactly as for /api.
+app.post('/mcp', async (req: Request, res: Response) => {
+  try {
+    await mcp.handlePost(req, res);
+  } catch (e) {
+    if (!res.headersSent) {
+      res.status(500).json({ jsonrpc: '2.0', id: null, error: { code: -32603, message: (e as Error).message } });
+    }
+  }
+});
+app.get('/mcp', (req: Request, res: Response) => mcp.handleUnsupported(res));
+app.delete('/mcp', (req: Request, res: Response) => mcp.handleUnsupported(res));
 
 // ---------- settings ----------
 
@@ -393,51 +407,11 @@ app.delete('/api/repos/:id', (req: Request, res: Response) => {
 // ---------- tasks ----------
 
 app.post('/api/tasks', (req: Request, res: Response) => {
-  const { title, prompt, repoId, model, useWorktree, permissionMode, status } = req.body;
-  if (!title || !prompt) return err(res, 400, 'title and prompt are required');
-  const repo = getRepo(repoId);
-  if (!repo) return err(res, 400, 'Unknown repo');
-
-  const task: Task = {
-    id: id(),
-    title: String(title).trim(),
-    prompt: String(prompt),
-    repoId: repo.id,
-    repoName: repo.name,
-    repoPath: repo.path,
-    addons: addons.sanitize(req.body.addons),
-    personas: personas.sanitize(req.body.personas),
-    attachments: [],
-    useWorktree: !!useWorktree,
-    worktreePath: null,
-    branchName: req.body.branchName ? String(req.body.branchName).trim() : null,
-    branch: null,
-    model: model || 'default',
-    permissionMode: permissionMode || 'acceptEdits',
-    allowedTools: runner.normalizeAllowedTools(req.body.allowedTools),
-    // Ask the user to approve otherwise-denied tools instead of silently finishing
-    // without running them. Defaults on; opt out for fully-unattended runs.
-    promptPermissions: 'promptPermissions' in req.body ? !!req.body.promptPermissions : true,
-    status: status === 'ready' ? 'ready' : 'backlog',
-    sessionId: null,
-    resolvedModel: null,
-    costUsd: 0,
-    numTurns: null,
-    durationMs: null,
-    runCount: 0,
-    activeSubagents: 0,
-    lastOutcome: null,
-    lastError: null,
-    archived: false,
-    createdAt: now(),
-    updatedAt: now(),
-    startedAt: null,
-    finishedAt: null,
-  };
-  db.tasks.push(task);
-  save();
-  broadcast({ type: 'task', task });
-  res.json(task);
+  try {
+    res.json(taskService.createTask(req.body));
+  } catch (e) {
+    err(res, 400, (e as Error).message);
+  }
 });
 
 // ---------- briefs (idea grooming) ----------
@@ -599,20 +573,7 @@ app.post('/api/tasks/:id/dispatch', async (req: Request, res: Response) => {
   if (atCapacity()) return err(res, 409, capacityError());
 
   try {
-    if (task.useWorktree && !task.worktreePath) {
-      const { wtPath, branch } = await git.addWorktree(task.repoPath, task.id, slugify(task.title), task.branchName);
-      task.worktreePath = wtPath;
-      task.branch = branch;
-      save();
-    }
-    const followUp = req.body && req.body.message ? String(req.body.message) : null;
-    if (followUp && task.sessionId) {
-      runner.dispatch(task, followUp, { resume: true });
-    } else {
-      // Fresh run of the task prompt — framed (personas + prompt + add-ons +
-      // attachments) the same way the autonomous engine frames it.
-      runner.dispatch(task, framing.framePrompt(task), { resume: false });
-    }
+    await taskService.dispatchTask(task, req.body && req.body.message ? String(req.body.message) : null);
     res.json(task);
   } catch (e) {
     task.status = 'failed';
