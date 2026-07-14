@@ -27,6 +27,8 @@ static with **no build step** (see Conventions).
 | `server/index.ts` | Express REST API + static UI host. Binds `127.0.0.1` only. |
 | `server/runner.ts` | Spawns/kills the `claude` CLI, parses its `stream-json` session feed. |
 | `server/store.ts` | JSON persistence (`db.json`) + append-only per-task NDJSON logs. |
+| `server/tasks.ts` | Task lifecycle service (`createTask`/`dispatchTask` + capacity gate) shared by the REST API and the MCP server, so both queue/run tasks identically. |
+| `server/mcp.ts` | **Board MCP server** (see "MCP server" below). Streamable-HTTP MCP endpoint mounted on the Express app at `POST /mcp` so outside MCP clients can drive the board while Sr. Popo runs. |
 | `server/git.ts` | Worktree lifecycle (`git worktree add/remove`). |
 | `server/github.ts` | Read-only `gh` CLI lookup of a task's pull request. |
 | `server/bus.ts` | Server-Sent Events fan-out for the live board + timeline. |
@@ -70,12 +72,10 @@ change is done. `npm run server` / `npm test` run the TypeScript directly with
 A task moves through fixed board columns. Preserve these names and semantics — the
 UI, the API, and `runner.ts` all agree on them:
 
-`backlog` → `ready` → **`running`** → `review` → `done`, with **`grooming`** as an
-entry state (from "Brief an Idea") and `failed` as a side state.
+`backlog` → `ready` → **`running`** → `review` → `done`, with `failed` as a side
+state. (Grooming cards are a separate entity with their own lifecycle — see
+"Grooming" below — and live in their own locked, leftmost column.)
 
-- **grooming** — a live, read-only `claude -p` session (`runner.groom`) that rewrites
-  a rough idea into a well-formed prompt; on success the task moves to `ready`. Like
-  `running`, it is set only by the runner, never via `PATCH /api/tasks/:id`.
 - **backlog / ready** — configured but not dispatched.
 - **running** — a live `claude -p --output-format stream-json` process. Set only by
   `runner.dispatch`, never via `PATCH /api/tasks/:id` (the API rejects that on purpose).
@@ -179,17 +179,61 @@ Note: `--permission-prompt-tool` is a stable but undocumented CLI flag; the requ
 shapes here match what the CLI expects. If you change the bridge protocol, re-verify the
 handshake against a real run — the smoke suite covers the pieces but not the live CLI.
 
+## MCP server: drive the board from outside
+
+Sr. Popo exposes its own board as an **MCP server** for as long as it's running, so
+an outside MCP client — e.g. a separate Claude Code session — can list, create,
+dispatch, and stop tasks. It's mounted straight onto the Express app at `POST /mcp`
+using MCP's **Streamable HTTP** transport (`server/mcp.ts`); connect with:
+
+```bash
+claude mcp add --transport http srpopo http://127.0.0.1:7777/mcp
+```
+
+Don't confuse this with `server/permission-mcp.js`: that one is a per-task **stdio**
+bridge the CLI spawns to *ask the user* about a tool; this one is a long-lived
+**HTTP** server that *lets a client drive the board*. Both are hand-rolled JSON-RPC
+2.0 to keep the app dependency-light — no MCP SDK.
+
+- **Tools:** `list_repos`, `list_tasks`, `get_task`, `create_task`, `dispatch_task`,
+  `stop_task`. They go through `server/tasks.ts` (the same code path as the REST
+  routes), so a task queued over MCP is identical to one queued from the board.
+- **Stateless** — no `Mcp-Session-Id`; a client just POSTs each JSON-RPC message and
+  gets a single JSON reply (or `202` for a notification-only batch). `GET`/`DELETE
+  /mcp` return `405` (no server-initiated stream, no sessions).
+- **No new security boundary.** There's no auth — the endpoint rides the same
+  `127.0.0.1`-only bind as `/api`, which *is* the boundary (invariant #1). It exposes
+  exactly the task-control power the local REST API already does. Keep it localhost.
+- To add a tool, append a `TOOL_DEFS` entry (name + JSON `inputSchema`) and a `case`
+  in `callTool`; the pure `respond()` handler and the smoke tests cover the protocol.
+
 ## Grooming: "Brief an Idea"
 
-`POST /api/briefs` (a rough idea + a repo) creates a task in the `grooming` state and
-kicks off `runner.groom`. That runs a **read-only** `claude -p` session in the repo
-(only research tools are auto-approved — see `groomArgs`, no worktree, never a write)
-whose whole job is prompt engineering: explore the code, then rewrite the idea into a
-self-contained task prompt. `server/groomer.ts` owns the meta-prompt and the parser
-that recovers the `{ title, prompt }` spec (emitted between `@@SRPOPO_SPEC_*@@`
-sentinels). On success the task lands in `ready` with the groomed prompt; the original
-idea is preserved on `task.brief`. To change how ideas are groomed, edit `groomer.ts` —
-it is the single source of truth for that flow.
+Grooming is an **installable plugin** (`grooming` in `server/plugins.ts`) — the
+"Brief an Idea" button, the board's Grooming column, and `POST /api/groomings` only
+surface once it's installed. (The Linear import routes through the same pipeline but
+is gated on its own plugin, not this one.)
+
+A grooming is **not a task** — it's its own entity (`db.groomings`, `Grooming` in
+`types.ts`) with its own lifecycle and REST routes (`/api/groomings/...`): **draft**
+(gray, parked) → **running** (purple, set only by `runner.groom`) → **finished**
+(green) or **failed**. Its card never leaves the Grooming column — the first, locked
+column on the board (no drag in or out); the status only recolors the card in place.
+Finished cards link to the tasks they spawned and can be archived or deleted
+(deletion also drops the session log; spawned tasks are independent and are kept).
+
+Running a card kicks off a **read-only** `claude -p` session in the repo (only
+research tools are auto-approved — see `groomArgs`; no worktree is ever created and
+nothing is written, so there's nothing on disk to clean up). Its job is to think the
+idea through and propose **one or more** self-contained task prompts.
+`server/groomer.ts` owns the meta-prompt and the parser that recovers the
+`{ tasks: [{ title, prompt, ready }] }` spec (emitted between `@@SRPOPO_SPEC_*@@`
+sentinels). On success `spawnGroomedTasks` (in `index.ts`) creates the tasks — in
+`backlog` or `ready` per the card's `target` (`backlog` | `ready` | `auto`, where
+`auto` honors each spec's own `ready` flag) — and the card finishes with their ids on
+`grooming.taskIds`; each spawned task keeps the original idea on `task.brief` and a
+back-pointer on `task.groomingId`. To change how ideas are groomed, edit
+`groomer.ts` — it is the single source of truth for that flow.
 
 ## Maintaining this repo with Claude (the meta-workflow)
 

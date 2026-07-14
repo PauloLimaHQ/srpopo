@@ -24,6 +24,16 @@ export interface Settings {
   // Mode's own merge-safety check alike. Opt-in: off by default since it silently
   // spawns a new `claude` run.
   autoResolveConflicts: boolean;
+  // Opt-in "Remote Access (LAN)" mode. When true the server binds the LAN
+  // interface (0.0.0.0) instead of 127.0.0.1 only, and every non-localhost
+  // request must carry the shared token below. Off by default — invariant #1
+  // (localhost is the security boundary) only relaxes when the user opts in.
+  remoteAccess: boolean;
+  // Shared access token that gates LAN requests when remoteAccess is on. A
+  // secret like linearApiToken: it lives only in db.json, is generated lazily
+  // the first time remote access is enabled, and is never returned to the board
+  // (see PublicSettings) — only over the localhost-only GET /api/remote-access.
+  remoteAccessToken: string;
 }
 
 // The redacted, board-facing view of Settings. Omits the raw Linear token and
@@ -36,6 +46,10 @@ export interface PublicSettings {
   maxParallelSessions: number;
   installedPlugins: string[];
   autoResolveConflicts: boolean;
+  // Whether LAN remote access is enabled, and whether a token exists — never the
+  // raw token itself (that only flows over the localhost-only GET /api/remote-access).
+  remoteAccess: boolean;
+  remoteAccessConfigured: boolean;
 }
 
 // A marketplace plugin as the UI lists it. The full catalog lives in
@@ -75,17 +89,64 @@ export type TaskStatus =
   | 'backlog'
   | 'ready'
   | 'running'
-  | 'grooming'
   | 'review'
   | 'done'
   | 'failed';
+
+// A grooming card's own lifecycle — separate from tasks. It never becomes a
+// task; it spawns them. `running` (like a task's) is set only by the runner.
+export type GroomingStatus = 'draft' | 'running' | 'finished' | 'failed';
+
+// Where a grooming's spawned tasks land: always backlog, always ready, or let
+// the grooming session decide per task (its `ready` flag on each spec).
+export type GroomingTarget = 'backlog' | 'ready' | 'auto';
+
+// A "Brief an Idea" card. Lives in db.groomings with its own board column and
+// lifecycle: draft → running → finished (or failed), archive/delete when done.
+// The grooming session is read-only research in the repo — it never gets a
+// worktree or a resumable session, so there is nothing on disk to clean up.
+export interface Grooming {
+  id: string;
+  title: string;
+  // The rough idea being groomed (the brief).
+  idea: string;
+  repoId: string;
+  repoName: string;
+  repoPath: string;
+  model: string;
+  target: GroomingTarget;
+  // Origin pointer when the idea was imported from a Linear issue.
+  linearIssue?: { identifier: string; url: string };
+  // Suggested worktree branch, applied only when exactly one task is spawned
+  // (branch names must be unique across tasks).
+  branchName: string | null;
+  status: GroomingStatus;
+  sessionId: string | null;
+  resolvedModel: string | null;
+  costUsd: number;
+  numTurns: number | null;
+  durationMs: number | null;
+  runCount: number;
+  activeSubagents: number;
+  lastOutcome: string | null;
+  lastError: string | null;
+  // Ids of the tasks this grooming spawned when it finished.
+  taskIds: string[];
+  archived: boolean;
+  createdAt: string;
+  updatedAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
 
 export interface Task {
   id: string;
   title: string;
   prompt: string;
-  // The original rough idea, present only on tasks created via "Brief an Idea".
+  // The original rough idea, present only on tasks spawned by a grooming.
   brief?: string;
+  // The grooming card that spawned this task, so the two can link to each other.
+  groomingId?: string;
   // Origin pointer for tasks imported from a Linear issue, so the drawer can
   // link back to it. Present only on the Linear import path.
   linearIssue?: { identifier: string; url: string };
@@ -115,6 +176,11 @@ export interface Task {
   costUsd: number;
   numTurns: number | null;
   durationMs: number | null;
+  // Per-model token/cost breakdown, accumulated across every run/resume of this
+  // task (mirrors costUsd's cumulative bookkeeping) — keyed by model id, e.g.
+  // "claude-sonnet-5". Populated from each `result` event's own `modelUsage` map
+  // (see runner.ts, server/usage.ts); absent/empty on tasks that haven't run yet.
+  modelUsage: Record<string, ModelUsageStat>;
   runCount: number;
   activeSubagents: number;
   lastOutcome: string | null;
@@ -143,9 +209,97 @@ export interface Attachment {
   addedAt: string;
 }
 
+// Token/cost totals for one model, accumulated across one or more runs. Shared
+// by Task.modelUsage (per-task cumulative) and the usage-ledger aggregates
+// (server/usage.ts) so both read the same shape.
+export interface ModelUsageStat {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  costUsd: number;
+}
+
+// One row of the append-only usage ledger (data/usage.ndjson), written by
+// usage.applyResult whenever a `result` event lands. One row per model per run
+// (a run using two models produces two rows sharing the same taskId/ts), which
+// keeps every downstream aggregation a simple group-by. Denormalizes
+// taskTitle/repoName at write time so historical stats still read right after
+// a task is renamed, archived, or its repo removed.
+export interface UsageEntry {
+  ts: string;
+  taskId: string;
+  taskTitle: string;
+  repoId: string;
+  repoName: string;
+  model: string;
+  kind: 'run' | 'groom';
+  costUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  durationMs: number;
+  numTurns: number;
+}
+
+export interface UsageTotals {
+  costUsd: number;
+  runs: number;
+  tasks: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+}
+
+export interface UsageModelBreakdown {
+  model: string;
+  costUsd: number;
+  runs: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+}
+
+export interface UsageRepoBreakdown {
+  repoId: string;
+  repoName: string;
+  costUsd: number;
+  runs: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+}
+
+export interface UsageDayBucket {
+  date: string; // YYYY-MM-DD (UTC)
+  costUsd: number;
+  runs: number;
+}
+
+// The full response of GET /api/usage — everything the Settings → Usage panel
+// needs for one period/repo selection in a single round trip.
+export interface UsageSummary {
+  period: string;
+  since: string | null;
+  until: string;
+  totals: UsageTotals;
+  // Same-length window immediately before `since`, for the "vs last period"
+  // comparison; null for the 'all' period (there is no "previous" window).
+  previous: { costUsd: number; runs: number } | null;
+  deltaPct: number | null;
+  byModel: UsageModelBreakdown[];
+  byRepo: UsageRepoBreakdown[];
+  byDay: UsageDayBucket[];
+}
+
 export interface Db {
   repos: Repo[];
   tasks: Task[];
+  groomings: Grooming[];
   settings: Settings;
 }
 
@@ -226,11 +380,14 @@ export interface AutonomousStatus {
   repoName: string | null;
   budgetUsd: number | null;
   spentUsd: number;
+  // Whether this session also actively reviews + finishes tasks parked in `review`
+  // (resume with a review pass, then green-merge → done), not just merge green PRs.
+  reviewMode: boolean;
   startedAt: string | null;
   // True once a user stop was requested but in-flight runs are still finishing.
   stopping: boolean;
-  // Why the session last changed state (e.g. 'started', 'budget-reached',
-  // 'drained', 'stopped') — surfaced in the UI banner.
+  // Why the session last changed state (e.g. 'started', 'standby',
+  // 'budget-reached', 'stopped') — surfaced in the UI banner.
   reason: string | null;
   tasks: AutonomousTaskView[];
 }
