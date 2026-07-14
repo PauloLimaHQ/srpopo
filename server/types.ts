@@ -207,6 +207,9 @@ export interface Task {
   // Annotated onto GET /api/state responses so a reconnecting board rebuilds any
   // live tool-approval prompts. Never persisted to db.json.
   pendingPermissions?: PublicPermissionRequest[];
+  // Annotated onto GET /api/state too: whether the live run is in auto-approve
+  // ("AUTO MODE"), so a reconnecting board shows the toggle state. Never persisted.
+  autoApprovePermissions?: boolean;
 }
 
 // A file attached to a task. `name` is the stored (sanitized) basename under

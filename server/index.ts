@@ -391,7 +391,7 @@ app.get('/api/state', (req: Request, res: Response) => {
     // (or reconnects) mid-run immediately shows what's waiting on the user.
     tasks: db.tasks
       .filter((t) => !t.archived)
-      .map((t) => ({ ...t, pendingPermissions: permissions.listForTask(t.id) })),
+      .map((t) => ({ ...t, pendingPermissions: permissions.listForTask(t.id), autoApprovePermissions: permissions.isAutoApprove(t.id) })),
     groomings: db.groomings.filter((g) => !g.archived),
     settings: publicSettings(),
     // Live autonomous-session snapshot so a reconnecting board rebuilds its banner
@@ -1004,6 +1004,17 @@ app.post('/api/tasks/:id/permissions/:reqId', (req: Request, res: Response) => {
     updatedInput: req.body && req.body.updatedInput,
   });
   res.json({ ok });
+});
+
+// Toggle a running task's auto-approve ("AUTO MODE"): while on, every tool the run
+// would otherwise prompt for is allowed at once, with no prompt. Process-local and
+// only valid while the claude child is alive — off once the run ends.
+app.post('/api/tasks/:id/auto-approve', (req: Request, res: Response) => {
+  const task = getTask(req.params.id);
+  if (!task) return err(res, 404, 'Task not found');
+  if (!runner.isRunning(task.id)) return err(res, 409, 'Task is not running');
+  const auto = permissions.setAutoApprove(task.id, !!(req.body && req.body.auto));
+  res.json({ ok: true, auto });
 });
 
 app.post('/api/tasks/:id/archive', (req: Request, res: Response) => {
