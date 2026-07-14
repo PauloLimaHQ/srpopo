@@ -315,6 +315,9 @@
           <button class="settings-nav-item active" data-section="general">
             <span class="i" data-icon="sliders-horizontal"></span>General
           </button>
+          <button class="settings-nav-item" data-section="usage">
+            <span class="i" data-icon="bar-chart-3"></span>Usage
+          </button>
           <button class="settings-nav-item" data-section="remote">
             <span class="i" data-icon="wifi"></span>Remote Access
           </button>
@@ -361,6 +364,25 @@
               <legend>About</legend>
               <p class="addon-hint" id="setting-about-version">Sr. Popo</p>
             </fieldset>
+          </section>
+
+          <section class="settings-section hidden" data-section="usage">
+            <h2 class="settings-section-title">Usage</h2>
+            <p class="muted">Local spend tracking, computed from every session's own cost/token
+              report — the same figures the <code>claude</code> CLI shows you, not a subscription
+              bill (Sr. Popo never uses an API key). Nothing leaves your machine.</p>
+            <div class="usage-toolbar">
+              <div class="usage-period" role="group" aria-label="Period">
+                <button class="usage-period-btn" data-period="7d">7 days</button>
+                <button class="usage-period-btn active" data-period="30d">30 days</button>
+                <button class="usage-period-btn" data-period="90d">90 days</button>
+                <button class="usage-period-btn" data-period="all">All time</button>
+              </div>
+              <select id="usage-repo-filter" class="usage-repo-filter">
+                <option value="">All projects</option>
+              </select>
+            </div>
+            <div id="settings-usage-body" class="usage-body"></div>
           </section>
 
           <section class="settings-section hidden" data-section="remote">

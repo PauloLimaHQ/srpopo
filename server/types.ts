@@ -169,6 +169,11 @@ export interface Task {
   costUsd: number;
   numTurns: number | null;
   durationMs: number | null;
+  // Per-model token/cost breakdown, accumulated across every run/resume of this
+  // task (mirrors costUsd's cumulative bookkeeping) — keyed by model id, e.g.
+  // "claude-sonnet-5". Populated from each `result` event's own `modelUsage` map
+  // (see runner.ts, server/usage.ts); absent/empty on tasks that haven't run yet.
+  modelUsage: Record<string, ModelUsageStat>;
   runCount: number;
   activeSubagents: number;
   lastOutcome: string | null;
@@ -189,6 +194,93 @@ export interface Attachment {
   name: string;
   size: number;
   addedAt: string;
+}
+
+// Token/cost totals for one model, accumulated across one or more runs. Shared
+// by Task.modelUsage (per-task cumulative) and the usage-ledger aggregates
+// (server/usage.ts) so both read the same shape.
+export interface ModelUsageStat {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  costUsd: number;
+}
+
+// One row of the append-only usage ledger (data/usage.ndjson), written by
+// usage.applyResult whenever a `result` event lands. One row per model per run
+// (a run using two models produces two rows sharing the same taskId/ts), which
+// keeps every downstream aggregation a simple group-by. Denormalizes
+// taskTitle/repoName at write time so historical stats still read right after
+// a task is renamed, archived, or its repo removed.
+export interface UsageEntry {
+  ts: string;
+  taskId: string;
+  taskTitle: string;
+  repoId: string;
+  repoName: string;
+  model: string;
+  kind: 'run' | 'groom';
+  costUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  durationMs: number;
+  numTurns: number;
+}
+
+export interface UsageTotals {
+  costUsd: number;
+  runs: number;
+  tasks: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+}
+
+export interface UsageModelBreakdown {
+  model: string;
+  costUsd: number;
+  runs: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+}
+
+export interface UsageRepoBreakdown {
+  repoId: string;
+  repoName: string;
+  costUsd: number;
+  runs: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+}
+
+export interface UsageDayBucket {
+  date: string; // YYYY-MM-DD (UTC)
+  costUsd: number;
+  runs: number;
+}
+
+// The full response of GET /api/usage — everything the Settings → Usage panel
+// needs for one period/repo selection in a single round trip.
+export interface UsageSummary {
+  period: string;
+  since: string | null;
+  until: string;
+  totals: UsageTotals;
+  // Same-length window immediately before `since`, for the "vs last period"
+  // comparison; null for the 'all' period (there is no "previous" window).
+  previous: { costUsd: number; runs: number } | null;
+  deltaPct: number | null;
+  byModel: UsageModelBreakdown[];
+  byRepo: UsageRepoBreakdown[];
+  byDay: UsageDayBucket[];
 }
 
 export interface Db {

@@ -453,6 +453,89 @@ test('runner: promptPermissions wires the approval MCP bridge (and skips it on b
   assert.ok(!off.includes('--permission-prompt-tool'), 'no prompt tool when not opted in');
 });
 
+test('usage: applyResult records a per-model ledger row and accumulates task.modelUsage', () => {
+  const usage = require('../server/usage');
+  const store = require('../server/store');
+  const task: Record<string, unknown> = {
+    id: 't-usage-1', title: 'Usage test task', status: 'running',
+    repoId: 'repoA', repoName: 'RepoA', model: 'default', resolvedModel: 'claude-sonnet-5',
+  };
+  const event = {
+    type: 'result', ts: '2024-01-01T00:00:00.000Z', duration_ms: 1000, num_turns: 3, total_cost_usd: 0.05,
+    modelUsage: {
+      'claude-sonnet-5': { inputTokens: 100, outputTokens: 50, cacheReadInputTokens: 10, cacheCreationInputTokens: 5, costUSD: 0.05 },
+    },
+  };
+  usage.applyResult(task, event);
+
+  const modelUsage = task.modelUsage as Record<string, { costUsd: number; inputTokens: number }>;
+  assert.ok(modelUsage['claude-sonnet-5'], 'model accumulated onto the task');
+  assert.strictEqual(modelUsage['claude-sonnet-5'].costUsd, 0.05);
+  assert.strictEqual(modelUsage['claude-sonnet-5'].inputTokens, 100);
+
+  const rows = store.readUsage().filter((r: { taskId: string }) => r.taskId === 't-usage-1');
+  assert.strictEqual(rows.length, 1, 'one ledger row written');
+  assert.strictEqual(rows[0].model, 'claude-sonnet-5');
+  assert.strictEqual(rows[0].kind, 'run', 'status running maps to kind run');
+});
+
+test('usage: applyResult falls back to a single row keyed by resolvedModel when modelUsage is absent', () => {
+  const usage = require('../server/usage');
+  const store = require('../server/store');
+  const task: Record<string, unknown> = {
+    id: 't-usage-2', title: 'No modelUsage', status: 'running',
+    repoId: 'repoA', repoName: 'RepoA', model: 'default', resolvedModel: 'claude-haiku-4-5-20251001',
+  };
+  const event = {
+    type: 'result', ts: '2024-01-01T00:00:00.000Z', total_cost_usd: 0.01,
+    usage: { input_tokens: 20, output_tokens: 10 },
+  };
+  usage.applyResult(task, event);
+
+  const rows = store.readUsage().filter((r: { taskId: string }) => r.taskId === 't-usage-2');
+  assert.strictEqual(rows.length, 1);
+  assert.strictEqual(rows[0].model, 'claude-haiku-4-5-20251001', 'falls back to the resolved model');
+  assert.strictEqual(rows[0].kind, 'run', 'a dispatched task run always maps to kind run');
+  assert.strictEqual(rows[0].costUsd, 0.01);
+});
+
+test('usage: applyGroomResult records a groom-kind ledger row without touching task.modelUsage', () => {
+  const usage = require('../server/usage');
+  const store = require('../server/store');
+  const grooming: Record<string, unknown> = {
+    id: 'g-usage-1', title: 'Groom a rough idea',
+    repoId: 'repoA', repoName: 'RepoA', model: 'default', resolvedModel: 'claude-haiku-4-5-20251001',
+  };
+  const event = {
+    type: 'result', ts: '2024-01-01T00:00:00.000Z', total_cost_usd: 0.02,
+    usage: { input_tokens: 40, output_tokens: 15 },
+  };
+  usage.applyGroomResult(grooming, event);
+
+  assert.strictEqual(grooming.modelUsage, undefined, 'grooming cards have no modelUsage field to accumulate onto');
+  const rows = store.readUsage().filter((r: { taskId: string }) => r.taskId === 'g-usage-1');
+  assert.strictEqual(rows.length, 1);
+  assert.strictEqual(rows[0].model, 'claude-haiku-4-5-20251001');
+  assert.strictEqual(rows[0].kind, 'groom', 'grooming runs always map to kind groom');
+  assert.strictEqual(rows[0].costUsd, 0.02);
+});
+
+test('usage: computeSummary aggregates totals/byModel/byRepo and has no previous window for "all"', () => {
+  const usage = require('../server/usage');
+  const summary = usage.computeSummary({ period: 'all' });
+
+  assert.ok(summary.totals.costUsd >= 0.06, 'totals include both rows written above');
+  const sonnetRow = summary.byModel.find((m: { model: string }) => m.model === 'claude-sonnet-5');
+  assert.ok(sonnetRow, 'sonnet appears in the model breakdown');
+  assert.strictEqual(sonnetRow.runs, 1);
+  const repoRow = summary.byRepo.find((r: { repoId: string }) => r.repoId === 'repoA');
+  assert.ok(repoRow, 'repoA appears in the repo breakdown');
+  assert.strictEqual(summary.previous, null, "'all' period has no previous window");
+
+  const scoped = usage.computeSummary({ period: 'all', repoId: 'repoB-does-not-exist' });
+  assert.strictEqual(scoped.totals.costUsd, 0, 'scoping to an unrelated repo excludes these rows');
+});
+
 test('permission-mcp: respond builds MCP replies and routes tools/call to the decider', async () => {
   const mcp = require('../server/permission-mcp');
 

@@ -8,6 +8,7 @@ import { broadcast } from './bus';
 import * as groomer from './groomer';
 import * as addons from './addons';
 import * as permissions from './permissions';
+import * as usage from './usage';
 import type { GroomSpec } from './groomer';
 import type { Grooming, LogEvent, Task } from './types';
 
@@ -210,6 +211,11 @@ interface LaunchOpts {
   // narrows it to its own record type.
   emit: (rec: any) => void;
   resolveExit: (info: ExitInfo) => void;
+  // Called after the shared cost/turns/duration bookkeeping on every `result`
+  // event, so each lifecycle can extend the usage ledger with its own record
+  // shape (dispatch -> usage.applyResult, groom -> usage.applyGroomResult)
+  // without launch() itself needing to know which one it's driving.
+  onResult?: (event: any) => void;
 }
 
 /**
@@ -219,7 +225,7 @@ interface LaunchOpts {
  * `resolveExit`, which decides the final status once the process exits (the
  * process error/cleanup path is handled here).
  */
-function launch<T extends SessionRecord>(rec: T, { args, workDir, prompt, promptEvent, emit, resolveExit }: LaunchOpts): T {
+function launch<T extends SessionRecord>(rec: T, { args, workDir, prompt, promptEvent, emit, resolveExit, onResult }: LaunchOpts): T {
   if (running.has(rec.id)) throw new Error('Task is already running');
 
   record(rec, promptEvent);
@@ -279,6 +285,7 @@ function launch<T extends SessionRecord>(rec: T, { args, workDir, prompt, prompt
       rec.costUsd = (rec.costUsd || 0) + (event.total_cost_usd || 0);
       rec.numTurns = event.num_turns;
       rec.durationMs = event.duration_ms;
+      if (onResult) onResult(event);
       emit(rec);
     }
 
@@ -338,6 +345,7 @@ function dispatch(task: Task, prompt: string, { resume = false }: { resume?: boo
     prompt,
     promptEvent: { type: 'prompt', text: prompt, resume, run: task.runCount },
     emit: emitTask,
+    onResult: (event) => usage.applyResult(task, event),
     resolveExit: ({ code, signal, stopped, sawResult, stderrTail }) => {
       if (signal || stopped) {
         task.status = 'ready';
@@ -388,6 +396,7 @@ function groom(grooming: Grooming, { onSpawn }: { onSpawn: (specs: GroomSpec[]) 
     prompt,
     promptEvent: { type: 'prompt', text: prompt, groom: true, run: grooming.runCount },
     emit: emitGrooming,
+    onResult: (event) => usage.applyGroomResult(grooming, event),
     resolveExit: ({ code, signal, stopped, sawResult, stderrTail }) => {
       // The grooming session is an internal, read-only planning session and is
       // never resumed. Drop its session id so nothing on the card points at it.

@@ -83,6 +83,7 @@ export function createTask(input: CreateTaskInput): Task {
     costUsd: 0,
     numTurns: null,
     durationMs: null,
+    modelUsage: {},
     runCount: 0,
     activeSubagents: 0,
     lastOutcome: null,
