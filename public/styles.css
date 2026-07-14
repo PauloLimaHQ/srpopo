@@ -563,7 +563,7 @@ a.chip.pr:hover { border-color: currentColor; }
 
 .ev-tool {
   border: 1px solid var(--border); border-radius: 9px; background: var(--tool-bg);
-  font-family: var(--mono); font-size: 12px; overflow: hidden;
+  font-family: var(--mono); font-size: 12px;
 }
 .ev-tool summary {
   display: flex; align-items: center; gap: 8px; padding: 8px 11px; cursor: pointer;
