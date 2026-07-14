@@ -3,10 +3,16 @@ import { app, BrowserWindow, Tray, Menu, nativeImage, shell, ipcMain, dialog, No
 import { autoUpdater } from 'electron-updater';
 
 import { appRoot } from '../server/paths';
+import { resolveClaudeEnv } from './resolve-env';
 
 // Pin the name so dev and packaged builds resolve the SAME userData folder
 // (~/Library/Application Support/Sr. Popo) instead of splitting on package name.
 app.setName('Sr. Popo');
+
+// Repair PATH (and pin CLAUDE_BIN) BEFORE requiring the server: a Finder/Dock-
+// launched app doesn't inherit the shell PATH, so `claude` would otherwise be
+// unresolvable. runner.ts reads CLAUDE_BIN at import time, so this must run first.
+resolveClaudeEnv();
 
 // Persist Sr. Popo's data (db.json + logs) in a writable per-user location.
 // The server module reads this before it touches the filesystem — so require it
