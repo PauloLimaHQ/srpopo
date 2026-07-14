@@ -36,10 +36,14 @@ jobs:
       - name: Install dependencies
         run: npm install --no-audit --no-fund
 
-      - name: Build installers (unsigned)
+      - name: Build installers (ad-hoc signed on macOS)
         run: ${{ matrix.build }}
         env:
-          # Disable macOS code signing — unsigned builds for now.
+          # No Apple Developer ID / notarization yet. Don't auto-discover a real
+          # cert; the mac build config's `"identity": "-"` ad-hoc signs instead
+          # (codesign -s -), which is required for Apple Silicon apps to launch
+          # at all — a fully unsigned arm64 .app is reported as "damaged" once
+          # macOS quarantines the download.
           CSC_IDENTITY_AUTO_DISCOVERY: false
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

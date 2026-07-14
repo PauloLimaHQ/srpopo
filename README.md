@@ -27,10 +27,18 @@ Grab the latest installer from the **[Releases page →](https://github.com/Paul
 | **macOS** (Apple Silicon + Intel) | `Sr.Popo-*.dmg` |
 | **Windows** (x64) | `Sr.Popo-Setup-*.exe` |
 
-Builds are **unsigned** for now, so your OS will warn on first launch:
+Builds are **unsigned** (ad-hoc signed only, no Apple Developer ID / notarization)
+for now, so your OS will warn on first launch:
 
 - **macOS** — right-click the app → **Open** to bypass Gatekeeper (once).
 - **Windows** — on the SmartScreen prompt, choose **More info → Run anyway**.
+
+> **macOS says the app is "damaged and can't be opened"?** That's the download's
+> quarantine flag on an unsigned app, not a corrupt file. Clear it with:
+> ```bash
+> xattr -dr com.apple.quarantine "/Applications/Sr. Popo.app"
+> ```
+> then open it normally. (Newer builds are ad-hoc signed, which avoids this.)
 
 > **Prefer to run from source?** See [Develop](#develop) below.
 
