@@ -1323,6 +1323,9 @@
     if (t.linearIssue && t.linearIssue.identifier) {
       meta.push(`<a class="chip linear-chip" href="${esc(t.linearIssue.url)}" target="_blank" rel="noopener" title="Open in Linear">${icon('linear')} ${esc(t.linearIssue.identifier)}</a>`);
     }
+    if (t.specOrigin && t.specOrigin.path) {
+      meta.push(`<span class="chip spec-chip" title="${esc(t.specOrigin.path)}">${icon('folder')} ${esc(t.specOrigin.path.split('/').pop())}</span>`);
+    }
     if (t.worktreePath) {
       meta.push(`<span class="chip worktree" title="${esc(t.worktreePath)}">${icon('git-branch')} ${esc(t.branch)}</span>`);
     } else if (t.useWorktree && t.branchName) {
@@ -2315,6 +2318,209 @@
     openSettingsModal('plugins');
   });
 
+  // ---------- create task(s) from repo specs ----------
+  // Unlike the Linear import, this is a direct import: a spec file's own
+  // content already reads like a self-contained instruction, so it becomes
+  // task.prompt as-is — no grooming/LLM pass in between.
+  let specsFiles = []; // last GET /api/repos/:id/specs result for the current repo
+  let specsSelected = new Set(); // checked paths, staged for import
+  let specsPreviewCache = new Map(); // "repoId:path" -> file content
+
+  // Coarse "N time-unit(s) ago" label for a spec's mtime — good enough for a
+  // browse list; no need for anything fancier here.
+  function relativeTime(iso) {
+    const ts = Date.parse(iso);
+    if (Number.isNaN(ts)) return '';
+    const mins = Math.round((Date.now() - ts) / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return `${mins}m ago`;
+    const hours = Math.round(mins / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.round(hours / 24);
+    if (days < 30) return `${days}d ago`;
+    const months = Math.round(days / 30);
+    if (months < 12) return `${months}mo ago`;
+    return `${Math.round(months / 12)}y ago`;
+  }
+
+  const specRoot = (specPath) => (specPath.startsWith('.specs/') ? '.specs' : 'specs');
+
+  function refreshSpecsRepoSelect() {
+    const sel = $('#specs-repo');
+    if (!sel) return;
+    sel.innerHTML = state.repos.length
+      ? state.repos.map((r) => `<option value="${r.id}">${esc(r.name)} — ${esc(r.path)}</option>`).join('')
+      : '<option value="">No repos yet — add one first</option>';
+  }
+
+  function specsFilterQuery() {
+    return $('#specs-filter').value.trim().toLowerCase();
+  }
+
+  function filteredSpecFiles() {
+    const q = specsFilterQuery();
+    if (!q) return specsFiles;
+    return specsFiles.filter((f) => f.title.toLowerCase().includes(q) || f.path.toLowerCase().includes(q));
+  }
+
+  function updateSpecsSelectAllState() {
+    const master = $('#specs-select-all');
+    const files = filteredSpecFiles();
+    const allChecked = files.length > 0 && files.every((f) => specsSelected.has(f.path));
+    const someChecked = files.some((f) => specsSelected.has(f.path));
+    master.disabled = !specsFiles.length;
+    master.checked = allChecked;
+    master.indeterminate = !allChecked && someChecked;
+  }
+
+  function renderSpecsList() {
+    const list = $('#specs-list');
+    if (!specsFiles.length) {
+      list.innerHTML = '<div class="specs-empty">No specs found under specs/ or .specs/ in this repo.</div>';
+      updateSpecsSelectAllState();
+      return;
+    }
+    const files = filteredSpecFiles();
+    if (!files.length) {
+      list.innerHTML = '<div class="specs-empty">No specs match your filter.</div>';
+      updateSpecsSelectAllState();
+      return;
+    }
+    const groups = new Map(); // root -> files[]
+    for (const f of files) {
+      const root = specRoot(f.path);
+      if (!groups.has(root)) groups.set(root, []);
+      groups.get(root).push(f);
+    }
+    let html = '';
+    for (const [root, items] of groups) {
+      html += `<div class="specs-group-label">${esc(root)}/</div>`;
+      html += items.map((f) => `
+        <div class="spec-row${specsSelected.has(f.path) ? ' picked' : ''}" data-path="${esc(f.path)}">
+          <input type="checkbox" class="spec-row-check" ${specsSelected.has(f.path) ? 'checked' : ''} />
+          <div class="spec-row-body">
+            <span class="spec-row-title">${esc(f.title)}</span>
+            <span class="spec-row-meta"><span class="spec-row-path">${esc(f.path)}</span> · ${esc(relativeTime(f.updatedAt))}</span>
+          </div>
+        </div>`).join('');
+    }
+    list.innerHTML = html;
+    updateSpecsSelectAllState();
+  }
+
+  function resetSpecsPreview() {
+    $('#specs-preview').textContent = 'Select a spec to preview it.';
+    $('#specs-preview').classList.add('muted');
+  }
+
+  async function previewSpec(relPath) {
+    for (const row of $('#specs-list').querySelectorAll('.spec-row')) {
+      row.classList.toggle('previewing', row.dataset.path === relPath);
+    }
+    const repoId = $('#specs-repo').value;
+    const preview = $('#specs-preview');
+    const cacheKey = `${repoId}:${relPath}`;
+    if (specsPreviewCache.has(cacheKey)) {
+      preview.textContent = specsPreviewCache.get(cacheKey);
+      preview.classList.remove('muted');
+      return;
+    }
+    preview.textContent = 'Loading…';
+    preview.classList.add('muted');
+    try {
+      const { content } = await api('GET', `/api/repos/${repoId}/specs/preview?path=${encodeURIComponent(relPath)}`);
+      specsPreviewCache.set(cacheKey, content);
+      preview.textContent = content;
+      preview.classList.remove('muted');
+    } catch (e) {
+      preview.textContent = e.message;
+    }
+  }
+
+  async function loadSpecsList() {
+    const repoId = $('#specs-repo').value;
+    const list = $('#specs-list');
+    if (!repoId) { specsFiles = []; renderSpecsList(); return; }
+    list.innerHTML = '<div class="muted specs-loading">Loading specs…</div>';
+    try {
+      const { specs } = await api('GET', `/api/repos/${repoId}/specs`);
+      specsFiles = specs || [];
+    } catch (e) {
+      specsFiles = [];
+      list.innerHTML = `<div class="muted">${esc(e.message)}</div>`;
+      return;
+    }
+    renderSpecsList();
+  }
+
+  function openSpecsModal() {
+    refreshSpecsRepoSelect();
+    const last = loadLastUsed();
+    $('#specs-filter').value = '';
+    $('#specs-target').value = 'backlog';
+    $('#specs-model').value = last.model || 'default';
+    if (currentWorkspaceRepoId()) $('#specs-repo').value = currentWorkspaceRepoId();
+    else if (last.repoId && state.repos.some((r) => r.id === last.repoId)) $('#specs-repo').value = last.repoId;
+    specsSelected = new Set();
+    specsPreviewCache = new Map();
+    resetSpecsPreview();
+    $('#modal-specs').classList.remove('hidden');
+    loadSpecsList();
+  }
+
+  async function submitSpecsImport() {
+    const repoId = $('#specs-repo').value;
+    if (!repoId) { toast('Add a repository first'); return; }
+    const paths = Array.from(specsSelected);
+    if (!paths.length) { toast('Pick at least one spec file'); return; }
+    try {
+      const { tasks, skipped } = await api('POST', `/api/repos/${repoId}/specs/import`, {
+        paths, target: $('#specs-target').value, model: $('#specs-model').value,
+      });
+      $('#modal-specs').classList.add('hidden');
+      const n = tasks.length;
+      toast(
+        skipped.length ? `Imported ${n} task${n === 1 ? '' : 's'}, skipped ${skipped.length}` : `Imported ${n} task${n === 1 ? '' : 's'}`,
+        'info',
+      );
+    } catch (e) { toast(e.message); }
+  }
+
+  $('#btn-specs').addEventListener('click', openSpecsModal);
+  $('#specs-cancel').addEventListener('click', () => $('#modal-specs').classList.add('hidden'));
+  $('#specs-submit').addEventListener('click', submitSpecsImport);
+  $('#specs-add-repo').addEventListener('click', () => {
+    $('#modal-specs').classList.add('hidden');
+    openReposModal();
+  });
+  $('#specs-repo').addEventListener('change', () => {
+    specsSelected = new Set();
+    specsPreviewCache = new Map();
+    resetSpecsPreview();
+    loadSpecsList();
+  });
+  $('#specs-filter').addEventListener('input', renderSpecsList);
+  $('#specs-select-all').addEventListener('change', () => {
+    const checked = $('#specs-select-all').checked;
+    for (const f of filteredSpecFiles()) {
+      if (checked) specsSelected.add(f.path); else specsSelected.delete(f.path);
+    }
+    renderSpecsList();
+  });
+  $('#specs-list').addEventListener('click', (e) => {
+    const row = e.target.closest('.spec-row');
+    if (!row || e.target.closest('.spec-row-check')) return;
+    previewSpec(row.dataset.path);
+  });
+  $('#specs-list').addEventListener('change', (e) => {
+    const cb = e.target.closest('.spec-row-check');
+    if (!cb) return;
+    const row = cb.closest('.spec-row');
+    if (cb.checked) specsSelected.add(row.dataset.path); else specsSelected.delete(row.dataset.path);
+    row.classList.toggle('picked', cb.checked);
+    updateSpecsSelectAllState();
+  });
+
   // ---------- sounds ----------
   // Short synthesized cues for two moments: a tool needs approval, and a task
   // finishes. Built with the Web Audio API so there are no audio assets to ship
@@ -2474,6 +2680,7 @@
   function renderPluginState() {
     $('#btn-brief').classList.toggle('hidden', !pluginInstalled('grooming'));
     $('#btn-linear').classList.toggle('hidden', !pluginInstalled('linear'));
+    $('#btn-specs').classList.toggle('hidden', !pluginInstalled('repo-specs'));
     renderAutonomous();
   }
 
@@ -3115,6 +3322,9 @@
         : []),
       ...(pluginInstalled('linear')
         ? [{ label: 'Create Task from Linear', hint: 'Import an assigned issue', icon: 'linear', run: () => openLinearModal() }]
+        : []),
+      ...(pluginInstalled('repo-specs')
+        ? [{ label: 'Import from Specs', hint: 'Pick spec files to import as tasks', icon: 'folder', run: () => openSpecsModal() }]
         : []),
       { label: 'Repositories', hint: 'Add or manage repos', icon: 'folder', run: () => openReposModal() },
       { label: 'Super View', hint: 'Back to the all-workspaces home screen', icon: 'arrow-left', run: () => exitWorkspace() },

@@ -59,6 +59,7 @@ test('server modules load without throwing', () => {
     require('../server/groomer');
     require('../server/github');
     require('../server/linear');
+    require('../server/repoSpecs');
     require('../server/plugins');
     require('../server/tasks');
     require('../server/mcp');
@@ -76,6 +77,14 @@ test('plugins: catalog lists Linear and sanitize keeps only known ids', () => {
   assert.deepStrictEqual(plugins.sanitize(['linear', 'bogus']), ['linear'], 'unknown ids dropped');
   assert.deepStrictEqual(plugins.sanitize('not-an-array'), [], 'non-array yields []');
   assert.deepStrictEqual(plugins.sanitize(['linear', 'linear']), ['linear'], 'ids deduped');
+});
+
+test('plugins: catalog lists Repository Specs and sanitize keeps it', () => {
+  const plugins = require('../server/plugins');
+  const ids = plugins.catalog().map((p: { id: string }) => p.id);
+  assert.ok(ids.includes('repo-specs'), 'Repository Specs is in the marketplace catalog');
+  assert.ok(plugins.isKnown('repo-specs'), 'isKnown recognizes repo-specs');
+  assert.deepStrictEqual(plugins.sanitize(['repo-specs', 'bogus']), ['repo-specs'], 'unknown ids dropped alongside it');
 });
 
 test('store: remote access defaults off with an empty token, and is backfilled', () => {
@@ -477,6 +486,78 @@ test('linear: parseIssue reads both the issue and issues.nodes shapes; briefFrom
   assert.match(brief, /# Fix the thing/, 'title is included');
   assert.match(brief, /It is broken\./, 'description is included');
   assert.match(brief, /Repro here/, 'comment body is included');
+});
+
+test('repoSpecs: discoverSpecs finds .md files under specs/ and .specs/, ignores everything else', () => {
+  const repoSpecs = require('../server/repoSpecs');
+  const repoPath = fs.mkdtempSync(path.join(os.tmpdir(), 'srpopo-specs-'));
+
+  fs.mkdirSync(path.join(repoPath, 'specs'), { recursive: true });
+  fs.writeFileSync(path.join(repoPath, 'specs', 'add-dark-mode.md'), '# Add Dark Mode\n\nBody.');
+
+  fs.mkdirSync(path.join(repoPath, '.specs', 'nested'), { recursive: true });
+  fs.writeFileSync(path.join(repoPath, '.specs', 'nested', 'spec.md'), 'No heading here, just body.');
+
+  // Ignored: not a markdown extension.
+  fs.writeFileSync(path.join(repoPath, 'specs', 'notes.txt'), 'not a spec');
+
+  // Ignored: lives under node_modules, which is skipped while walking.
+  fs.mkdirSync(path.join(repoPath, 'node_modules', 'specs'), { recursive: true });
+  fs.writeFileSync(path.join(repoPath, 'node_modules', 'specs', 'sneaky.md'), '# Sneaky');
+
+  // Backdate the first file so sort order (most-recent first) is deterministic.
+  const old = new Date(Date.now() - 60_000);
+  fs.utimesSync(path.join(repoPath, 'specs', 'add-dark-mode.md'), old, old);
+
+  const found = repoSpecs.discoverSpecs(repoPath);
+  assert.deepStrictEqual(
+    found.map((f: { path: string }) => f.path).sort(),
+    ['.specs/nested/spec.md', 'specs/add-dark-mode.md'].sort(),
+    'only the two real .md files are found, nothing from node_modules or the .txt file',
+  );
+
+  const dm = found.find((f: { path: string }) => f.path === 'specs/add-dark-mode.md');
+  assert.strictEqual(dm.title, 'Add Dark Mode', 'title comes from the first # heading');
+  const nested = found.find((f: { path: string }) => f.path === '.specs/nested/spec.md');
+  assert.strictEqual(nested.title, 'Spec', 'falls back to a title-cased filename when there is no heading');
+
+  // Most-recently-modified first.
+  assert.strictEqual(found[0].path, '.specs/nested/spec.md', 'the freshly-written file sorts first');
+
+  // An absent specs dir (repo with neither root) yields [].
+  const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'srpopo-specs-bare-'));
+  assert.deepStrictEqual(repoSpecs.discoverSpecs(bare), [], 'no specs/ or .specs/ dir yields no results');
+});
+
+test('repoSpecs: readSpec rejects path traversal and missing files', () => {
+  const repoSpecs = require('../server/repoSpecs');
+  const repoPath = fs.mkdtempSync(path.join(os.tmpdir(), 'srpopo-specs-read-'));
+  fs.mkdirSync(path.join(repoPath, 'specs'), { recursive: true });
+  fs.writeFileSync(path.join(repoPath, 'specs', 'idea.md'), '# Idea\n\nDo the thing.');
+
+  const ok = repoSpecs.readSpec(repoPath, 'specs/idea.md');
+  assert.deepStrictEqual(ok, { ok: true, content: '# Idea\n\nDo the thing.' });
+
+  assert.deepStrictEqual(
+    repoSpecs.readSpec(repoPath, '../../etc/passwd'),
+    { ok: false, reason: 'invalid-path' },
+    'traversal above the repo is rejected',
+  );
+  assert.deepStrictEqual(
+    repoSpecs.readSpec(repoPath, '/etc/passwd'),
+    { ok: false, reason: 'invalid-path' },
+    'an absolute path override is rejected',
+  );
+  assert.deepStrictEqual(
+    repoSpecs.readSpec(repoPath, 'specs/../../../etc/passwd'),
+    { ok: false, reason: 'invalid-path' },
+    'a path that resolves outside the spec roots via .. is rejected',
+  );
+  assert.deepStrictEqual(
+    repoSpecs.readSpec(repoPath, 'specs/does-not-exist.md'),
+    { ok: false, reason: 'not-found' },
+    'a nonexistent but otherwise-valid relative path is not-found',
+  );
 });
 
 test('runner: allowedTools normalizes and maps to --allowedTools', () => {
