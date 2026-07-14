@@ -394,6 +394,11 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
 }
 .chip.repo { color: var(--blue); }
 .chip.model { color: var(--purple); }
+/* Per-model tint, tiered by cost — fable (priciest) reads red as a warning. */
+.chip.model.model-fable { color: var(--red); border-color: var(--red-soft); font-weight: 600; }
+.chip.model.model-opus { color: var(--purple); border-color: var(--purple-soft); }
+.chip.model.model-sonnet { color: var(--blue); border-color: var(--blue-soft); }
+.chip.model.model-haiku { color: var(--green); border-color: var(--green-soft); }
 .chip.worktree { color: var(--green); }
 .chip.cost { color: var(--accent); }
 .chip.badge-failed { color: var(--red); border-color: var(--red-soft); font-weight: 700; }
