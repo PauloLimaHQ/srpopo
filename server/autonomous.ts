@@ -101,7 +101,7 @@ const defaultDeps: Deps = {
   reviewDispatch: realReviewDispatch,
   headSha: (task) => git.headSha(task.worktreePath || task.repoPath),
   checkPr: (task) => github.prCheckForTask(task),
-  merge: (task) => github.mergePrForTask(task),
+  merge: (task) => github.mergePrForTask(task, db.settings.mergeStrategy),
   removeWorktree: (repoPath, wtPath) => git.removeWorktree(repoPath, wtPath),
   runningCount: () => runner.runningCount(),
 };

@@ -28,6 +28,8 @@ const DEFAULT_SETTINGS: Settings = {
   // limits on a typical dev laptop. Configurable in Settings.
   maxParallelSessions: 3,
   installedPlugins: [],
+  // Traditional merge commit, matching `gh pr merge`'s own default.
+  mergeStrategy: 'merge',
   // Off by default: auto-resolving conflicts spawns a new `claude` run unattended.
   autoResolveConflicts: false,
   // Remote access is OFF by default: the server binds 127.0.0.1 only and needs
