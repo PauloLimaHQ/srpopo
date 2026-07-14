@@ -50,6 +50,7 @@
   },
   "type": "commonjs",
   "dependencies": {
+    "electron-updater": "^6.8.9",
     "express": "^4.21.2"
   },
   "devDependencies": {
@@ -78,6 +79,11 @@
     "directories": {
       "buildResources": "build",
       "output": "release"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "PauloLimaHQ",
+      "repo": "srpopo"
     },
     "mac": {
       "category": "public.app-category.developer-tools",
