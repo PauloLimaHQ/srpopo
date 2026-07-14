@@ -7,7 +7,7 @@ const unused = ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caug
 
 module.exports = tseslint.config(
   {
-    ignores: ['node_modules/**', 'release/**', 'data/**', 'build/**', 'dist/**'],
+    ignores: ['node_modules/**', 'release/**', 'data/**', 'build/**', 'dist/**', 'public/vendor/**'],
   },
   {
     // TypeScript Node-side code: the Express server, the Electron shell, and the

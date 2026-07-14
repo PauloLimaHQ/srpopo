@@ -904,3 +904,24 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--a
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px; border: 2px solid transparent; background-clip: padding-box; }
 ::-webkit-scrollbar-thumb:hover { background: var(--card-hover-border); background-clip: padding-box; }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* In-app terminal: a shell docked at the bottom of the window (xterm.js). */
+.terminal-panel {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 90;
+  height: 42vh; min-height: 240px;
+  display: flex; flex-direction: column;
+  background: #0b0e14;
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.28);
+}
+.terminal-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+.terminal-cwd { flex: 1; font-size: 12px; color: var(--muted, #8a8378); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.terminal-bar-actions { display: flex; gap: 4px; }
+.terminal-mount { flex: 1; min-height: 0; padding: 6px 8px; overflow: hidden; }
+.terminal-mount .xterm { height: 100%; }

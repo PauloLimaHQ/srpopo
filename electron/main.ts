@@ -280,6 +280,7 @@ app.on('before-quit', () => {
   isQuitting = true;
   try {
     server.runner.stopAll(); // terminate any live claude processes
+    server.terminal.closeAll(); // kill any in-app shell sessions
   } catch (_) { /* nothing to stop */ }
 });
 
