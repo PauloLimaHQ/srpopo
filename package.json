@@ -1,6 +1,6 @@
 {
   "name": "srpopo",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Sr. Popo — local orchestrator hub for Claude Code tasks across your repos",
   "main": "dist/electron/main.js",
   "scripts": {
@@ -104,7 +104,8 @@
           ]
         }
       ],
-      "hardenedRuntime": true,
+      "identity": "-",
+      "hardenedRuntime": false,
       "gatekeeperAssess": false,
       "extendInfo": {
         "LSUIElement": false,
