@@ -39,6 +39,27 @@ function err(res: Response, code: number, message: string): void {
   res.status(code).json({ error: message });
 }
 
+// Launches the platform's default terminal app with `cwd` as its working
+// directory. Best-effort and cross-platform; rejects if the terminal couldn't
+// be spawned. Callers must validate `cwd` before passing it here.
+function openTerminal(cwd: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let cmd: string;
+    let args: string[];
+    if (process.platform === 'darwin') {
+      cmd = 'open';
+      args = ['-a', 'Terminal', cwd];
+    } else if (process.platform === 'win32') {
+      cmd = 'cmd';
+      args = ['/c', 'start', '""', 'cmd', '/K', `cd /d "${cwd}"`];
+    } else {
+      cmd = 'x-terminal-emulator';
+      args = [];
+    }
+    execFile(cmd, args, { cwd }, (e) => (e ? reject(e) : resolve()));
+  });
+}
+
 // The board-facing view of settings: never leak the raw Linear token, only a
 // derived boolean. This is the ONLY shape sent to the UI (GET /api/settings,
 // GET /api/state, and the `settings` broadcast); PATCH is the only writer.
@@ -279,6 +300,27 @@ app.post('/api/repos/:id/worktrees/remove', async (req: Request, res: Response) 
       broadcast({ type: 'task', task });
     }
     save();
+    res.json({ ok: true });
+  } catch (e) {
+    err(res, 500, (e as Error).message);
+  }
+});
+
+// Opens a native terminal window at the repo root or one of its live worktrees
+// so the user can drop into a shell on the checkout they're viewing. The path
+// is validated against the repo root and `git worktree list` first so this
+// can't be pointed at an arbitrary filesystem location. Best-effort and
+// cross-platform; the primary target is macOS (the Terminal app).
+app.post('/api/repos/:id/terminal', async (req: Request, res: Response) => {
+  const repo = db.repos.find((r) => r.id === req.params.id);
+  if (!repo) return err(res, 404, 'Repo not found');
+  const target = req.body?.path ? String(req.body.path) : repo.path;
+  if (target !== repo.path) {
+    const live = await git.listWorktrees(repo.path);
+    if (!live.some((w) => w.path === target)) return err(res, 404, 'Path not found');
+  }
+  try {
+    await openTerminal(target);
     res.json({ ok: true });
   } catch (e) {
     err(res, 500, (e as Error).message);

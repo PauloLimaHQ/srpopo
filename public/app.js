@@ -407,6 +407,7 @@
         ${w.taskId
           ? `<span class="chip worktree-task-link" data-task-link="${esc(w.taskId)}">${esc(w.taskTitle)} · ${esc(w.taskStatus)}</span>`
           : '<span class="muted">no task</span>'}
+        <button class="btn ghost icon" data-term-wt="${esc(w.path)}" title="Open a terminal here">${icon('terminal')}</button>
         ${live ? '' : `<button class="btn ghost danger" data-rm-wt="${esc(w.path)}" title="${w.dirty ? 'Has uncommitted changes' : 'Remove this worktree'}">Remove</button>`}
       </div>`;
     }).join('');
@@ -425,12 +426,144 @@
     refreshRepoWorktreesCard(repo.id, true);
   }
 
+  // ---------- workspace quick switcher (anchored popover) ----------
+  // Jump straight from one workspace to another (or back to Super View) without
+  // detouring through the Super View grid. Modeled on the command palette: a
+  // filterable, arrow-key-navigable list, but anchored under the header title.
+  let wsPickerResults = []; // flat, in on-screen order: { kind:'super' } | { kind:'repo', repo }
+  let wsPickerActive = 0;
+
+  function wsPickerIsCurrent(entry) {
+    return entry.kind === 'super'
+      ? state.view.mode === 'super'
+      : state.view.mode === 'workspace' && state.view.repoId === entry.repo.id;
+  }
+
+  function renderWorkspacePicker(query) {
+    const tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    const matches = (text) => tokens.every((t) => text.includes(t));
+    wsPickerResults = [];
+    if (matches('super view all workspaces home')) wsPickerResults.push({ kind: 'super' });
+    for (const r of state.repos) {
+      if (matches(`${r.name} ${r.path}`.toLowerCase())) wsPickerResults.push({ kind: 'repo', repo: r });
+    }
+    // Start the highlight on the current workspace so Enter is a no-op, not a surprise.
+    const curIdx = wsPickerResults.findIndex(wsPickerIsCurrent);
+    wsPickerActive = curIdx >= 0 ? curIdx : 0;
+
+    const list = $('#workspace-popover-list');
+    if (!wsPickerResults.length) {
+      list.innerHTML = '<div class="palette-empty">No matching workspaces</div>';
+      return;
+    }
+    list.innerHTML = wsPickerResults.map((e, i) => {
+      let iconName, label, hint;
+      if (e.kind === 'super') {
+        iconName = 'arrow-left'; label = 'Super View'; hint = 'All workspaces';
+      } else {
+        iconName = 'folder'; label = e.repo.name;
+        const tasks = tasksForRepo(e.repo.id);
+        const live = tasks.filter(isLive).length;
+        const count = `${tasks.length} task${tasks.length === 1 ? '' : 's'}`;
+        hint = live ? `${count} · ${live} live` : count;
+      }
+      return `<div class="palette-option" data-index="${i}" role="menuitem">
+        <span class="palette-option-icon">${icon(iconName)}</span>
+        <span class="palette-option-body">
+          <span class="palette-option-label">${esc(label)}</span>
+          <span class="palette-option-hint">${esc(hint)}</span>
+        </span>
+        ${wsPickerIsCurrent(e) ? `<span class="ws-check" title="Current">${icon('check')}</span>` : ''}
+      </div>`;
+    }).join('');
+    updateWsPickerActive();
+  }
+
+  function updateWsPickerActive() {
+    const list = $('#workspace-popover-list');
+    list.querySelectorAll('.palette-option').forEach((el) => {
+      el.classList.toggle('active', Number(el.dataset.index) === wsPickerActive);
+    });
+    list.querySelector('.palette-option.active')?.scrollIntoView({ block: 'nearest' });
+  }
+
+  function moveWsPicker(delta) {
+    if (!wsPickerResults.length) return;
+    wsPickerActive = (wsPickerActive + delta + wsPickerResults.length) % wsPickerResults.length;
+    updateWsPickerActive();
+  }
+
+  function activateWsPicker(index) {
+    const entry = wsPickerResults[index];
+    if (!entry) return;
+    closeWorkspacePicker();
+    if (entry.kind === 'super') exitWorkspace();
+    else enterWorkspace(entry.repo.id);
+  }
+
+  const wsPickerOpen = () => !$('#workspace-popover').classList.contains('hidden');
+  function openWorkspacePicker() {
+    $('#workspace-popover-search').value = '';
+    renderWorkspacePicker('');
+    $('#workspace-popover').classList.remove('hidden');
+    $('#workspace-switcher').setAttribute('aria-expanded', 'true');
+    $('#workspace-popover-search').focus();
+  }
+  function closeWorkspacePicker() {
+    $('#workspace-popover').classList.add('hidden');
+    $('#workspace-switcher').setAttribute('aria-expanded', 'false');
+  }
+  function toggleWorkspacePicker() { wsPickerOpen() ? closeWorkspacePicker() : openWorkspacePicker(); }
+
+  $('#workspace-switcher').addEventListener('click', (e) => { e.stopPropagation(); toggleWorkspacePicker(); });
+  $('#workspace-popover-search').addEventListener('input', (e) => renderWorkspacePicker(e.target.value));
+  $('#workspace-popover-search').addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); moveWsPicker(1); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); moveWsPicker(-1); }
+    else if (e.key === 'Enter') { e.preventDefault(); activateWsPicker(wsPickerActive); }
+    else if (e.key === 'Escape') { e.preventDefault(); closeWorkspacePicker(); $('#workspace-switcher').focus(); }
+  });
+  $('#workspace-popover-list').addEventListener('click', (e) => {
+    const row = e.target.closest('.palette-option');
+    if (row) activateWsPicker(Number(row.dataset.index));
+  });
+  $('#workspace-popover-list').addEventListener('mousemove', (e) => {
+    const row = e.target.closest('.palette-option');
+    if (row && Number(row.dataset.index) !== wsPickerActive) {
+      wsPickerActive = Number(row.dataset.index);
+      updateWsPickerActive();
+    }
+  });
+  // Click anywhere outside the popover (or its trigger) closes it.
+  document.addEventListener('click', (e) => {
+    if (wsPickerOpen() && !e.target.closest('#workspace-popover') && !e.target.closest('#workspace-switcher')) {
+      closeWorkspacePicker();
+    }
+  });
+
+  // Opens a native terminal at a repo/worktree path. Omit `wtPath` for the repo
+  // root (the "current page" the workspace is showing).
+  async function openTerminalAt(repoId, wtPath) {
+    try {
+      await api('POST', `/api/repos/${repoId}/terminal`, wtPath ? { path: wtPath } : {});
+      toast('Opening terminal…', 'info');
+    } catch (e) {
+      toast(e.message || 'Failed to open terminal', 'error');
+    }
+  }
+
   $('#workspace-back').addEventListener('click', exitWorkspace);
   $('#workspace-info').addEventListener('click', openWorkspacePopover);
   $('#workspace-modal-close').addEventListener('click', () => $('#modal-workspace').classList.add('hidden'));
+  $('#workspace-open-terminal').addEventListener('click', () => {
+    const repoId = state.view.repoId;
+    if (repoId) openTerminalAt(repoId);
+  });
   $('#workspace-worktree-list').addEventListener('click', async (e) => {
     const id = e.target.closest('[data-task-link]')?.dataset.taskLink;
     if (id) { $('#modal-workspace').classList.add('hidden'); openDrawer(id); return; }
+    const termPath = e.target.closest('[data-term-wt]')?.dataset.termWt;
+    if (termPath) { openTerminalAt(state.view.repoId, termPath); return; }
     const wtPath = e.target.closest('[data-rm-wt]')?.dataset.rmWt;
     if (!wtPath) return;
     if (!confirm(`Remove worktree?\n${wtPath}\n\nThis discards any uncommitted changes in it.`)) return;
@@ -2124,12 +2257,17 @@
     const matches = (text) => tokens.every((t) => text.includes(t));
 
     const cmds = paletteCommands().filter((c) => matches(`${c.label} ${c.hint}`.toLowerCase()));
+    // Workspaces to switch into — the current one is omitted (switching to it is a no-op).
+    const repos = state.repos
+      .filter((r) => currentWorkspaceRepoId() !== r.id)
+      .filter((r) => matches(`${r.name} ${r.path}`.toLowerCase()));
     const allTasks = [...state.tasks.values()].sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
     const tasks = (tokens.length ? allTasks.filter((t) => matches(`${t.title} ${t.repoName}`.toLowerCase())) : allTasks.slice(0, 6))
       .slice(0, 8);
 
     paletteResults = [
       ...cmds.map((item) => ({ type: 'command', item })),
+      ...repos.map((item) => ({ type: 'workspace', item })),
       ...tasks.map((item) => ({ type: 'task', item })),
     ];
     paletteActive = 0;
@@ -2144,9 +2282,18 @@
       html += '<div class="palette-group">Commands</div>';
       html += cmds.map((c, i) => paletteRow(i, c)).join('');
     }
+    if (repos.length) {
+      html += '<div class="palette-group">Workspaces</div>';
+      html += repos.map((r, i) => {
+        const live = tasksForRepo(r.id).filter(isLive).length;
+        return paletteRow(cmds.length + i, {
+          label: r.name, icon: 'folder', hint: live ? `Switch workspace · ${live} live` : 'Switch workspace',
+        });
+      }).join('');
+    }
     if (tasks.length) {
       html += `<div class="palette-group">${tokens.length ? 'Tasks' : 'Recent tasks'}</div>`;
-      html += tasks.map((t, i) => paletteRow(cmds.length + i, {
+      html += tasks.map((t, i) => paletteRow(cmds.length + repos.length + i, {
         label: t.title, hint: `${t.repoName} · ${t.status}`, dot: COLUMNS.find((c) => c.key === COLUMN_OF_STATUS[t.status]).dot,
       })).join('');
     }
@@ -2174,6 +2321,7 @@
     if (!entry) return;
     closePalette();
     if (entry.type === 'command') entry.item.run();
+    else if (entry.type === 'workspace') enterWorkspace(entry.item.id);
     else openDrawer(entry.item.id);
   }
 
@@ -2259,6 +2407,7 @@
     if (e.key === 'Escape') {
       closeDrawer();
       closeContextMenu();
+      closeWorkspacePicker();
       document.querySelectorAll('.modal').forEach((m) => m.classList.add('hidden'));
     }
   });

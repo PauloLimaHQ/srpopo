@@ -41,8 +41,18 @@
   <div id="workspace-header" class="workspace-header hidden">
     <button class="btn ghost" id="workspace-back"><span class="i" data-icon="arrow-left"></span>Super View</button>
     <div class="workspace-header-title">
-      <span id="workspace-title" class="workspace-title"></span>
+      <button class="workspace-switcher" id="workspace-switcher" aria-haspopup="menu" aria-expanded="false" title="Switch workspace">
+        <span id="workspace-title" class="workspace-title"></span>
+        <span class="i workspace-switcher-caret" data-icon="chevron-down"></span>
+      </button>
       <span id="workspace-branch-chip"></span>
+      <div id="workspace-popover" class="ws-popover hidden" role="menu" aria-label="Switch workspace">
+        <div class="ws-popover-search">
+          <span class="i" data-icon="search"></span>
+          <input id="workspace-popover-search" type="text" placeholder="Switch workspace…" autocomplete="off" spellcheck="false" />
+        </div>
+        <div id="workspace-popover-list" class="ws-popover-list"></div>
+      </div>
     </div>
     <button class="btn ghost icon" id="workspace-info" title="Workspace details" aria-label="Workspace details"><span class="i" data-icon="info"></span></button>
   </div>
@@ -354,6 +364,7 @@
       <span class="field-label">Live worktrees</span>
       <div id="workspace-worktree-list" class="worktree-list"></div>
       <div class="modal-actions">
+        <button class="btn ghost" id="workspace-open-terminal" title="Open a terminal at the repository path"><span class="i" data-icon="terminal"></span>Open Terminal</button>
         <button class="btn ghost" id="workspace-modal-close">Close</button>
       </div>
     </div>

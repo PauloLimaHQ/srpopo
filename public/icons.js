@@ -28,6 +28,7 @@
     plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
     search: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
     x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+    'chevron-down': '<path d="m6 9 6 6 6-6"/>',
     check: '<path d="M20 6 9 17l-4-4"/>',
     'circle-check': '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>',
     'circle-x': '<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/>',
@@ -62,6 +63,8 @@
     'arrow-left': '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
     // info — the workspace details popover trigger
     info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+    // terminal — open a native shell at a repo/worktree path
+    terminal: '<path d="m4 17 6-6-6-6"/><path d="M12 19h8"/>',
   };
 
   // Render an icon as an inline <svg> string. `opts.spin` adds the spin class,
