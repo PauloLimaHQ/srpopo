@@ -86,6 +86,15 @@
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+  // Extra class for the model chip so each model gets its own color, tiered by
+  // cost (fable reads red — the most expensive). Matches both the short alias
+  // the user picked ("opus") and a resolved model id ("claude-opus-4-8").
+  const modelClass = (name) => {
+    const n = String(name || '').toLowerCase();
+    for (const m of ['fable', 'opus', 'sonnet', 'haiku']) if (n.includes(m)) return ` model-${m}`;
+    return '';
+  };
+
   // Small, dependency-free markdown → HTML for Claude's own chat text (headings,
   // lists, code fences/spans, bold/italic, links). Always escapes the source first
   // and only ever re-introduces tags we generate ourselves — the markdown source
@@ -673,9 +682,10 @@
     el.draggable = !isLive(t);
     el.dataset.id = t.id;
 
+    const modelName = t.model === 'default' ? (t.resolvedModel || 'default') : t.model;
     const chips = [
       `<span class="chip repo">${esc(t.repoName)}</span>`,
-      `<span class="chip model">${esc(t.model === 'default' ? (t.resolvedModel || 'default') : t.model)}</span>`,
+      `<span class="chip model${modelClass(modelName)}">${esc(modelName)}</span>`,
     ];
     if (t.status === 'grooming') chips.push(`<span class="chip grooming-chip" title="Grooming a rough idea into a task prompt">${icon('lightbulb')} grooming</span>`);
     if (t.useWorktree) chips.push(`<span class="chip worktree" title="${esc(t.worktreePath || 'worktree on dispatch')}">${icon('git-branch')} ${esc(t.branch || t.branchName || 'worktree')}</span>`);
@@ -1049,7 +1059,7 @@
     $('#drawer-title').textContent = t.title;
     const meta = [
       `<span class="chip repo">${esc(t.repoName)}</span>`,
-      `<span class="chip model">${esc(t.resolvedModel || t.model)}</span>`,
+      `<span class="chip model${modelClass(t.resolvedModel || t.model)}">${esc(t.resolvedModel || t.model)}</span>`,
       `<span class="chip">${esc(t.permissionMode)}</span>`,
     ];
     if (t.promptPermissions) meta.push(`<span class="chip" title="Asks you to approve otherwise-denied tools">${icon('shield')} asks</span>`);
