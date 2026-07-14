@@ -2571,6 +2571,24 @@
     }
   });
 
+  // ---------- native menu bar (Electron) ----------
+  // The main process owns no UI — it just forwards menu clicks here so every
+  // action reuses the same modal/open functions as the on-screen buttons.
+  if (isElectron && window.srpopo.onMenuAction) {
+    window.srpopo.onMenuAction((action) => {
+      switch (action) {
+        case 'new-task': if (!modalOpen()) openTaskModal(); break;
+        case 'brief-idea': if (!modalOpen()) openBriefModal(); break;
+        case 'repos': if (!modalOpen()) openReposModal(); break;
+        case 'settings': if ($('#modal-settings').classList.contains('hidden')) openSettingsModal(); break;
+        case 'palette': if (!modalOpen()) openPalette(); break;
+        case 'shortcuts': if (!modalOpen()) openShortcutsModal(); break;
+        case 'find': $('#filter-search').focus(); break;
+        case 'toggle-theme': $('#btn-theme').click(); break;
+      }
+    });
+  }
+
   // ---------- drawer close ----------
   $('#drawer-close').addEventListener('click', closeDrawer);
   $('#drawer-overlay').addEventListener('click', closeDrawer);

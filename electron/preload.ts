@@ -6,6 +6,13 @@ contextBridge.exposeInMainWorld('srpopo', {
   isElectron: true,
   getUrl: () => ipcRenderer.invoke('srpopo:get-url'),
   pickFolder: () => ipcRenderer.invoke('srpopo:pick-folder'),
+  // Native menu bar clicks (New Task, Settings, …) are forwarded here so the
+  // renderer can drive its existing modals — main.ts owns no UI of its own.
+  onMenuAction: (callback: (action: string) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, action: string) => callback(action);
+    ipcRenderer.on('srpopo:menu-action', listener);
+    return () => ipcRenderer.removeListener('srpopo:menu-action', listener);
+  },
 });
 
 // Electron-only presentation tweaks — untouched when the UI runs in a browser.
