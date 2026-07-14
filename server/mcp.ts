@@ -86,7 +86,7 @@ const TOOL_DEFS = [
         repoId: { type: 'string', description: 'Target repo id (see list_repos).' },
         title: { type: 'string', description: 'Short task title.' },
         prompt: { type: 'string', description: 'The prompt Claude will run.' },
-        model: { type: 'string', description: 'default / sonnet / opus / haiku / fable.' },
+        model: { type: 'string', description: 'default / sonnet / opus / haiku / fable, or a custom model id configured in Settings.' },
         useWorktree: { type: 'boolean', description: 'Run isolated on a srpopo/<slug> worktree branch.' },
         permissionMode: { type: 'string', description: 'acceptEdits (default), bypassPermissions, plan, or default.' },
         status: { type: 'string', description: '"ready" to stage for dispatch, otherwise backlog.' },

@@ -39,6 +39,8 @@ const DEFAULT_SETTINGS: Settings = {
   // user enables remote access (generated lazily in PATCH /api/settings).
   remoteAccess: false,
   remoteAccessToken: '',
+  // No custom models until the user adds one in Settings → Models.
+  customModels: [],
 };
 
 let db: Db = { repos: [], tasks: [], groomings: [], settings: { ...DEFAULT_SETTINGS } };

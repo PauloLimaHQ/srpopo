@@ -12,7 +12,7 @@
     addons: [],       // catalog of optional task behaviors (from /api/addons)
     personas: [],     // catalog of expert personas (from /api/personas)
     plugins: [],      // marketplace catalog (from /api/plugins)
-    settings: { notifications: true, sounds: true, maxParallelSessions: 3, installedPlugins: [], mergeStrategy: 'merge', remoteAccess: false, remoteAccessConfigured: false }, // user preferences (from /api/settings)
+    settings: { notifications: true, sounds: true, maxParallelSessions: 3, installedPlugins: [], mergeStrategy: 'merge', remoteAccess: false, remoteAccessConfigured: false, customModels: [] }, // user preferences (from /api/settings)
     filters: { search: '' }, // board filters (free-text only — repo scope comes from state.view)
     view: { mode: 'super' }, // { mode: 'super' } | { mode: 'workspace', repoId }
     prByTask: new Map(), // taskId -> 'loading' | { pr, reason } from /api/tasks/:id/pr
@@ -2808,6 +2808,7 @@
     $('#setting-auto-resolve-conflicts').checked = !!state.settings.autoResolveConflicts;
     $('#setting-assign-pr-to-self').checked = !!state.settings.assignPrToSelf;
     renderPlugins();
+    renderCustomModels();
     renderRemoteAccess();
     showSettingsSection(typeof section === 'string' ? section : 'general');
     $('#modal-settings').classList.remove('hidden');
@@ -2818,6 +2819,95 @@
       state.settings = await api('PATCH', '/api/settings', patch);
     } catch (e) { toast(e.message); }
   }
+
+  // ---------- custom models ----------
+  const customModels = () => state.settings.customModels || [];
+
+  // Rebuild the custom-model <option>s in every model picker (New Task, Brief,
+  // Linear import). The built-in options stay in the HTML; we only manage the
+  // ones we tag data-custom, and preserve the current selection across a rebuild.
+  function syncCustomModelOptions() {
+    for (const sel of document.querySelectorAll('#task-model, #brief-model, #linear-model')) {
+      const keep = sel.value;
+      for (const opt of [...sel.querySelectorAll('option[data-custom]')]) opt.remove();
+      for (const m of customModels()) {
+        const opt = document.createElement('option');
+        opt.value = m.model;
+        opt.textContent = m.label;
+        opt.dataset.custom = '1';
+        sel.appendChild(opt);
+      }
+      // Keep the selection if it still exists; otherwise the browser falls back
+      // to the first option (Account default), which is the right thing.
+      if ([...sel.options].some((o) => o.value === keep)) sel.value = keep;
+    }
+  }
+
+  // Parse the add-model env textarea (one KEY=value per line) into an object.
+  // Blank lines and #comments are skipped; ANTHROPIC_API_KEY is refused here too
+  // (the server strips it as well) so the subscription-only invariant holds.
+  function parseEnvLines(text) {
+    const env = {};
+    for (const line of String(text || '').split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const eq = trimmed.indexOf('=');
+      if (eq < 1) continue;
+      const key = trimmed.slice(0, eq).trim();
+      if (!key || key === 'ANTHROPIC_API_KEY') continue;
+      env[key] = trimmed.slice(eq + 1).trim();
+    }
+    return env;
+  }
+
+  function renderCustomModels() {
+    const body = $('#settings-models-body');
+    if (!body) return;
+    const models = customModels();
+    if (!models.length) {
+      body.innerHTML = '<p class="plugin-empty">No custom models yet. Add one below.</p>';
+      return;
+    }
+    body.innerHTML = models.map((m) => {
+      const keys = Object.keys(m.env || {});
+      const envStr = keys.length
+        ? keys.map((k) => `${esc(k)}=${esc(m.env[k])}`).join(' · ')
+        : 'no extra environment';
+      return `
+        <div class="model-row" data-id="${esc(m.id)}">
+          <div class="model-row-main">
+            <div class="model-row-label">${esc(m.label)}</div>
+            <div class="model-row-id"><code>${esc(m.model)}</code></div>
+            <div class="model-row-env">${envStr}</div>
+          </div>
+          <button class="btn icon danger model-remove" title="Remove" aria-label="Remove model">${icon('trash')}</button>
+        </div>`;
+    }).join('');
+  }
+
+  async function setCustomModels(models) {
+    await saveSettings({ customModels: models });
+    syncCustomModelOptions();
+    renderCustomModels();
+  }
+
+  $('#model-add-btn').addEventListener('click', async () => {
+    const label = $('#model-add-label').value.trim();
+    const model = $('#model-add-id').value.trim();
+    if (!label || !model) { toast('A model needs a name and a model id.'); return; }
+    const env = parseEnvLines($('#model-add-env').value);
+    await setCustomModels([...customModels(), { label, model, env }]);
+    $('#model-add-label').value = '';
+    $('#model-add-id').value = '';
+    $('#model-add-env').value = '';
+  });
+
+  $('#settings-models-body').addEventListener('click', async (e) => {
+    const btn = e.target.closest('.model-remove');
+    if (!btn) return;
+    const id = btn.closest('.model-row').dataset.id;
+    await setCustomModels(customModels().filter((m) => m.id !== id));
+  });
 
   for (const item of document.querySelectorAll('.settings-nav-item')) {
     item.addEventListener('click', () => showSettingsSection(item.dataset.section));
@@ -3272,8 +3362,10 @@
           $('#setting-assign-pr-to-self').checked = !!state.settings.assignPrToSelf;
           updateNotifNote();
           renderPlugins();
+          renderCustomModels();
           renderRemoteAccess();
         }
+        syncCustomModelOptions();
         if (!$('#modal-linear').classList.contains('hidden')) renderLinearConfigState();
         renderBoard();
       } else if (msg.type === 'task-removed') {
@@ -3378,6 +3470,7 @@
         delete t.autoApprovePermissions;
       }
       if (settings) state.settings = settings;
+      syncCustomModelOptions();
       loadFilters();
       $('#filter-search').value = state.filters.search;
       state.view = loadView();

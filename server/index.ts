@@ -12,7 +12,7 @@ import { db, save, id, now, readLog, removeLog, getTask, getRepo, getGrooming } 
 import { broadcast, sse } from './bus';
 import { appRoot } from './paths';
 import type { GroomSpec } from './groomer';
-import type { Task, Attachment, Grooming, GroomingTarget, Repo, PublicSettings, WorktreeInfo } from './types';
+import type { Task, Attachment, CustomModel, Grooming, GroomingTarget, Repo, PublicSettings, WorktreeInfo } from './types';
 import * as git from './git';
 import * as runner from './runner';
 import * as attachments from './attachments';
@@ -225,7 +225,41 @@ function publicSettings(): PublicSettings {
     // Derived boolean only — the raw token never leaves the localhost-only
     // GET /api/remote-access endpoint.
     remoteAccessConfigured: !!(db.settings.remoteAccessToken && db.settings.remoteAccessToken.trim()),
+    customModels: db.settings.customModels || [],
   };
+}
+
+// Coerce the board's custom-model list into clean, storable entries: each needs a
+// stable id, a non-empty label + model, and a string→string env map. Anything
+// malformed is dropped rather than trusted, and ANTHROPIC_API_KEY is stripped
+// from env here too (invariant #2) so it can never be smuggled back in via a
+// custom model. Ids are preserved when the board round-trips them, minted
+// otherwise, so editing an existing model doesn't orphan running tasks.
+function sanitizeCustomModels(value: unknown): CustomModel[] {
+  if (!Array.isArray(value)) return [];
+  const out: CustomModel[] = [];
+  const seenIds = new Set<string>();
+  for (const raw of value.slice(0, 50)) {
+    if (!raw || typeof raw !== 'object') continue;
+    const entry = raw as Record<string, unknown>;
+    const label = String(entry.label ?? '').trim().slice(0, 80);
+    const model = String(entry.model ?? '').trim().slice(0, 400);
+    if (!label || !model) continue;
+    let mid = String(entry.id ?? '').trim();
+    if (!mid || seenIds.has(mid)) mid = id();
+    seenIds.add(mid);
+    const env: Record<string, string> = {};
+    if (entry.env && typeof entry.env === 'object') {
+      for (const [k, v] of Object.entries(entry.env as Record<string, unknown>)) {
+        const key = k.trim();
+        // Invariant #2: never let a custom model reintroduce an Anthropic API key.
+        if (!key || key === 'ANTHROPIC_API_KEY') continue;
+        env[key.slice(0, 200)] = String(v ?? '').slice(0, 2000);
+      }
+    }
+    out.push({ id: mid, label, model, env });
+  }
+  return out;
 }
 
 // Capacity gating (max parallel `claude` children) lives in the task service so
@@ -452,6 +486,9 @@ app.patch('/api/settings', (req: Request, res: Response) => {
   }
   if ('autoResolveConflicts' in req.body) db.settings.autoResolveConflicts = !!req.body.autoResolveConflicts;
   if ('assignPrToSelf' in req.body) db.settings.assignPrToSelf = !!req.body.assignPrToSelf;
+  // Custom models (e.g. Amazon Bedrock): the board sends the full desired list;
+  // we sanitize it into clean entries (invalid rows dropped, API key stripped).
+  if ('customModels' in req.body) db.settings.customModels = sanitizeCustomModels(req.body.customModels);
 
   // Remote access: rotate the token on request (revokes all remote sessions),
   // then apply the on/off toggle — generating a token lazily when first enabling

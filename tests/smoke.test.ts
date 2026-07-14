@@ -109,6 +109,59 @@ test('index: GET /api/settings exposes remote flags over localhost but never the
   }
 });
 
+test('index: PATCH /api/settings sanitizes custom models — drops invalid rows and strips ANTHROPIC_API_KEY', async () => {
+  const store = require('../server/store');
+  const index = require('../server/index');
+  const prev = store.db.settings.customModels;
+  const { server, port } = await index.start(0);
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/settings`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        customModels: [
+          { label: 'Bedrock', model: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0', env: { CLAUDE_CODE_USE_BEDROCK: '1', ANTHROPIC_API_KEY: 'sk-leak' } },
+          { label: '', model: 'no-label-dropped', env: {} }, // invalid: no label
+        ],
+      }),
+    });
+    assert.strictEqual(res.status, 200);
+    const body = await res.json();
+    assert.strictEqual(body.customModels.length, 1, 'the row without a label is dropped');
+    const m = body.customModels[0];
+    assert.strictEqual(m.label, 'Bedrock');
+    assert.ok(m.id, 'a stable id is minted');
+    assert.strictEqual(m.env.CLAUDE_CODE_USE_BEDROCK, '1', 'plain env is kept');
+    assert.ok(!('ANTHROPIC_API_KEY' in m.env), 'invariant #2: the API key is never stored on a custom model');
+  } finally {
+    await new Promise<void>((r) => server.close(() => r()));
+    store.db.settings.customModels = prev;
+  }
+});
+
+test('runner: a task on a custom model layers its env onto the child but never restores ANTHROPIC_API_KEY', () => {
+  const store = require('../server/store');
+  const runner = require('../server/runner');
+  const prev = store.db.settings.customModels;
+  const prevKey = process.env.ANTHROPIC_API_KEY;
+  store.db.settings.customModels = [
+    { id: 'cm1', label: 'Bedrock', model: 'bedrock-model-id', env: { CLAUDE_CODE_USE_BEDROCK: '1', AWS_REGION: 'us-east-1', ANTHROPIC_API_KEY: 'sk-leak' } },
+  ];
+  process.env.ANTHROPIC_API_KEY = 'sk-ambient';
+  try {
+    const env = runner.buildTaskEnv('bedrock-model-id');
+    assert.strictEqual(env.CLAUDE_CODE_USE_BEDROCK, '1', 'the custom model env is applied');
+    assert.strictEqual(env.AWS_REGION, 'us-east-1');
+    assert.ok(!('ANTHROPIC_API_KEY' in env), 'invariant #2: neither the ambient nor the custom key survives');
+    const builtin = runner.buildTaskEnv('opus');
+    assert.ok(!('CLAUDE_CODE_USE_BEDROCK' in builtin), 'a built-in model gets no custom env');
+  } finally {
+    store.db.settings.customModels = prev;
+    if (prevKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = prevKey;
+  }
+});
+
 test('index: toggling remote access re-binds the live server, staying reachable over localhost', async () => {
   const store = require('../server/store');
   const index = require('../server/index');
