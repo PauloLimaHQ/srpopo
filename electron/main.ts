@@ -86,6 +86,143 @@ function showWindow(): void {
   if (process.platform === 'darwin') app.dock?.show();
 }
 
+// Forward a menu click to the renderer, which owns the actual modals/behavior.
+// Ensures a window exists and has finished its first load before delivering it,
+// mirroring openTask()'s "wait for the page" handling below.
+function sendMenuAction(action: string): void {
+  showWindow();
+  if (!mainWindow) return;
+  const send = () => mainWindow!.webContents.send('srpopo:menu-action', action);
+  if (mainWindow.webContents.isLoading()) {
+    mainWindow.webContents.once('did-finish-load', send);
+  } else {
+    send();
+  }
+}
+
+// Native macOS menu bar. Everything that isn't a plain OS role (About, Hide,
+// clipboard roles, zoom, …) is delegated to the renderer via sendMenuAction so
+// there's a single source of truth for opening each modal.
+function buildAppMenu(): void {
+  const isMac = process.platform === 'darwin';
+
+  const template: Electron.MenuItemConstructorOptions[] = [
+    ...(isMac
+      ? [
+          {
+            label: app.name,
+            submenu: [
+              { role: 'about' as const },
+              { type: 'separator' as const },
+              {
+                label: 'Settings…',
+                accelerator: 'Cmd+,',
+                click: () => sendMenuAction('settings'),
+              },
+              { type: 'separator' as const },
+              { role: 'services' as const },
+              { type: 'separator' as const },
+              { role: 'hide' as const },
+              { role: 'hideOthers' as const },
+              { role: 'unhide' as const },
+              { type: 'separator' as const },
+              { role: 'quit' as const },
+            ],
+          },
+        ]
+      : []),
+    {
+      label: 'File',
+      submenu: [
+        {
+          label: 'New Task…',
+          accelerator: 'CmdOrCtrl+N',
+          click: () => sendMenuAction('new-task'),
+        },
+        {
+          label: 'Brief an Idea…',
+          accelerator: 'Shift+CmdOrCtrl+N',
+          click: () => sendMenuAction('brief-idea'),
+        },
+        { type: 'separator' },
+        {
+          label: 'Manage Repositories…',
+          accelerator: 'Shift+CmdOrCtrl+O',
+          click: () => sendMenuAction('repos'),
+        },
+        { type: 'separator' },
+        isMac ? { role: 'close' } : { role: 'quit' },
+      ],
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        ...(isMac ? [{ role: 'pasteAndMatchStyle' as const }] : []),
+        { role: 'delete' },
+        { role: 'selectAll' },
+      ],
+    },
+    {
+      label: 'View',
+      submenu: [
+        {
+          label: 'Command Palette…',
+          accelerator: 'CmdOrCtrl+K',
+          click: () => sendMenuAction('palette'),
+        },
+        {
+          label: 'Find Tasks',
+          accelerator: 'CmdOrCtrl+F',
+          click: () => sendMenuAction('find'),
+        },
+        {
+          label: 'Toggle Theme',
+          click: () => sendMenuAction('toggle-theme'),
+        },
+        { type: 'separator' },
+        { role: 'reload' },
+        { role: 'forceReload' },
+        { role: 'toggleDevTools' },
+        { type: 'separator' },
+        { role: 'resetZoom' },
+        { role: 'zoomIn' },
+        { role: 'zoomOut' },
+        { type: 'separator' },
+        { role: 'togglefullscreen' },
+      ],
+    },
+    { label: 'Window', role: 'windowMenu' },
+    {
+      label: 'Help',
+      role: 'help',
+      submenu: [
+        {
+          label: 'Sr. Popo Documentation',
+          click: () => shell.openExternal('https://github.com/PauloLimaHQ/srpopo#readme'),
+        },
+        {
+          label: 'Report an Issue…',
+          click: () => shell.openExternal('https://github.com/PauloLimaHQ/srpopo/issues'),
+        },
+        { type: 'separator' },
+        {
+          label: 'Keyboard Shortcuts',
+          accelerator: 'CmdOrCtrl+/',
+          click: () => sendMenuAction('shortcuts'),
+        },
+      ],
+    },
+  ];
+
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
 // Show the board and jump straight to a task's drawer via the #task/<id> deep
 // link the renderer understands. Waits for the page if it's still loading.
 function openTask(taskId: string): void {
@@ -256,6 +393,18 @@ function createTray(): void {
 }
 
 app.whenReady().then(async () => {
+  // Native "About Sr. Popo" panel (Sr. Popo ▸ About Sr. Popo) — otherwise macOS
+  // shows a generic Electron entry with no icon or version.
+  app.setAboutPanelOptions({
+    applicationName: 'Sr. Popo',
+    applicationVersion: app.getVersion(),
+    version: app.getVersion(),
+    copyright: 'Copyright © 2026 Paulo Lima',
+    credits: 'Local orchestrator hub for Claude Code — runs entirely on your machine, on your Claude subscription login.',
+    iconPath: path.join(appRoot(), 'build', 'icon.png'),
+  });
+  buildAppMenu();
+
   try {
     const started = await server.start(isDev ? 7777 : 0); // fixed port in dev, free port when packaged
     httpUrl = started.url;

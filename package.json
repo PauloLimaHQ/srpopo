@@ -66,7 +66,7 @@
   "build": {
     "appId": "com.pauloperego.srpopo",
     "productName": "Sr. Popo",
-    "copyright": "Copyright © 2026 Paulo",
+    "copyright": "Copyright © 2026 Paulo Lima",
     "asar": true,
     "files": [
       "dist/**/*",
