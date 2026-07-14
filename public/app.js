@@ -18,6 +18,7 @@
     repoBranchByRepo: new Map(), // repoId -> 'loading' | repo's live current branch (Super View / workspace header)
     worktreesByRepo: new Map(), // repoId -> 'loading' | [ WorktreeInfo ] from /api/repos/:id/worktrees
     permissions: new Map(), // taskId -> [ pending tool-approval requests ]
+    autonomous: null, // live autonomous-session snapshot (from /api/state + `autonomous` SSE)
   };
 
   // Pending permission-prompt helpers — a task's live tool-approval requests.
@@ -300,6 +301,7 @@
     $('#filterbar').classList.toggle('hidden', isSuper);
     if (isSuper) renderSuperView();
     else { renderWorkspaceHeader(); renderBoard(); }
+    renderAutonomous();
   }
 
   // Live lookup of a repo's current branch, cached like refreshRepoBranchForTask
@@ -637,6 +639,11 @@
     if (repoId) openTerminalAt(repoId);
   });
   $('#workspace-info').addEventListener('click', openWorkspacePopover);
+  // Autonomous Mode: the header button starts a session (opens the budget modal)
+  // or stops the one running for this workspace.
+  $('#btn-autonomous').addEventListener('click', () => (autonomousForWorkspace() ? stopAutonomous() : openAutonomousModal()));
+  $('#autonomous-cancel').addEventListener('click', () => $('#modal-autonomous').classList.add('hidden'));
+  $('#autonomous-start').addEventListener('click', startAutonomous);
   $('#workspace-modal-close').addEventListener('click', () => $('#modal-workspace').classList.add('hidden'));
   $('#workspace-open-terminal').addEventListener('click', () => {
     const repoId = state.view.repoId;
@@ -2085,9 +2092,90 @@
   const pluginInstalled = (id) => installedPluginIds().includes(id);
 
   // Show/hide plugin-gated UI on the board. A plugin's features only surface once
-  // it's installed — right now that's the "From Linear" header button.
+  // it's installed — the "From Linear" header button and the Autonomous control.
   function renderPluginState() {
     $('#btn-linear').classList.toggle('hidden', !pluginInstalled('linear'));
+    renderAutonomous();
+  }
+
+  // ---------- autonomous mode ----------
+  const autonomousActive = () => !!(state.autonomous && state.autonomous.active);
+  // The active session is scoped to one repo; its controls only belong to that
+  // workspace. `null` here means "no session for the workspace I'm looking at".
+  function autonomousForWorkspace() {
+    if (!autonomousActive()) return null;
+    if (state.view.mode !== 'workspace') return null;
+    return state.autonomous.repoId === state.view.repoId ? state.autonomous : null;
+  }
+
+  // Toggle the workspace-header Autonomous button and (when a session is live for
+  // this workspace) the live status banner.
+  function renderAutonomous() {
+    const btn = $('#btn-autonomous');
+    const banner = $('#autonomous-banner');
+    const inWorkspace = state.view.mode === 'workspace';
+    const installed = pluginInstalled('autonomous');
+    // The button lives in the workspace header and only makes sense there.
+    btn.classList.toggle('hidden', !(installed && inWorkspace));
+
+    const sess = autonomousForWorkspace();
+    if (installed && inWorkspace) {
+      btn.innerHTML = sess
+        ? `${icon('square')} Stop Autonomous`
+        : `${icon('bot')} Autonomous`;
+      btn.classList.toggle('danger', !!sess);
+    }
+
+    if (!sess) { banner.classList.add('hidden'); banner.innerHTML = ''; return; }
+    renderAutonomousBanner(sess);
+  }
+
+  const money = (n) => `$${(Number(n) || 0).toFixed(2)}`;
+
+  function renderAutonomousBanner(sess) {
+    const banner = $('#autonomous-banner');
+    const live = (sess.tasks || []).filter((t) => t.running);
+    const done = (sess.tasks || []).filter((t) => t.status === 'done').length;
+    const chips = live.map((t) =>
+      `<span class="chip">${icon('loader')} ${esc(t.title)}</span>`).join('');
+    const state_ = sess.stopping ? 'Stopping — letting in-flight runs finish' : 'Running';
+    banner.innerHTML = `
+      <span class="autonomous-banner-head">
+        <span class="autonomous-pulse"></span>${icon('bot')} Autonomous Mode
+      </span>
+      <span class="autonomous-banner-reason">${esc(state_)}</span>
+      <span class="autonomous-banner-spend">Spent <strong>${money(sess.spentUsd)}</strong> / ${money(sess.budgetUsd)}${done ? ` · ${done} merged` : ''}</span>
+      <span class="autonomous-banner-tasks">${chips || '<span class="muted">No task in flight</span>'}</span>`;
+    banner.classList.remove('hidden');
+  }
+
+  async function startAutonomous() {
+    const repoId = currentWorkspaceRepoId();
+    if (!repoId) return;
+    const budgetUsd = Number($('#autonomous-budget').value);
+    if (!Number.isFinite(budgetUsd) || budgetUsd <= 0) return toast('Enter a budget greater than 0');
+    try {
+      state.autonomous = await api('POST', '/api/autonomous/start', { repoId, budgetUsd });
+      $('#modal-autonomous').classList.add('hidden');
+      renderAutonomous();
+    } catch (e) { toast(e.message); }
+  }
+
+  async function stopAutonomous() {
+    try {
+      state.autonomous = await api('POST', '/api/autonomous/stop', {});
+      renderAutonomous();
+    } catch (e) { toast(e.message); }
+  }
+
+  function openAutonomousModal() {
+    const repo = state.repos.find((r) => r.id === currentWorkspaceRepoId());
+    if (!repo) return;
+    const ready = [...state.tasks.values()].filter((t) => t.repoId === repo.id && t.status === 'ready' && !t.archived).length;
+    $('#autonomous-modal-repo').innerHTML =
+      `<strong>${esc(repo.name)}</strong> — ${ready} task${ready === 1 ? '' : 's'} ready to run.`;
+    $('#modal-autonomous').classList.remove('hidden');
+    $('#autonomous-budget').focus();
   }
 
   // A plugin's config block (only Linear needs one today — its API key). Rendered
@@ -2535,6 +2623,9 @@
         appendEvent(msg.event);
       } else if (msg.type === 'permission') {
         applyPermissionEvent(msg);
+      } else if (msg.type === 'autonomous') {
+        state.autonomous = msg.status || null;
+        renderAutonomous();
       }
     };
     es.onerror = () => {
@@ -2592,9 +2683,10 @@
   // ---------- boot ----------
   async function boot() {
     try {
-      const { repos, tasks, settings } = await api('GET', '/api/state');
+      const { repos, tasks, settings, autonomous } = await api('GET', '/api/state');
       state.repos = repos;
       state.tasks = new Map(tasks.map((t) => [t.id, t]));
+      state.autonomous = autonomous || null;
       // Seed live tool-approval prompts, then drop the transient field off the task.
       state.permissions = new Map();
       for (const t of tasks) {

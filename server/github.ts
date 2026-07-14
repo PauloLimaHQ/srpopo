@@ -11,12 +11,16 @@
 import { execFile } from 'child_process';
 import type { ExecFileException } from 'child_process';
 
-import type { PrInfo, Task } from './types';
+import type { PrCheck, PrCheckStatus, PrInfo, Task } from './types';
 
 const GH_TIMEOUT_MS = 30000;
 
 // Fields we ask `gh pr list` to emit; parsePrList expects exactly these.
 const PR_JSON_FIELDS = 'number,url,state,title,isDraft,updatedAt';
+
+// Fields for the merge-safety lookup (`gh pr view <n> --json ...`); classifyPrCheck
+// expects exactly these. statusCheckRollup is the flattened list of CI check runs.
+const PR_CHECK_FIELDS = 'state,isDraft,mergeable,mergeStateStatus,statusCheckRollup';
 
 interface GhResult {
   err: ExecFileException | null;
@@ -106,4 +110,87 @@ async function prForTask(task: Partial<Task>): Promise<{ pr: PrInfo | null; reas
   return { pr };
 }
 
-export { prForTask, mergePrForTask, parsePrList, PR_JSON_FIELDS };
+// Summarize a `statusCheckRollup` array into 'passing' | 'pending' | 'failing'.
+// The rollup mixes two GitHub shapes: check runs ({ status, conclusion }) and the
+// older commit statuses ({ state }). A repo with no CI at all yields an empty
+// array, which we treat as passing ("no failing checks" counts as green).
+function summarizeChecks(rollup: unknown): 'passing' | 'pending' | 'failing' {
+  if (!Array.isArray(rollup) || rollup.length === 0) return 'passing';
+  let pending = false;
+  for (const c of rollup) {
+    const state = String((c && c.state) || '').toUpperCase();
+    const status = String((c && c.status) || '').toUpperCase();
+    const conclusion = String((c && c.conclusion) || '').toUpperCase();
+    // Any hard failure fails the whole rollup outright.
+    if (
+      ['FAILURE', 'ERROR', 'TIMED_OUT', 'CANCELLED', 'ACTION_REQUIRED', 'STARTUP_FAILURE', 'STALE'].includes(conclusion) ||
+      ['FAILURE', 'ERROR'].includes(state)
+    ) {
+      return 'failing';
+    }
+    // A check that hasn't completed (or a commit status still pending) blocks green.
+    if (status && status !== 'COMPLETED') pending = true;
+    else if (status === 'COMPLETED' && !conclusion) pending = true;
+    if (['PENDING', 'EXPECTED', 'QUEUED', 'IN_PROGRESS', 'WAITING', 'REQUESTED'].includes(state)) pending = true;
+  }
+  return pending ? 'pending' : 'passing';
+}
+
+// Pure classifier: given the parsed `gh pr view --json PR_CHECK_FIELDS` object,
+// decide whether the PR is safe for the autonomous engine to merge. Green means
+// open, not a draft, mergeable, and no failing/pending checks; anything else is
+// pending / failing / blocked so the engine leaves the task for the human.
+function classifyPrCheck(pr: unknown): PrCheckStatus {
+  if (!pr || typeof pr !== 'object') return 'no-pr';
+  const p = pr as Record<string, unknown>;
+  if (String(p.state || '').toUpperCase() !== 'OPEN') return 'blocked'; // merged/closed
+  if (p.isDraft) return 'blocked';
+
+  // Never merge over failing or still-running checks, regardless of mergeability.
+  const checks = summarizeChecks(p.statusCheckRollup);
+  if (checks === 'failing') return 'failing';
+  if (checks === 'pending') return 'pending';
+
+  const mergeable = String(p.mergeable || '').toUpperCase();
+  const mergeState = String(p.mergeStateStatus || '').toUpperCase();
+  if (mergeable === 'CONFLICTING' || mergeState === 'DIRTY') return 'blocked';
+  // Branch protection (required reviews, etc.) leaves checks green but blocks the
+  // merge — hand those to the human rather than trying to force them.
+  if (mergeState === 'BLOCKED' || mergeState === 'BEHIND') return 'blocked';
+  // GitHub hasn't finished computing mergeability yet — treat as pending, not green.
+  if (mergeable === 'UNKNOWN') return 'pending';
+  if (mergeable && mergeable !== 'MERGEABLE') return 'blocked';
+  return 'green';
+}
+
+// Read-only merge-safety check for a task's PR. Resolves the PR (reusing
+// prForTask), then queries its state + checks via `gh pr view` and classifies it.
+// Non-throwing, mirroring prForTask: a missing branch/PR is 'no-pr'; a failed `gh`
+// call is 'blocked' (so the engine never merges on an inconclusive lookup).
+async function prCheckForTask(task: Partial<Task>): Promise<PrCheck> {
+  const found = await prForTask(task);
+  if (!found.pr) return { status: 'no-pr', reason: found.reason || 'no-pr', pr: null };
+
+  const cwd = (task && (task.worktreePath || task.repoPath)) || undefined;
+  const res = await gh(cwd, ['pr', 'view', String(found.pr.number), '--json', PR_CHECK_FIELDS]);
+  if (res.err) return { status: 'blocked', reason: classifyError(res), pr: found.pr };
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(res.stdout);
+  } catch {
+    return { status: 'blocked', reason: 'parse-error', pr: found.pr };
+  }
+  return { status: classifyPrCheck(parsed), pr: found.pr };
+}
+
+export {
+  prForTask,
+  mergePrForTask,
+  prCheckForTask,
+  parsePrList,
+  classifyPrCheck,
+  summarizeChecks,
+  PR_JSON_FIELDS,
+  PR_CHECK_FIELDS,
+};

@@ -176,6 +176,48 @@ export interface PrInfo {
   updatedAt: string | null;
 }
 
+// How safe a task's PR is to merge, as github.classifyPrCheck decides it:
+//   green   — open, not draft, mergeable, no failing/pending checks → safe to merge
+//   pending — checks still running (or mergeability not yet computed) → wait
+//   failing — at least one check failed → never merge
+//   blocked — draft, closed/merged, conflicting, or otherwise not mergeable
+//   no-pr   — no branch / no PR / the `gh` lookup itself failed
+export type PrCheckStatus = 'green' | 'pending' | 'failing' | 'blocked' | 'no-pr';
+
+// The result of github.prCheckForTask: the classification plus the PR it looked
+// at (if any) and, when the lookup failed, the classifyError reason.
+export interface PrCheck {
+  status: PrCheckStatus;
+  reason?: string;
+  pr?: PrInfo | null;
+}
+
+// One task the Autonomous Mode engine currently owns, as the UI shows it.
+export interface AutonomousTaskView {
+  id: string;
+  title: string;
+  status: TaskStatus;
+  costUsd: number;
+  running: boolean;
+}
+
+// The safe, UI-facing snapshot of the autonomous session (see server/autonomous.ts).
+// Annotated onto GET /api/state and broadcast as `{ type: 'autonomous', status }`.
+export interface AutonomousStatus {
+  active: boolean;
+  repoId: string | null;
+  repoName: string | null;
+  budgetUsd: number | null;
+  spentUsd: number;
+  startedAt: string | null;
+  // True once a user stop was requested but in-flight runs are still finishing.
+  stopping: boolean;
+  // Why the session last changed state (e.g. 'started', 'budget-reached',
+  // 'drained', 'stopped') — surfaced in the UI banner.
+  reason: string | null;
+  tasks: AutonomousTaskView[];
+}
+
 // The compact issue shape linear.parseIssueList normalizes for the browse list.
 export interface LinearIssueSummary {
   id: string;
