@@ -1082,16 +1082,20 @@
     const task = taskId ? state.tasks.get(taskId) : null;
     const live = !!(task && isLive(task));
     const list = taskId ? pendingPermissions(taskId) : [];
-    // The box carries the AUTO MODE toggle for any live run plus the pending
-    // prompts. Nothing to show for a task that isn't running and has no prompts.
-    if (!live && !list.length) {
+    // The AUTO MODE toggle only makes sense when the run asks before each tool,
+    // i.e. its permission mode is "Accept edits" — 'bypassPermissions' never
+    // prompts, and 'plan'/'default' aren't the accept-edits flow we auto-approve.
+    const canAuto = live && task.permissionMode === 'acceptEdits';
+    // The box carries that toggle plus the pending prompts. Nothing to show for a
+    // task that can't auto-approve and has no prompts.
+    if (!canAuto && !list.length) {
       box.classList.add('hidden');
       box.innerHTML = '';
       return;
     }
     box.classList.remove('hidden');
     const auto = isAutoApprove(taskId);
-    const toggle = live ? `
+    const toggle = canAuto ? `
       <div class="perm-auto ${auto ? 'on' : ''}">
         <div class="perm-auto-label">
           ${icon(auto ? 'zap' : 'shield')}
@@ -1157,7 +1161,8 @@
     const el = document.activeElement;
     if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
     const task = state.tasks.get(state.openTaskId);
-    if (!task || !isLive(task)) return;
+    // Only the "Accept edits" flow exposes AUTO MODE — match renderPermissionPrompts.
+    if (!task || !isLive(task) || task.permissionMode !== 'acceptEdits') return;
     e.preventDefault();
     toggleAutoApprove(state.openTaskId, !isAutoApprove(state.openTaskId));
   });
