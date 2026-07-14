@@ -54,7 +54,28 @@
         <div id="workspace-popover-list" class="ws-popover-list"></div>
       </div>
     </div>
+    <button class="btn ghost hidden" id="btn-autonomous" title="Autonomous Mode"><span class="i" data-icon="bot"></span>Autonomous</button>
     <button class="btn ghost icon" id="workspace-info" title="Workspace details" aria-label="Workspace details"><span class="i" data-icon="info"></span></button>
+  </div>
+
+  <!-- Autonomous Mode live status banner (shown only while a session runs) -->
+  <div id="autonomous-banner" class="autonomous-banner hidden"></div>
+
+  <!-- Autonomous Mode start modal -->
+  <div id="modal-autonomous" class="modal hidden">
+    <div class="modal-box">
+      <h2><span class="i" data-icon="bot"></span> Autonomous Mode</h2>
+      <p class="field-hint" id="autonomous-modal-repo"></p>
+      <p class="field-hint">Sr. Popo will drive every <strong>Ready</strong> task in this workspace end-to-end — dispatch each run (which plans, builds, tests, self-reviews, and opens a PR), then merge the PR and move the task to Done once it’s green — until the budget is spent or the queue is empty. Runs are unattended: tool-permission prompts are turned off for them, so make sure each task is configured to run without a human.</p>
+      <label>Budget cap (USD)
+        <input id="autonomous-budget" type="number" min="0.5" max="1000" step="0.5" value="10" />
+        <span class="field-hint">New tasks stop being picked up once this total spend is reached; in-flight runs still finish.</span>
+      </label>
+      <div class="modal-actions">
+        <button class="btn ghost" id="autonomous-cancel">Cancel</button>
+        <button class="btn primary" id="autonomous-start"><span class="i" data-icon="play"></span>Start</button>
+      </div>
+    </div>
   </div>
 
   <div class="filterbar hidden" id="filterbar">

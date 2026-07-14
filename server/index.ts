@@ -20,20 +20,16 @@ import * as groomer from './groomer';
 import * as github from './github';
 import * as linear from './linear';
 import * as plugins from './plugins';
+import * as autonomous from './autonomous';
+import * as framing from './framing';
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static(path.join(appRoot(), 'public')));
 
-function slugify(text: unknown): string {
-  return (
-    String(text)
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 32) || 'task'
-  );
-}
+// Slug + prompt framing live in server/framing.ts so the dispatch route and the
+// Autonomous Mode engine build worktree names and framed prompts identically.
+const slugify = framing.slugify;
 
 function err(res: Response, code: number, message: string): void {
   res.status(code).json({ error: message });
@@ -181,6 +177,9 @@ app.get('/api/state', (req: Request, res: Response) => {
       .filter((t) => !t.archived)
       .map((t) => ({ ...t, pendingPermissions: permissions.listForTask(t.id) })),
     settings: publicSettings(),
+    // Live autonomous-session snapshot so a reconnecting board rebuilds its banner
+    // (like pendingPermissions above, this is process-local and never persisted).
+    autonomous: autonomous.status(),
   });
 });
 
@@ -224,6 +223,34 @@ app.get('/api/personas', (req: Request, res: Response) => res.json(personas.cata
 // /api/settings (installedPlugins), keeping settings' single writer.
 app.get('/api/plugins', (req: Request, res: Response) =>
   res.json({ plugins: plugins.catalog(), installed: plugins.sanitize(db.settings.installedPlugins) }));
+
+// ---------- autonomous mode (marketplace plugin) ----------
+
+// The safe, UI-facing session snapshot (mirrors the /api/state annotation).
+app.get('/api/autonomous', (req: Request, res: Response) => res.json(autonomous.status()));
+
+// Start an autonomous session for one repo, capped at a dollar budget. Gated on
+// the plugin being installed; one session at a time (a second start is a 409).
+app.post('/api/autonomous/start', async (req: Request, res: Response) => {
+  if (!plugins.sanitize(db.settings.installedPlugins).includes('autonomous')) {
+    return err(res, 400, 'Install the Autonomous Mode plugin first');
+  }
+  const repo = getRepo(req.body.repoId);
+  if (!repo) return err(res, 400, 'Unknown repo');
+  const budgetUsd = Number(req.body.budgetUsd);
+  if (!Number.isFinite(budgetUsd) || budgetUsd <= 0 || budgetUsd > 1000) {
+    return err(res, 400, 'budgetUsd must be a number between 0 and 1000');
+  }
+  if (autonomous.isActive()) return err(res, 409, 'Autonomous mode is already running');
+  try {
+    res.json(await autonomous.start({ repoId: repo.id, budgetUsd }));
+  } catch (e) {
+    err(res, 500, (e as Error).message);
+  }
+});
+
+// Stop the active session: stop starting new tasks, let in-flight runs finish.
+app.post('/api/autonomous/stop', (req: Request, res: Response) => res.json(autonomous.stop()));
 
 // ---------- repos ----------
 
@@ -557,18 +584,9 @@ app.post('/api/tasks/:id/dispatch', async (req: Request, res: Response) => {
     if (followUp && task.sessionId) {
       runner.dispatch(task, followUp, { resume: true });
     } else {
-      // Fresh run of the task prompt — frame it with any selected personas up
-      // front, then fold in any selected add-on behaviors at the end.
-      let framed = personas.preambleFor(task.personas) + task.prompt + addons.instructionsFor(task.addons);
-      // List any attached files by absolute path so the session can Read them.
-      if (task.attachments?.length) {
-        const paths = attachments.listPaths(task.id, task.attachments.map((a) => a.name));
-        if (paths.length) {
-          framed += '\n\n## Attached files\nThe user attached these files for this task. Read them as needed:\n' +
-            paths.map((p) => `- ${p}`).join('\n');
-        }
-      }
-      runner.dispatch(task, framed, { resume: false });
+      // Fresh run of the task prompt — framed (personas + prompt + add-ons +
+      // attachments) the same way the autonomous engine frames it.
+      runner.dispatch(task, framing.framePrompt(task), { resume: false });
     }
     res.json(task);
   } catch (e) {

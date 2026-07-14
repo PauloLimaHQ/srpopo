@@ -75,6 +75,60 @@ test('github: merging a branch-less task resolves to no-pr without invoking gh',
   assert.deepStrictEqual(res, { ok: false, reason: 'no-branch' });
 });
 
+test('github: classifyPrCheck grades merge-safety over sample gh payloads', () => {
+  const github = require('../server/github');
+
+  const green = { state: 'OPEN', isDraft: false, mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', statusCheckRollup: [{ status: 'COMPLETED', conclusion: 'SUCCESS' }] };
+  assert.strictEqual(github.classifyPrCheck(green), 'green', 'open + mergeable + passing checks is green');
+
+  // No CI configured at all counts as "not failing" → still green.
+  assert.strictEqual(
+    github.classifyPrCheck({ state: 'OPEN', isDraft: false, mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', statusCheckRollup: [] }),
+    'green',
+    'no checks configured is treated as green',
+  );
+
+  // A check still running → pending (never merge).
+  assert.strictEqual(
+    github.classifyPrCheck({ ...green, statusCheckRollup: [{ status: 'IN_PROGRESS', conclusion: '' }] }),
+    'pending',
+    'an in-progress check is pending',
+  );
+
+  // A failed check → failing regardless of mergeability.
+  assert.strictEqual(
+    github.classifyPrCheck({ ...green, statusCheckRollup: [{ status: 'COMPLETED', conclusion: 'FAILURE' }] }),
+    'failing',
+    'a failed check is failing',
+  );
+  // Older commit-status shape ({ state }) is understood too.
+  assert.strictEqual(
+    github.classifyPrCheck({ ...green, statusCheckRollup: [{ state: 'ERROR' }] }),
+    'failing',
+    'a commit-status ERROR is failing',
+  );
+
+  // Draft / closed / conflicting / blocked → blocked (leave for the human).
+  assert.strictEqual(github.classifyPrCheck({ ...green, isDraft: true }), 'blocked', 'draft is blocked');
+  assert.strictEqual(github.classifyPrCheck({ ...green, state: 'MERGED' }), 'blocked', 'already-merged/closed is blocked');
+  assert.strictEqual(github.classifyPrCheck({ ...green, mergeable: 'CONFLICTING' }), 'blocked', 'conflicting is blocked');
+  assert.strictEqual(github.classifyPrCheck({ ...green, mergeStateStatus: 'BLOCKED' }), 'blocked', 'branch-protection blocked is blocked');
+
+  // Mergeability not yet computed → pending, not green.
+  assert.strictEqual(github.classifyPrCheck({ ...green, mergeable: 'UNKNOWN' }), 'pending', 'unknown mergeability is pending');
+
+  // Garbage → no-pr (never a false green).
+  assert.strictEqual(github.classifyPrCheck(null), 'no-pr', 'null is no-pr');
+  assert.strictEqual(github.classifyPrCheck('nope'), 'no-pr', 'non-object is no-pr');
+});
+
+test('github: prCheckForTask short-circuits a branch-less task to no-pr without invoking gh', async () => {
+  const github = require('../server/github');
+  assert.strictEqual(typeof github.prCheckForTask, 'function', 'prCheckForTask is exported');
+  const res = await github.prCheckForTask({ branch: null, repoPath: '/nonexistent/repo' });
+  assert.deepStrictEqual(res, { status: 'no-pr', reason: 'no-branch', pr: null });
+});
+
 test('github: parsePrList normalizes a gh payload and handles the empty list', () => {
   const github = require('../server/github');
 
@@ -443,4 +497,181 @@ test('groomer: deriveTitle takes the first non-empty line and caps length', () =
   assert.strictEqual(groomer.deriveTitle(''), 'Groomed idea');
   const long = groomer.deriveTitle('x'.repeat(200));
   assert.ok(long.length <= 60 && long.endsWith('…'), 'long titles are truncated with an ellipsis');
+});
+
+// ---------- autonomous mode engine ----------
+//
+// These exercise the pure orchestration logic — selection, budget, concurrency,
+// double-start, stop — with the dispatch/gh/git boundaries stubbed so no real
+// `claude`/`gh`/git process is spawned. The stub dispatch never broadcasts, so
+// the bus-driven completion path stays out of these deterministic cases.
+
+// Build a minimally-valid Task for the engine's selection/dispatch logic.
+function mkTask(id: string, status: string, repoId: string, extra: Record<string, unknown> = {}) {
+  return {
+    id, title: id, prompt: 'do it', repoId, repoName: 'R', repoPath: '/tmp/r',
+    addons: [], personas: [], attachments: [], useWorktree: false, worktreePath: null,
+    branchName: null, branch: null, model: 'default', permissionMode: 'acceptEdits',
+    allowedTools: '', promptPermissions: true, status, sessionId: null, resolvedModel: null,
+    costUsd: 0, numTurns: null, durationMs: null, runCount: 0, activeSubagents: 0,
+    lastOutcome: null, lastError: null, archived: false, createdAt: '', updatedAt: '',
+    startedAt: null, finishedAt: null, ...extra,
+  };
+}
+
+// Install a fresh set of tasks/settings on the shared store and return a cleanup.
+function withStore(tasks: unknown[], maxParallel: number) {
+  const store = require('../server/store');
+  const prevMax = store.db.settings.maxParallelSessions;
+  const prevTasks = store.db.tasks;
+  const prevRepos = store.db.repos;
+  store.db.settings.maxParallelSessions = maxParallel;
+  store.db.tasks = tasks;
+  store.db.repos = [{ id: 'repoA', path: '/tmp/r', name: 'RepoA', branch: null, addedAt: '' }];
+  return () => {
+    store.db.settings.maxParallelSessions = prevMax;
+    store.db.tasks = prevTasks;
+    store.db.repos = prevRepos;
+  };
+}
+
+test('autonomous: selection picks only ready, non-archived tasks for the session repo', async () => {
+  const autonomous = require('../server/autonomous');
+  const tasks = [
+    mkTask('a1', 'ready', 'repoA'),
+    mkTask('a2', 'ready', 'repoA'),
+    mkTask('a3', 'backlog', 'repoA'),
+    mkTask('a4', 'ready', 'repoA', { archived: true }),
+    mkTask('b1', 'ready', 'repoB'),
+  ];
+  const restore = withStore(tasks, 10);
+  const dispatched: string[] = [];
+  autonomous._setDeps({ dispatch: async (t: { id: string; status: string }) => { dispatched.push(t.id); t.status = 'running'; } });
+  try {
+    const status = await autonomous.start({ repoId: 'repoA', budgetUsd: 100 });
+    assert.deepStrictEqual(dispatched.sort(), ['a1', 'a2'], 'only ready, non-archived repoA tasks are dispatched');
+    assert.strictEqual(status.active, true, 'session is active with runs in flight');
+    assert.strictEqual(status.repoName, 'RepoA', 'status carries the repo name');
+    assert.strictEqual(tasks[2].status, 'backlog', 'a backlog task is left untouched');
+    assert.strictEqual(tasks[4].status, 'ready', 'the other repo is left untouched');
+  } finally {
+    autonomous._reset();
+    autonomous._setDeps(null);
+    restore();
+  }
+});
+
+test('autonomous: forces the unattended lifecycle config on dispatched tasks', async () => {
+  const autonomous = require('../server/autonomous');
+  const task = mkTask('c1', 'ready', 'repoA', { addons: [], useWorktree: false, promptPermissions: true });
+  const restore = withStore([task], 10);
+  autonomous._setDeps({ dispatch: async (t: { status: string }) => { t.status = 'running'; } });
+  try {
+    await autonomous.start({ repoId: 'repoA', budgetUsd: 100 });
+    assert.strictEqual(task.useWorktree, true, 'worktree is forced on');
+    assert.strictEqual(task.promptPermissions, false, 'interactive prompting is forced off for unattended runs');
+    assert.deepStrictEqual(task.addons, ['pull_request', 'code_review'], 'lifecycle add-ons are ensured, in catalog order');
+    assert.deepStrictEqual(autonomous.REQUIRED_ADDONS, ['pull_request', 'code_review'], 'required add-ons are exported');
+  } finally {
+    autonomous._reset();
+    autonomous._setDeps(null);
+    restore();
+  }
+});
+
+test('autonomous: budget stops picking up new work once spentUsd >= budgetUsd', async () => {
+  const autonomous = require('../server/autonomous');
+  const tasks = [1, 2, 3, 4, 5].map((n) => mkTask(`t${n}`, 'ready', 'repoA'));
+  const restore = withStore(tasks, 10); // cap high so only budget can stop it
+  // Each dispatched run "costs" $4; with a $8 budget the loop dispatches exactly
+  // two before spent (8) reaches the cap, leaving three ready.
+  autonomous._setDeps({
+    dispatch: async (t: { status: string; costUsd: number }) => { t.status = 'running'; t.costUsd = 4; },
+  });
+  try {
+    const status = await autonomous.start({ repoId: 'repoA', budgetUsd: 8 });
+    assert.strictEqual(status.tasks.length, 2, 'stops after the budget is reached');
+    assert.strictEqual(status.spentUsd, 8, 'spent tracks cumulative cost of dispatched tasks');
+    assert.strictEqual(tasks.filter((t) => t.status === 'ready').length, 3, 'the rest stay ready');
+  } finally {
+    autonomous._reset();
+    autonomous._setDeps(null);
+    restore();
+  }
+});
+
+test('autonomous: never exceeds the max-parallel concurrency cap', async () => {
+  const autonomous = require('../server/autonomous');
+  const tasks = [1, 2, 3, 4, 5].map((n) => mkTask(`p${n}`, 'ready', 'repoA'));
+  const restore = withStore(tasks, 2); // cap of 2 live children
+  let live = 0;
+  autonomous._setDeps({
+    dispatch: async (t: { status: string }) => { t.status = 'running'; live += 1; },
+    runningCount: () => live, // simulate live claude children (none really spawned)
+  });
+  try {
+    const status = await autonomous.start({ repoId: 'repoA', budgetUsd: 1000 });
+    assert.strictEqual(status.tasks.length, 2, 'dispatches only up to the cap');
+    assert.strictEqual(tasks.filter((t) => t.status === 'ready').length, 3, 'the rest wait for a free slot');
+  } finally {
+    autonomous._reset();
+    autonomous._setDeps(null);
+    restore();
+  }
+});
+
+test('autonomous: rejects a second start while a session is active', async () => {
+  const autonomous = require('../server/autonomous');
+  const restore = withStore([mkTask('d1', 'ready', 'repoA')], 10);
+  autonomous._setDeps({ dispatch: async (t: { status: string }) => { t.status = 'running'; } });
+  try {
+    await autonomous.start({ repoId: 'repoA', budgetUsd: 100 });
+    assert.strictEqual(autonomous.isActive(), true, 'first session is active');
+    await assert.rejects(
+      () => autonomous.start({ repoId: 'repoA', budgetUsd: 100 }),
+      /already running/,
+      'a second start is rejected',
+    );
+  } finally {
+    autonomous._reset();
+    autonomous._setDeps(null);
+    restore();
+  }
+});
+
+test('autonomous: a session with no ready work drains to idle immediately', async () => {
+  const autonomous = require('../server/autonomous');
+  const restore = withStore([mkTask('e1', 'backlog', 'repoA')], 10);
+  let dispatched = 0;
+  autonomous._setDeps({ dispatch: async () => { dispatched += 1; } });
+  try {
+    const status = await autonomous.start({ repoId: 'repoA', budgetUsd: 100 });
+    assert.strictEqual(dispatched, 0, 'nothing to dispatch');
+    assert.strictEqual(status.active, false, 'the session ends right away when there is no ready work');
+    assert.strictEqual(status.reason, 'drained', 'and reports why it ended');
+    assert.strictEqual(autonomous.isActive(), false, 'no session lingers');
+  } finally {
+    autonomous._reset();
+    autonomous._setDeps(null);
+    restore();
+  }
+});
+
+test('autonomous: stop stops pumping but lets in-flight runs finish', async () => {
+  const autonomous = require('../server/autonomous');
+  const tasks = [mkTask('s1', 'ready', 'repoA'), mkTask('s2', 'ready', 'repoA')];
+  const restore = withStore(tasks, 10);
+  autonomous._setDeps({ dispatch: async (t: { status: string }) => { t.status = 'running'; } });
+  try {
+    await autonomous.start({ repoId: 'repoA', budgetUsd: 100 });
+    const stopped = autonomous.stop();
+    assert.strictEqual(stopped.stopping, true, 'a user stop marks the session stopping');
+    assert.strictEqual(stopped.active, true, 'the session stays active while runs are in flight');
+    // Stopping when nothing is left in flight is a no-op that reports idle.
+    assert.doesNotThrow(() => autonomous.stop(), 'stop is safe to call again');
+  } finally {
+    autonomous._reset();
+    autonomous._setDeps(null);
+    restore();
+  }
 });

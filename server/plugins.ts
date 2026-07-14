@@ -25,6 +25,14 @@ const PLUGINS: PluginInfo[] = [
     docsUrl: 'https://linear.app/settings/api',
     requiresApiKey: true,
   },
+  {
+    id: 'autonomous',
+    name: 'Autonomous Mode',
+    description:
+      'Drive a workspace’s ready tasks end-to-end within a budget: dispatch each run, then merge its PR and move it to Done once it’s green — no babysitting.',
+    icon: 'bot',
+    requiresApiKey: false,
+  },
 ];
 
 const byId = new Map(PLUGINS.map((p) => [p.id, p]));

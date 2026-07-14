@@ -276,6 +276,26 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
 .workspace-header-title { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; position: relative; }
 .workspace-title { font-family: var(--serif); font-size: 16px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* ── Autonomous Mode banner (live session status under the workspace header) ── */
+.autonomous-banner {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 10px 24px; border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-raised));
+  font-size: 13px;
+}
+.autonomous-banner .icon { width: 16px; height: 16px; flex: none; }
+.autonomous-banner-head { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+.autonomous-banner-spend { color: var(--text-dim); }
+.autonomous-banner-spend strong { color: var(--text); font-weight: 600; }
+.autonomous-banner-reason { color: var(--text-dim); }
+.autonomous-banner-tasks { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+.autonomous-banner-tasks .chip { font-size: 11px; }
+.autonomous-banner .autonomous-pulse {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--accent);
+  animation: autonomous-pulse 1.4s ease-in-out infinite;
+}
+@keyframes autonomous-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
 /* ── workspace quick switcher (header title → anchored popover) ── */
 .workspace-switcher {
   display: inline-flex; align-items: center; gap: 6px; min-width: 0;
