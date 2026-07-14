@@ -28,6 +28,25 @@ test('store: settings default to notifications + sounds on and are backfilled', 
   assert.strictEqual(store.DEFAULT_SETTINGS.maxParallelSessions, 3, 'maxParallelSessions default is exported');
   assert.strictEqual(store.db.settings.autoResolveConflicts, false, 'autoResolveConflicts defaults off');
   assert.strictEqual(store.DEFAULT_SETTINGS.autoResolveConflicts, false, 'autoResolveConflicts default is exported');
+  assert.strictEqual(store.db.settings.assignPrToSelf, false, 'assignPrToSelf defaults off');
+  assert.strictEqual(store.DEFAULT_SETTINGS.assignPrToSelf, false, 'assignPrToSelf default is exported');
+});
+
+test('addons: pull_request instruction only self-assigns when Settings > assignPrToSelf is on', () => {
+  const store = require('../server/store');
+  const addons = require('../server/addons');
+  const prev = store.db.settings.assignPrToSelf;
+  try {
+    store.db.settings.assignPrToSelf = false;
+    const off = addons.instructionsFor(['pull_request']);
+    assert.ok(!off.includes('--assignee @me'), 'no self-assign instruction when the setting is off');
+
+    store.db.settings.assignPrToSelf = true;
+    const on = addons.instructionsFor(['pull_request']);
+    assert.ok(on.includes('--assignee @me'), 'self-assign instruction appended when the setting is on');
+  } finally {
+    store.db.settings.assignPrToSelf = prev;
+  }
 });
 
 test('server modules load without throwing', () => {

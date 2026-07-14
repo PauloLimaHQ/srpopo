@@ -219,6 +219,7 @@ function publicSettings(): PublicSettings {
     maxParallelSessions: db.settings.maxParallelSessions,
     installedPlugins: plugins.sanitize(db.settings.installedPlugins),
     autoResolveConflicts: !!db.settings.autoResolveConflicts,
+    assignPrToSelf: !!db.settings.assignPrToSelf,
     remoteAccess: !!db.settings.remoteAccess,
     // Derived boolean only — the raw token never leaves the localhost-only
     // GET /api/remote-access endpoint.
@@ -442,6 +443,7 @@ app.patch('/api/settings', (req: Request, res: Response) => {
   // unknown ids are dropped so only real plugins can be toggled on.
   if ('installedPlugins' in req.body) db.settings.installedPlugins = plugins.sanitize(req.body.installedPlugins);
   if ('autoResolveConflicts' in req.body) db.settings.autoResolveConflicts = !!req.body.autoResolveConflicts;
+  if ('assignPrToSelf' in req.body) db.settings.assignPrToSelf = !!req.body.assignPrToSelf;
 
   // Remote access: rotate the token on request (revokes all remote sessions),
   // then apply the on/off toggle — generating a token lazily when first enabling

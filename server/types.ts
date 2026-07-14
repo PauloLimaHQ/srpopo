@@ -24,6 +24,10 @@ export interface Settings {
   // Mode's own merge-safety check alike. Opt-in: off by default since it silently
   // spawns a new `claude` run.
   autoResolveConflicts: boolean;
+  // When on, the "Create a Pull Request at the end" add-on (server/addons.ts)
+  // assigns the PR it opens to the logged-in `gh` user (`--assignee @me`).
+  // Off by default like the other opt-in GitHub behaviors above.
+  assignPrToSelf: boolean;
   // Opt-in "Remote Access (LAN)" mode. When true the server binds the LAN
   // interface (0.0.0.0) instead of 127.0.0.1 only, and every non-localhost
   // request must carry the shared token below. Off by default — invariant #1
@@ -46,6 +50,7 @@ export interface PublicSettings {
   maxParallelSessions: number;
   installedPlugins: string[];
   autoResolveConflicts: boolean;
+  assignPrToSelf: boolean;
   // Whether LAN remote access is enabled, and whether a token exists — never the
   // raw token itself (that only flows over the localhost-only GET /api/remote-access).
   remoteAccess: boolean;
