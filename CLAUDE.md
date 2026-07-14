@@ -174,6 +174,13 @@ The wiring:
 - Pending prompts are **process-local and never persisted** — they only make sense while
   the `claude` child is alive. `GET /api/state` annotates each task with its live
   `pendingPermissions` so a reconnecting board rebuilds the prompts.
+- **Auto-approve ("AUTO MODE").** While a run is live the user can flip it into
+  auto-approve (a drawer toggle, or **Shift+Tab** with the task's drawer focused).
+  `POST /api/tasks/:id/auto-approve` calls `permissions.setAutoApprove`: any tool that
+  would otherwise prompt is allowed immediately (still logged with `reason:'auto'`), and
+  turning it on approves the whole pending backlog at once. Also process-local — cleared
+  by `rejectForTask` when the run ends — and surfaced on `GET /api/state` as
+  `autoApprovePermissions` plus a live `permission`/`action:'auto'` broadcast.
 
 Note: `--permission-prompt-tool` is a stable but undocumented CLI flag; the request/reply
 shapes here match what the CLI expects. If you change the bridge protocol, re-verify the

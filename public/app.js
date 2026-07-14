@@ -20,6 +20,7 @@
     repoBranchByRepo: new Map(), // repoId -> 'loading' | repo's live current branch (Super View / workspace header)
     worktreesByRepo: new Map(), // repoId -> 'loading' | [ WorktreeInfo ] from /api/repos/:id/worktrees
     permissions: new Map(), // taskId -> [ pending tool-approval requests ]
+    autoApprove: new Set(), // taskIds whose live run is in auto-approve ("AUTO MODE")
     autonomous: null, // live autonomous-session snapshot (from /api/state + `autonomous` SSE)
     usage: { period: '30d', repoId: '', summary: null }, // Settings → Usage panel (from /api/usage)
   };
@@ -31,6 +32,15 @@
   function setPendingPermissions(taskId, list) {
     if (list && list.length) state.permissions.set(taskId, list);
     else state.permissions.delete(taskId);
+  }
+  // Auto-approve ("AUTO MODE") helpers — a running task the user has told to allow
+  // every otherwise-prompted tool. Process-local, tracked live off SSE.
+  function isAutoApprove(taskId) {
+    return state.autoApprove.has(taskId);
+  }
+  function setAutoApproveLocal(taskId, on) {
+    if (on) state.autoApprove.add(taskId);
+    else state.autoApprove.delete(taskId);
   }
 
   // In the desktop app native notifications are fired by the Electron shell; in a
@@ -774,6 +784,9 @@
     if (pending > 0) {
       chips.push(`<span class="chip needs-approval" title="Waiting for you to approve a tool">${icon('shield')} ${pending} to approve</span>`);
     }
+    if (isLive(t) && isAutoApprove(t.id)) {
+      chips.push(`<span class="chip auto-approve" title="Auto-approving every tool">${icon('zap')} auto</span>`);
+    }
 
     let statusRow = '';
     if (isLive(t)) {
@@ -1066,14 +1079,29 @@
   function renderPermissionPrompts(taskId) {
     const box = $('#permission-prompts');
     if (!box) return;
+    const task = taskId ? state.tasks.get(taskId) : null;
+    const live = !!(task && isLive(task));
     const list = taskId ? pendingPermissions(taskId) : [];
-    if (!list.length) {
+    // The box carries the AUTO MODE toggle for any live run plus the pending
+    // prompts. Nothing to show for a task that isn't running and has no prompts.
+    if (!live && !list.length) {
       box.classList.add('hidden');
       box.innerHTML = '';
       return;
     }
     box.classList.remove('hidden');
-    box.innerHTML = list.map((r) => {
+    const auto = isAutoApprove(taskId);
+    const toggle = live ? `
+      <div class="perm-auto ${auto ? 'on' : ''}">
+        <div class="perm-auto-label">
+          ${icon(auto ? 'zap' : 'shield')}
+          <span>${auto ? 'Auto-approve is on — every tool runs without asking' : 'Ask before each tool'}</span>
+        </div>
+        <button class="btn ${auto ? 'ghost' : 'primary'}" data-auto="${auto ? 'off' : 'on'}" title="Shift+Tab">
+          ${auto ? 'Turn off auto' : 'Auto-approve all'}
+        </button>
+      </div>` : '';
+    const prompts = list.map((r) => {
       const summary = toolInputSummary(r.toolName, r.input || {});
       return `
         <div class="perm-prompt" data-req="${esc(r.id)}">
@@ -1085,6 +1113,21 @@
           </div>
         </div>`;
     }).join('');
+    box.innerHTML = toggle + prompts;
+  }
+
+  // Flip the open task's auto-approve mode. The server broadcasts the new state,
+  // which re-renders the toggle; we optimistically set it so the button responds.
+  async function toggleAutoApprove(taskId, on) {
+    if (!taskId) return;
+    const task = state.tasks.get(taskId);
+    if (!task || !isLive(task)) return;
+    setAutoApproveLocal(taskId, on);
+    renderPermissionPrompts(taskId);
+    renderBoard();
+    try {
+      await api('POST', `/api/tasks/${taskId}/auto-approve`, { auto: on });
+    } catch (e) { toast(e.message); }
   }
 
   async function decidePermission(taskId, reqId, behavior) {
@@ -1097,11 +1140,26 @@
     } catch (e) { toast(e.message); }
   }
 
-  // One delegated handler for every Allow/Deny button in the prompts box.
+  // One delegated handler for every Allow/Deny button and the AUTO MODE toggle.
   $('#permission-prompts').addEventListener('click', (e) => {
+    if (!state.openTaskId) return;
+    const autoBtn = e.target.closest('[data-auto]');
+    if (autoBtn) { toggleAutoApprove(state.openTaskId, autoBtn.dataset.auto === 'on'); return; }
     const btn = e.target.closest('[data-perm]');
-    if (!btn || !state.openTaskId) return;
-    decidePermission(state.openTaskId, btn.dataset.req, btn.dataset.perm);
+    if (btn) decidePermission(state.openTaskId, btn.dataset.req, btn.dataset.perm);
+  });
+
+  // Shift+Tab, while a live task's drawer is open, toggles AUTO MODE — mirrors the
+  // Claude Code shortcut. Ignored while typing so it can't fire from an input.
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Tab' || !e.shiftKey) return;
+    if (!state.openTaskId) return;
+    const el = document.activeElement;
+    if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+    const task = state.tasks.get(state.openTaskId);
+    if (!task || !isLive(task)) return;
+    e.preventDefault();
+    toggleAutoApprove(state.openTaskId, !isAutoApprove(state.openTaskId));
   });
 
   // Live permission-prompt updates from the server: a new request appears, or an
@@ -1117,6 +1175,8 @@
       if (isNew) playSound('permission');
     } else if (msg.action === 'resolved') {
       setPendingPermissions(msg.taskId, list.filter((r) => r.id !== msg.requestId));
+    } else if (msg.action === 'auto') {
+      setAutoApproveLocal(msg.taskId, !!msg.auto);
     }
     if (state.openTaskId === msg.taskId) renderPermissionPrompts(msg.taskId);
     renderBoard();
@@ -1528,9 +1588,10 @@
       addHtml($('#timeline'), `<div class="ev-meta">${icon('square')} ${esc(ev.text)}</div>`);
     } else if (type === 'permission') {
       const allowed = ev.decision && ev.decision.behavior === 'allow';
-      const verb = allowed ? 'Allowed' : 'Denied';
+      const auto = ev.reason === 'auto';
+      const verb = allowed ? (auto ? 'Auto-approved' : 'Allowed') : 'Denied';
       const why = !allowed && ev.decision && ev.decision.message ? ` — ${ev.decision.message}` : '';
-      addHtml($('#timeline'), `<div class="ev-meta perm-log ${allowed ? 'ok' : 'no'}">${icon('shield')} ${verb} ${esc(ev.toolName || 'tool')}${esc(why)}</div>`);
+      addHtml($('#timeline'), `<div class="ev-meta perm-log ${allowed ? 'ok' : 'no'}">${icon(auto ? 'zap' : 'shield')} ${verb} ${esc(ev.toolName || 'tool')}${esc(why)}</div>`);
     } else if (type === 'raw') {
       addHtml($('#timeline'), `<div class="ev-stderr">${esc(ev.text)}</div>`);
     }
@@ -3185,7 +3246,12 @@
         const prev = state.tasks.get(msg.task.id);
         state.tasks.set(msg.task.id, msg.task);
         renderBoard();
-        if (state.openTaskId === msg.task.id) renderDrawerHead(msg.task);
+        if (state.openTaskId === msg.task.id) {
+          renderDrawerHead(msg.task);
+          // The AUTO MODE toggle only shows while the task is live, so re-render
+          // the permission box as it starts/stops running.
+          renderPermissionPrompts(msg.task.id);
+        }
         // Keep the open grooming drawer's spawned-task links (their status
         // chips) in sync when one of its tasks changes.
         if (state.openGroomingId && msg.task.groomingId === state.openGroomingId) {
@@ -3304,9 +3370,12 @@
       state.autonomous = autonomous || null;
       // Seed live tool-approval prompts, then drop the transient field off the task.
       state.permissions = new Map();
+      state.autoApprove = new Set();
       for (const t of tasks) {
         if (t.pendingPermissions && t.pendingPermissions.length) state.permissions.set(t.id, t.pendingPermissions);
+        if (t.autoApprovePermissions) state.autoApprove.add(t.id);
         delete t.pendingPermissions;
+        delete t.autoApprovePermissions;
       }
       if (settings) state.settings = settings;
       loadFilters();

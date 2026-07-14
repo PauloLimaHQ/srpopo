@@ -36,6 +36,16 @@ interface PendingEntry {
 // settle the same promise exactly once.
 const byTask = new Map<string, Map<string, PendingEntry>>();
 
+// Tasks the user has flipped into auto-approve ("AUTO MODE"): every tool the run
+// would otherwise prompt for is allowed immediately, with no prompt. Like a
+// pending prompt this is process-local and never persisted — it only makes sense
+// while the `claude` child is alive, and is cleared when the run ends.
+const autoApprove = new Set<string>();
+
+function isAutoApprove(taskId: string): boolean {
+  return autoApprove.has(taskId);
+}
+
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000; // auto-deny an unanswered prompt after 30m
 let timeoutMs = DEFAULT_TIMEOUT_MS;
 
@@ -66,8 +76,18 @@ function logEvent(taskId: string, event: LogEvent): void {
  * stops, or the timeout fires — whichever comes first.
  */
 function create(taskId: string, toolName: string, input: unknown): { id: string; promise: Promise<Decision> } {
+  const name = String(toolName || 'tool');
+
+  // Auto-approve mode: allow the tool immediately, no prompt. Still logged so the
+  // timeline records that the run's blanket approval let the tool through.
+  if (autoApprove.has(taskId)) {
+    const decision: Decision = { behavior: 'allow' };
+    logEvent(taskId, { type: 'permission', toolName: name, decision, reason: 'auto' });
+    return { id: id(), promise: Promise.resolve(decision) };
+  }
+
   const reqId = id();
-  const entry: PendingEntry = { id: reqId, taskId, toolName: String(toolName || 'tool'), input, createdAt: now(), settled: false, resolve: null, timer: null };
+  const entry: PendingEntry = { id: reqId, taskId, toolName: name, input, createdAt: now(), settled: false, resolve: null, timer: null };
   const promise = new Promise<Decision>((resolve) => { entry.resolve = resolve; });
   bucket(taskId).set(reqId, entry);
 
@@ -109,6 +129,20 @@ function decide(
   return settle(taskId, reqId, decision, 'decided');
 }
 
+// Flip a running task's auto-approve mode on or off. Turning it on also clears the
+// backlog — every prompt already waiting is approved at once — and broadcasts the
+// new state so every board reflects it. Off just stops future auto-approvals.
+function setAutoApprove(taskId: string, on: boolean): boolean {
+  if (on) autoApprove.add(taskId);
+  else autoApprove.delete(taskId);
+  broadcast({ type: 'permission', action: 'auto', taskId, auto: on });
+  if (on) {
+    const m = byTask.get(taskId);
+    if (m) for (const reqId of [...m.keys()]) settle(taskId, reqId, { behavior: 'allow' }, 'auto');
+  }
+  return on;
+}
+
 // The bridge connection dropped before a decision (the claude child went away).
 function abandon(taskId: string, reqId: string): boolean {
   return settle(taskId, reqId, { behavior: 'deny', message: 'Session ended before approval' }, 'abandoned');
@@ -117,6 +151,8 @@ function abandon(taskId: string, reqId: string): boolean {
 // Deny every pending request for a task — used when a run is stopped or exits so
 // no promise is left hanging and the UI clears its prompts.
 function rejectForTask(taskId: string, message = 'Run ended'): void {
+  // Auto-approve is only meaningful while the child is alive; drop it with the run.
+  autoApprove.delete(taskId);
   const m = byTask.get(taskId);
   if (!m) return;
   for (const reqId of [...m.keys()]) settle(taskId, reqId, { behavior: 'deny', message }, 'ended');
@@ -138,6 +174,8 @@ export {
   abandon,
   rejectForTask,
   listForTask,
+  setAutoApprove,
+  isAutoApprove,
   DEFAULT_TIMEOUT_MS,
   _setTimeoutMs,
 };

@@ -715,6 +715,32 @@ test('permissions: deny normalizes a message; rejectForTask clears everything pe
   assert.strictEqual(permissions.listForTask(taskId).length, 0, 'nothing left pending');
 });
 
+test('permissions: auto-approve allows new requests and clears the pending backlog', async () => {
+  const permissions = require('../server/permissions');
+  const taskId = 'perm-task-auto';
+  assert.strictEqual(permissions.isAutoApprove(taskId), false, 'auto-approve is off by default');
+
+  // Prompts already waiting are approved the moment auto-mode turns on.
+  const waiting = permissions.create(taskId, 'Bash', { command: 'rm -rf build' });
+  assert.strictEqual(permissions.listForTask(taskId).length, 1, 'the request is pending');
+  permissions.setAutoApprove(taskId, true);
+  assert.strictEqual(permissions.isAutoApprove(taskId), true, 'auto-approve is on');
+  assert.strictEqual((await waiting.promise).behavior, 'allow', 'the pending prompt is auto-allowed');
+  assert.strictEqual(permissions.listForTask(taskId).length, 0, 'nothing left pending');
+
+  // A fresh request while auto is on resolves to allow without ever pending.
+  const next = permissions.create(taskId, 'Write', { file_path: 'x' });
+  assert.deepStrictEqual(await next.promise, { behavior: 'allow' }, 'new request is auto-allowed');
+  assert.strictEqual(permissions.listForTask(taskId).length, 0, 'auto-allowed requests never pend');
+
+  // Turning it off goes back to prompting; ending the run clears the flag too.
+  permissions.setAutoApprove(taskId, false);
+  assert.strictEqual(permissions.isAutoApprove(taskId), false, 'auto-approve turns back off');
+  permissions.setAutoApprove(taskId, true);
+  permissions.rejectForTask(taskId, 'Run ended');
+  assert.strictEqual(permissions.isAutoApprove(taskId), false, 'ending the run drops auto-approve');
+});
+
 test('permissions: an unanswered prompt auto-denies after the timeout', async () => {
   const permissions = require('../server/permissions');
   permissions._setTimeoutMs(20); // shrink the 30-minute default for the test
