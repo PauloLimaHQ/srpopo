@@ -82,7 +82,7 @@ interface Deps {
 // if needed, then spawn the run through the exact same framing the API route uses.
 async function realDispatch(task: Task): Promise<void> {
   if (task.useWorktree && !task.worktreePath) {
-    const { wtPath, branch } = await git.addWorktree(task.repoPath, task.id, framing.slugify(task.title), task.branchName);
+    const { wtPath, branch } = await git.addWorktree(task.repoPath, task.id, framing.slugify(task.title), task.branchName, task.baseBranch);
     task.worktreePath = wtPath;
     task.branch = branch;
     save();

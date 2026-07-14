@@ -206,6 +206,11 @@ export interface Task {
   // effect up to the point the worktree is materialized; null falls back to the
   // auto-generated `srpopo/<slug>-<id>` name.
   branchName: string | null;
+  // Branch the task's work is based on. For a worktree task it's the start point
+  // the new branch is cut from; for a direct (non-worktree) task the branch the
+  // repo is checked out to at dispatch. null falls back to the repo's current
+  // HEAD — the historical behavior, so leaving it unset changes nothing.
+  baseBranch: string | null;
   branch: string | null;
   model: string;
   permissionMode: string;
