@@ -76,6 +76,8 @@ the background when the window is closed.
 - **Follow-ups** — finished tasks keep their session; type in the composer to resume
   with full context (`claude --resume`).
 - **GitHub PRs in the drawer** — surfaces a task's pull request when there is one.
+- **MCP server** — while Sr. Popo runs it exposes its board over MCP (Streamable HTTP
+  at `/mcp`), so another Claude Code session can list, queue, dispatch, and stop tasks.
 - **Light & dark theming**, native OS notifications, and an inline SVG icon set (no
   icon font, no network fetch).
 - **Local-first & dependency-light** — binds `127.0.0.1` only, data stays per-user on
@@ -96,6 +98,21 @@ the background when the window is closed.
 5. **Follow-up** — resume a finished task from the composer, or drag it back to Running.
 6. **Done** — when you're happy, drag to Done, then *Remove worktree* / *Archive*. Merge
    the `srpopo/*` branch however you normally would.
+
+## Drive it from another agent (MCP)
+
+While Sr. Popo is running it doubles as an **MCP server**, so a separate Claude Code
+session (or any MCP client) can drive the board — list repos, queue a task, dispatch
+it, and stop a run — through the same code paths the UI uses. It speaks MCP's
+Streamable HTTP transport at `/mcp`:
+
+```bash
+claude mcp add --transport http srpopo http://127.0.0.1:7777/mcp
+```
+
+Tools: `list_repos`, `list_tasks`, `get_task`, `create_task`, `dispatch_task`,
+`stop_task`. Like the rest of the app it has no auth and binds `127.0.0.1` only —
+that localhost binding is the security boundary, so keep it local.
 
 ## Develop
 

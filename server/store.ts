@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 
-import type { Db, LogEvent, Repo, Settings, Task } from './types';
+import type { Db, Grooming, LogEvent, Repo, Settings, Task } from './types';
 
 // When embedded in Electron the packaged app dir is read-only, so the main
 // process points us at a writable per-user location via SRPOPO_DATA_DIR.
@@ -23,19 +23,26 @@ const DEFAULT_SETTINGS: Settings = {
   // limits on a typical dev laptop. Configurable in Settings.
   maxParallelSessions: 3,
   installedPlugins: [],
+  // Remote access is OFF by default: the server binds 127.0.0.1 only and needs
+  // no token, exactly as before. The token stays empty until the first time the
+  // user enables remote access (generated lazily in PATCH /api/settings).
+  remoteAccess: false,
+  remoteAccessToken: '',
 };
 
-let db: Db = { repos: [], tasks: [], settings: { ...DEFAULT_SETTINGS } };
+let db: Db = { repos: [], tasks: [], groomings: [], settings: { ...DEFAULT_SETTINGS } };
 if (fs.existsSync(DB_PATH)) {
   try {
     db = Object.assign(
-      { repos: [], tasks: [], settings: {} },
+      { repos: [], tasks: [], groomings: [], settings: {} },
       JSON.parse(fs.readFileSync(DB_PATH, 'utf8')),
     ) as Db;
   } catch (err) {
     console.error('[store] failed to read db.json, starting fresh:', (err as Error).message);
   }
 }
+// Older db.json files predate the groomings collection.
+if (!Array.isArray(db.groomings)) db.groomings = [];
 // Backfill any missing setting so the rest of the app can read them directly.
 // Capture pre-backfill hints first so we can migrate older db.json files below.
 const hadInstalledPlugins = Array.isArray(db.settings?.installedPlugins);
@@ -45,13 +52,22 @@ db.settings = Object.assign({ ...DEFAULT_SETTINGS }, db.settings || {});
 // installed, so their "From Linear" button doesn't silently disappear.
 if (!hadInstalledPlugins) db.settings.installedPlugins = hadLinearToken ? ['linear'] : [];
 
-// Any task marked running/grooming when the server starts is an orphan from a
-// previous run — its child claude process died with the server.
+// Any task marked running when the server starts is an orphan from a previous
+// run — its child claude process died with the server. Older db.json files may
+// still carry the legacy per-task 'grooming' status; treat those the same way.
 for (const t of db.tasks) {
-  if (t.status === 'running' || t.status === 'grooming') {
+  if (t.status === 'running' || (t.status as string) === 'grooming') {
     t.status = 'failed';
     t.lastOutcome = 'error';
     t.lastError = 'Server restarted while task was running';
+  }
+}
+// Same for grooming cards: a card can't still be running without its child.
+for (const g of db.groomings) {
+  if (g.status === 'running') {
+    g.status = 'failed';
+    g.lastOutcome = 'error';
+    g.lastError = 'Server restarted while grooming was running';
   }
 }
 
@@ -101,4 +117,13 @@ function getRepo(repoId: string): Repo | undefined {
   return db.repos.find((r) => r.id === repoId);
 }
 
-export { db, save, id, now, appendLog, readLog, logPath, getTask, getRepo, DATA_DIR, DEFAULT_SETTINGS };
+function getGrooming(groomingId: string): Grooming | undefined {
+  return db.groomings.find((g) => g.id === groomingId);
+}
+
+// Drop a task/grooming session log from disk (e.g. when a grooming is deleted).
+function removeLog(taskId: string): void {
+  try { fs.rmSync(logPath(taskId), { force: true }); } catch { /* best effort */ }
+}
+
+export { db, save, id, now, appendLog, readLog, removeLog, logPath, getTask, getRepo, getGrooming, DATA_DIR, DEFAULT_SETTINGS };

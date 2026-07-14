@@ -1,15 +1,18 @@
 import express from 'express';
-import type { Request, Response } from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
+import crypto from 'crypto';
 import { execFile } from 'child_process';
 import type { Server } from 'http';
 import type { AddressInfo } from 'net';
 
-import { db, save, id, now, readLog, getTask, getRepo } from './store';
+import { db, save, id, now, readLog, removeLog, getTask, getRepo, getGrooming } from './store';
 import { broadcast, sse } from './bus';
 import { appRoot } from './paths';
-import type { Task, Attachment, Repo, PublicSettings, WorktreeInfo } from './types';
+import type { GroomSpec } from './groomer';
+import type { Task, Attachment, Grooming, GroomingTarget, Repo, PublicSettings, WorktreeInfo } from './types';
 import * as git from './git';
 import * as runner from './runner';
 import * as attachments from './attachments';
@@ -23,8 +26,169 @@ import * as plugins from './plugins';
 import * as autonomous from './autonomous';
 import * as framing from './framing';
 import * as terminal from './terminal';
+import * as taskService from './tasks';
+import * as mcp from './mcp';
 
 const app = express();
+
+// ---------- remote access (opt-in LAN mode) ----------
+//
+// Invariant #1 normally pins the server to 127.0.0.1 with no auth — localhost IS
+// the security boundary. The opt-in "Remote Access (LAN)" mode deliberately
+// relaxes that so the board is reachable from other machines on the same
+// network; to keep it safe it MUST replace the lost boundary with a shared
+// token. HTTPS / internet tunneling / multi-user accounts are out of scope for
+// v1 (LAN + single shared token only).
+const REMOTE_TOKEN_COOKIE = 'srpopo_token';
+
+// The port the HTTP server is actually listening on, captured at start()/rebind
+// so GET /api/remote-access can build the LAN pairing URL.
+let listenPort = 0;
+
+// Non-internal IPv4 addresses of this machine, e.g. ['192.168.1.20']. Cross-
+// platform via os.networkInterfaces(); used to build the pairing URL(s).
+function lanAddresses(): string[] {
+  const out: string[] = [];
+  for (const nets of Object.values(os.networkInterfaces())) {
+    for (const net of nets || []) {
+      if (net.family === 'IPv4' && !net.internal) out.push(net.address);
+    }
+  }
+  return out;
+}
+
+// True when a request originates from this same machine. We read the raw socket
+// address (never a forwardable header) so a LAN client can't spoof localhost.
+// Localhost is always trusted: the Electron window and a local browser must
+// never be prompted for a token, and GET /api/remote-access is localhost-only.
+function isLocalRequest(req: Request): boolean {
+  const ip = req.socket.remoteAddress || '';
+  return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+}
+
+// Hand-rolled Cookie header parser — no cookie-parser dependency (invariant:
+// express is the only runtime dep). Returns a { name: value } map.
+function parseCookies(header: string | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!header) return out;
+  for (const part of header.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq === -1) continue;
+    const name = part.slice(0, eq).trim();
+    if (!name) continue;
+    try { out[name] = decodeURIComponent(part.slice(eq + 1).trim()); }
+    catch { out[name] = part.slice(eq + 1).trim(); }
+  }
+  return out;
+}
+
+// Constant-time compare of a provided token against the configured secret,
+// guarding the length mismatch timingSafeEqual would throw on.
+function tokenMatches(provided: string): boolean {
+  const expected = db.settings.remoteAccessToken || '';
+  if (!expected || !provided) return false;
+  const a = Buffer.from(provided);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+// A tiny, dependency-free "enter access token" page served to unauthorized
+// top-level navigations from the LAN. It just posts the token back as ?token=
+// so the middleware can validate it and set the auth cookie.
+function tokenPromptPage(): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sr. Popo — Access token</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center;
+    background: #1a1436; color: #ece9f5;
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; }
+  .card { width: min(360px, 90vw); background: #241c4a; border: 1px solid #3a2f6b;
+    border-radius: 14px; padding: 28px; box-shadow: 0 12px 40px rgba(0,0,0,.35); }
+  h1 { font-size: 18px; margin: 0 0 6px; }
+  p { margin: 0 0 18px; color: #b7b0d6; font-size: 13px; }
+  input { width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: 8px;
+    border: 1px solid #46397f; background: #171132; color: #ece9f5; font-size: 14px; }
+  button { margin-top: 14px; width: 100%; padding: 10px 12px; border: 0; border-radius: 8px;
+    background: #7c5cff; color: #fff; font-size: 14px; font-weight: 600; cursor: pointer; }
+  button:hover { background: #6b4bf0; }
+</style></head>
+<body><form class="card" onsubmit="event.preventDefault();
+    var t=document.getElementById('t').value.trim();
+    if(t)location.href='/?token='+encodeURIComponent(t);">
+  <h1>Sr. Popo</h1>
+  <p>This board is protected. Enter the access token from the host machine's Settings &rsaquo; Remote Access.</p>
+  <input id="t" type="password" autofocus placeholder="Access token" autocomplete="off">
+  <button type="submit">Unlock</button>
+</form></body></html>`;
+}
+
+// The remote-access authorization decision, split out from the middleware so it
+// is unit-testable without spoofing socket addresses. Reads the configured token
+// from db.settings; every request-derived value is passed in. Returns whether to
+// allow the request and, when allowing, the Set-Cookie value to persist (only
+// when the token didn't already arrive as the cookie).
+interface RemoteAuthResult {
+  allow: boolean;
+  setCookie?: string;
+}
+function authorizeRemote(input: {
+  local: boolean;
+  cookieToken: string;
+  headerToken: string;
+  queryToken: string;
+}): RemoteAuthResult {
+  // Off by default → today's behavior exactly: no auth (the server is bound to
+  // 127.0.0.1 only, so only this machine can reach it anyway).
+  if (!db.settings.remoteAccess) return { allow: true };
+  // Localhost is always trusted and never prompted.
+  if (input.local) return { allow: true };
+
+  const provided = input.cookieToken || input.headerToken || input.queryToken;
+  if (provided && tokenMatches(provided)) {
+    // If the token came via header or query (not already the cookie), persist it
+    // as a cookie so subsequent same-origin fetch AND EventSource requests
+    // authenticate automatically — EventSource can't send custom headers, so the
+    // cookie is essential for the live SSE board. HttpOnly keeps the secret out
+    // of page JS; SameSite=Lax is right for a same-origin app.
+    if (input.cookieToken !== provided) {
+      return {
+        allow: true,
+        setCookie: `${REMOTE_TOKEN_COOKIE}=${encodeURIComponent(provided)}; HttpOnly; SameSite=Lax; Path=/`,
+      };
+    }
+    return { allow: true };
+  }
+  return { allow: false };
+}
+
+// Gate every request when remote access is on. Registered before the body
+// parser and the static handler so unauthorized LAN clients can't reach either.
+app.use((req: Request, res: Response, next: NextFunction) => {
+  const cookies = parseCookies(req.headers.cookie);
+  const bearer = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || '');
+  const decision = authorizeRemote({
+    local: isLocalRequest(req),
+    cookieToken: cookies[REMOTE_TOKEN_COOKIE] || '',
+    headerToken: bearer ? bearer[1] : '',
+    queryToken: typeof req.query.token === 'string' ? req.query.token : '',
+  });
+
+  if (decision.allow) {
+    if (decision.setCookie) res.setHeader('Set-Cookie', decision.setCookie);
+    return next();
+  }
+
+  // Unauthorized LAN request: a plain 401 for the API, a token-entry page for a
+  // top-level navigation (which then retries with ?token=).
+  if (req.path.startsWith('/api/')) {
+    return err(res, 401, 'Remote access requires a valid token');
+  }
+  res.status(401).type('html').send(tokenPromptPage());
+});
+
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static(path.join(appRoot(), 'public')));
 
@@ -52,21 +216,18 @@ function publicSettings(): PublicSettings {
     linearConfigured: !!(db.settings.linearApiToken && db.settings.linearApiToken.trim()),
     maxParallelSessions: db.settings.maxParallelSessions,
     installedPlugins: plugins.sanitize(db.settings.installedPlugins),
+    remoteAccess: !!db.settings.remoteAccess,
+    // Derived boolean only — the raw token never leaves the localhost-only
+    // GET /api/remote-access endpoint.
+    remoteAccessConfigured: !!(db.settings.remoteAccessToken && db.settings.remoteAccessToken.trim()),
   };
 }
 
-// True once dispatched runs + grooming sessions together hit the configured
-// cap — checked right before spawning a new `claude` child so headless runs
-// fail fast with a clear message instead of silently piling up and starving
-// each other of CPU / hitting subscription rate limits.
-function atCapacity(): boolean {
-  return runner.runningCount() >= (db.settings.maxParallelSessions || 1);
-}
-
-function capacityError(): string {
-  return `Max parallel sessions reached (${runner.runningCount()}/${db.settings.maxParallelSessions} running). ` +
-    'Stop a running task or raise the limit in Settings.';
-}
+// Capacity gating (max parallel `claude` children) lives in the task service so
+// the REST routes and the MCP server enforce the same cap; these thin aliases
+// keep the existing call sites readable.
+const atCapacity = taskService.atCapacity;
+const capacityError = taskService.capacityError;
 
 // Map a linear.ts failure reason to an HTTP status + user-facing message.
 function linearFail(res: Response, reason: linear.LinearReason): void {
@@ -80,31 +241,31 @@ function linearFail(res: Response, reason: linear.LinearReason): void {
   err(res, code, message);
 }
 
-// Build a grooming task from a composed brief and kick off runner.groom — the
-// single source of truth for the "create a grooming task and dispatch it" dance,
-// shared by POST /api/briefs and the Linear import path. Like dispatch, the
-// `grooming` status is entered only here (via runner.groom), never via PATCH.
-// On a groom failure the task is rolled back to backlog and the error rethrown.
-function startGrooming(repo: Repo, brief: string, model: unknown, extra?: Partial<Task>): Task {
-  const task: Task = {
+// Is a marketplace plugin currently installed?
+function pluginInstalled(pluginId: string): boolean {
+  return plugins.sanitize(db.settings.installedPlugins).includes(pluginId);
+}
+
+// Normalize the "where do spawned tasks land" knob; anything unknown → backlog.
+function sanitizeTarget(value: unknown): GroomingTarget {
+  return value === 'ready' || value === 'auto' ? value : 'backlog';
+}
+
+// Build a grooming card (draft) from a composed idea — the single source of
+// truth for the card's shape, shared by POST /api/groomings and the Linear
+// import path. The caller decides whether to run it right away.
+function createGrooming(repo: Repo, idea: string, body: Record<string, unknown>, extra?: Partial<Grooming>): Grooming {
+  const grooming: Grooming = {
     id: id(),
-    title: groomer.deriveTitle(brief),
-    prompt: brief, // the composed brief, until grooming rewrites it
-    brief, // preserved even after grooming (the drawer renders it)
+    title: groomer.deriveTitle(idea),
+    idea,
     repoId: repo.id,
     repoName: repo.name,
     repoPath: repo.path,
-    addons: [],
-    personas: [],
-    useWorktree: true,
-    worktreePath: null,
-    branchName: null,
-    branch: null,
-    model: (model as string) || 'default',
-    permissionMode: 'acceptEdits',
-    allowedTools: '',
-    promptPermissions: true, // applies once dispatched; grooming itself is read-only
-    status: 'grooming',
+    model: (body.model as string) || 'default',
+    target: sanitizeTarget(body.target),
+    branchName: body.branchName ? String(body.branchName).trim() : null,
+    status: 'draft',
     sessionId: null,
     resolvedModel: null,
     costUsd: 0,
@@ -114,6 +275,7 @@ function startGrooming(repo: Repo, brief: string, model: unknown, extra?: Partia
     activeSubagents: 0,
     lastOutcome: null,
     lastError: null,
+    taskIds: [],
     archived: false,
     createdAt: now(),
     updatedAt: now(),
@@ -121,22 +283,83 @@ function startGrooming(repo: Repo, brief: string, model: unknown, extra?: Partia
     finishedAt: null,
     ...extra,
   };
-  db.tasks.push(task);
+  db.groomings.push(grooming);
   save();
-  broadcast({ type: 'task', task });
+  broadcast({ type: 'grooming', grooming });
+  return grooming;
+}
 
-  try {
-    runner.groom(task, brief);
-  } catch (e) {
-    task.status = 'backlog';
-    task.lastOutcome = 'error';
-    task.lastError = (e as Error).message;
-    task.updatedAt = now();
-    save();
+// Create the tasks a finished grooming proposed. Where they land follows the
+// card's target: always backlog, always ready, or (auto) the session's own
+// per-task `ready` judgment. Returns the new task ids for grooming.taskIds.
+function spawnGroomedTasks(grooming: Grooming, specs: GroomSpec[]): string[] {
+  const ids: string[] = [];
+  for (const spec of specs) {
+    const status =
+      grooming.target === 'ready' ? 'ready'
+      : grooming.target === 'auto' && spec.ready ? 'ready'
+      : 'backlog';
+    const task: Task = {
+      id: id(),
+      title: spec.title || grooming.title,
+      prompt: spec.prompt,
+      brief: grooming.idea, // preserved so the drawer can show idea → prompt
+      groomingId: grooming.id,
+      repoId: grooming.repoId,
+      repoName: grooming.repoName,
+      repoPath: grooming.repoPath,
+      addons: [],
+      personas: [],
+      attachments: [],
+      useWorktree: true,
+      worktreePath: null,
+      // A fixed branch name only makes sense when the grooming spawned exactly
+      // one task — branches must be unique per worktree.
+      branchName: specs.length === 1 ? grooming.branchName : null,
+      branch: null,
+      model: grooming.model,
+      permissionMode: 'acceptEdits',
+      allowedTools: '',
+      promptPermissions: true,
+      status,
+      sessionId: null,
+      resolvedModel: null,
+      costUsd: 0,
+      numTurns: null,
+      durationMs: null,
+      runCount: 0,
+      activeSubagents: 0,
+      lastOutcome: null,
+      lastError: null,
+      archived: false,
+      createdAt: now(),
+      updatedAt: now(),
+      startedAt: null,
+      finishedAt: null,
+    };
+    if (grooming.linearIssue) task.linearIssue = { ...grooming.linearIssue };
+    db.tasks.push(task);
+    ids.push(task.id);
     broadcast({ type: 'task', task });
+  }
+  save();
+  return ids;
+}
+
+// Kick off the read-only grooming session for a card. On a launch failure the
+// card is rolled back to draft and the error rethrown for the route to report.
+function runGrooming(grooming: Grooming): Grooming {
+  try {
+    return runner.groom(grooming, { onSpawn: (specs) => spawnGroomedTasks(grooming, specs) });
+  } catch (e) {
+    grooming.status = 'draft';
+    grooming.lastOutcome = 'error';
+    grooming.lastError = (e as Error).message;
+    grooming.updatedAt = now();
+    save();
+    broadcast({ type: 'grooming', grooming });
     throw e;
   }
-  return task;
 }
 
 // ---------- health ----------
@@ -163,6 +386,7 @@ app.get('/api/state', (req: Request, res: Response) => {
     tasks: db.tasks
       .filter((t) => !t.archived)
       .map((t) => ({ ...t, pendingPermissions: permissions.listForTask(t.id) })),
+    groomings: db.groomings.filter((g) => !g.archived),
     settings: publicSettings(),
     // Live autonomous-session snapshot so a reconnecting board rebuilds its banner
     // (like pendingPermissions above, this is process-local and never persisted).
@@ -171,6 +395,25 @@ app.get('/api/state', (req: Request, res: Response) => {
 });
 
 app.get('/api/events', (req: Request, res: Response) => sse(req, res));
+
+// ---------- MCP server ----------
+
+// Board control over MCP's Streamable HTTP transport, live for as long as Sr.
+// Popo is running. An outside MCP client (e.g. `claude mcp add --transport http
+// srpopo http://127.0.0.1:7777/mcp`) can list/create/dispatch/stop tasks through
+// the same code paths as the REST API. See server/mcp.ts; localhost binding is
+// the only security boundary, exactly as for /api.
+app.post('/mcp', async (req: Request, res: Response) => {
+  try {
+    await mcp.handlePost(req, res);
+  } catch (e) {
+    if (!res.headersSent) {
+      res.status(500).json({ jsonrpc: '2.0', id: null, error: { code: -32603, message: (e as Error).message } });
+    }
+  }
+});
+app.get('/mcp', (req: Request, res: Response) => mcp.handleUnsupported(res));
+app.delete('/mcp', (req: Request, res: Response) => mcp.handleUnsupported(res));
 
 // ---------- settings ----------
 
@@ -193,10 +436,49 @@ app.patch('/api/settings', (req: Request, res: Response) => {
   // Marketplace: the board sends the full desired set of installed plugin ids;
   // unknown ids are dropped so only real plugins can be toggled on.
   if ('installedPlugins' in req.body) db.settings.installedPlugins = plugins.sanitize(req.body.installedPlugins);
+
+  // Remote access: rotate the token on request (revokes all remote sessions),
+  // then apply the on/off toggle — generating a token lazily when first enabling
+  // so LAN binding is never exposed without the gate active. A change to the
+  // toggle re-binds the live server (LAN vs localhost) below.
+  if (req.body.regenerateRemoteToken === true) {
+    db.settings.remoteAccessToken = crypto.randomBytes(24).toString('hex');
+  }
+  let rebindNeeded = false;
+  if ('remoteAccess' in req.body) {
+    const enabled = !!req.body.remoteAccess;
+    if (enabled && !db.settings.remoteAccessToken) {
+      db.settings.remoteAccessToken = crypto.randomBytes(24).toString('hex');
+    }
+    if (enabled !== db.settings.remoteAccess) rebindNeeded = true;
+    db.settings.remoteAccess = enabled;
+  }
+
   save();
   const settings = publicSettings();
   broadcast({ type: 'settings', settings });
+  // Re-bind only AFTER this response has flushed: rebind() force-closes every live
+  // connection (including this request's own socket), so doing it inline would
+  // truncate the reply the local board is waiting on.
+  if (rebindNeeded) res.on('finish', () => rebind());
   res.json(settings);
+});
+
+// The raw token + full LAN pairing URL(s). Localhost-only: this is the single
+// place the secret is exposed, and only to an already-trusted local connection
+// (the desktop app / a local browser) — never to the LAN, never in a broadcast.
+app.get('/api/remote-access', (req: Request, res: Response) => {
+  if (!isLocalRequest(req)) return err(res, 403, 'Only available on this machine');
+  const token = db.settings.remoteAccessToken || '';
+  const lan = lanAddresses();
+  const urls = token ? lan.map((ip) => `http://${ip}:${listenPort}/?token=${token}`) : [];
+  res.json({
+    enabled: !!db.settings.remoteAccess,
+    token,
+    lan,
+    url: urls[0] || null,
+    urls,
+  });
 });
 
 // Catalog of optional task behaviors the UI renders as checkboxes.
@@ -383,8 +665,9 @@ app.post('/api/terminal/:tid/close', (req: Request, res: Response) => {
 app.delete('/api/repos/:id', (req: Request, res: Response) => {
   const idx = db.repos.findIndex((r) => r.id === req.params.id);
   if (idx === -1) return err(res, 404, 'Repo not found');
-  const active = db.tasks.some((t) => t.repoId === req.params.id && !t.archived);
-  if (active) return err(res, 409, 'Repo has non-archived tasks; archive them first');
+  const active = db.tasks.some((t) => t.repoId === req.params.id && !t.archived) ||
+    db.groomings.some((g) => g.repoId === req.params.id && !g.archived);
+  if (active) return err(res, 409, 'Repo has non-archived tasks or groomings; archive them first');
   db.repos.splice(idx, 1);
   save();
   broadcast({ type: 'repos', repos: db.repos });
@@ -394,73 +677,111 @@ app.delete('/api/repos/:id', (req: Request, res: Response) => {
 // ---------- tasks ----------
 
 app.post('/api/tasks', (req: Request, res: Response) => {
-  const { title, prompt, repoId, model, useWorktree, permissionMode, status } = req.body;
-  if (!title || !prompt) return err(res, 400, 'title and prompt are required');
-  const repo = getRepo(repoId);
-  if (!repo) return err(res, 400, 'Unknown repo');
-
-  const task: Task = {
-    id: id(),
-    title: String(title).trim(),
-    prompt: String(prompt),
-    repoId: repo.id,
-    repoName: repo.name,
-    repoPath: repo.path,
-    addons: addons.sanitize(req.body.addons),
-    personas: personas.sanitize(req.body.personas),
-    attachments: [],
-    useWorktree: !!useWorktree,
-    worktreePath: null,
-    branchName: req.body.branchName ? String(req.body.branchName).trim() : null,
-    branch: null,
-    model: model || 'default',
-    permissionMode: permissionMode || 'acceptEdits',
-    allowedTools: runner.normalizeAllowedTools(req.body.allowedTools),
-    // Ask the user to approve otherwise-denied tools instead of silently finishing
-    // without running them. Defaults on; opt out for fully-unattended runs.
-    promptPermissions: 'promptPermissions' in req.body ? !!req.body.promptPermissions : true,
-    status: status === 'ready' ? 'ready' : 'backlog',
-    sessionId: null,
-    resolvedModel: null,
-    costUsd: 0,
-    numTurns: null,
-    durationMs: null,
-    runCount: 0,
-    activeSubagents: 0,
-    lastOutcome: null,
-    lastError: null,
-    archived: false,
-    createdAt: now(),
-    updatedAt: now(),
-    startedAt: null,
-    finishedAt: null,
-  };
-  db.tasks.push(task);
-  save();
-  broadcast({ type: 'task', task });
-  res.json(task);
+  try {
+    res.json(taskService.createTask(req.body));
+  } catch (e) {
+    err(res, 400, (e as Error).message);
+  }
 });
 
-// ---------- briefs (idea grooming) ----------
+// ---------- groomings (idea grooming) ----------
 
-// "Brief an Idea": turn a rough one-line idea into a groomed, ready-to-run task.
-// Creates the task in the `grooming` state and kicks off a short, read-only
-// Claude session in the repo that rewrites the idea into a well-structured
-// prompt; when it finishes the task moves to `ready`. Like dispatch, the
-// grooming state is entered only here — never via PATCH /api/tasks/:id.
-app.post('/api/briefs', (req: Request, res: Response) => {
-  const brief = String(req.body.brief || '').trim();
-  if (!brief) return err(res, 400, 'brief is required');
+// "Brief an Idea": create a grooming card for a rough idea. The card has its
+// own lifecycle (draft → running → finished/failed) and never becomes a task —
+// when its read-only session finishes it spawns one or more tasks in Backlog
+// (or Ready, per its target). Pass `run: false` to keep it as a draft; by
+// default the session starts right away. Gated on the Idea Grooming plugin.
+app.post('/api/groomings', (req: Request, res: Response) => {
+  if (!pluginInstalled('grooming')) return err(res, 400, 'Install the Idea Grooming plugin first');
+  const idea = String(req.body.idea || req.body.brief || '').trim();
+  if (!idea) return err(res, 400, 'idea is required');
   const repo = getRepo(req.body.repoId);
   if (!repo) return err(res, 400, 'Unknown repo');
-  if (atCapacity()) return err(res, 409, capacityError());
+  const run = req.body.run !== false;
+  if (run && atCapacity()) return err(res, 409, capacityError());
 
   try {
-    const branchName = req.body.branchName ? String(req.body.branchName).trim() : null;
-    res.json(startGrooming(repo, brief, req.body.model, { branchName }));
+    const grooming = createGrooming(repo, idea, req.body);
+    if (run) runGrooming(grooming);
+    res.json(grooming);
   } catch (e) {
     err(res, 500, (e as Error).message);
   }
+});
+
+// Start (or re-run) a draft/failed grooming card's read-only session. Like a
+// task dispatch, `running` is entered only through the runner, never via PATCH.
+app.post('/api/groomings/:id/run', (req: Request, res: Response) => {
+  const grooming = getGrooming(req.params.id);
+  if (!grooming) return err(res, 404, 'Grooming not found');
+  if (runner.isRunning(grooming.id)) return err(res, 409, 'Grooming is already running');
+  if (grooming.status === 'finished') return err(res, 409, 'Grooming already finished — brief a new idea instead');
+  if (atCapacity()) return err(res, 409, capacityError());
+  try {
+    res.json(runGrooming(grooming));
+  } catch (e) {
+    err(res, 500, (e as Error).message);
+  }
+});
+
+app.post('/api/groomings/:id/stop', (req: Request, res: Response) => {
+  const grooming = getGrooming(req.params.id);
+  if (!grooming) return err(res, 404, 'Grooming not found');
+  if (!runner.stop(grooming.id)) return err(res, 409, 'Grooming is not running');
+  res.json({ ok: true });
+});
+
+// Edit a draft's idea/config. Finished cards are immutable history; a running
+// card belongs to its live session.
+app.patch('/api/groomings/:id', (req: Request, res: Response) => {
+  const grooming = getGrooming(req.params.id);
+  if (!grooming) return err(res, 404, 'Grooming not found');
+  if (runner.isRunning(grooming.id)) return err(res, 409, 'Grooming is running; stop it first');
+  if (grooming.status === 'finished') return err(res, 409, 'Grooming already finished');
+
+  if ('idea' in req.body) {
+    const idea = String(req.body.idea || '').trim();
+    if (!idea) return err(res, 400, 'idea cannot be empty');
+    grooming.idea = idea;
+    grooming.title = groomer.deriveTitle(idea);
+  }
+  if ('model' in req.body) grooming.model = String(req.body.model || 'default');
+  if ('target' in req.body) grooming.target = sanitizeTarget(req.body.target);
+  if ('branchName' in req.body) grooming.branchName = req.body.branchName ? String(req.body.branchName).trim() : null;
+  grooming.updatedAt = now();
+  save();
+  broadcast({ type: 'grooming', grooming });
+  res.json(grooming);
+});
+
+app.post('/api/groomings/:id/archive', (req: Request, res: Response) => {
+  const grooming = getGrooming(req.params.id);
+  if (!grooming) return err(res, 404, 'Grooming not found');
+  if (runner.isRunning(grooming.id)) return err(res, 409, 'Stop the grooming before archiving');
+  grooming.archived = true;
+  grooming.updatedAt = now();
+  save();
+  broadcast({ type: 'grooming-removed', groomingId: grooming.id });
+  res.json({ ok: true });
+});
+
+// Delete a grooming card outright (its session log goes too). Spawned tasks
+// are independent once created — deleting the card never touches them.
+app.delete('/api/groomings/:id', (req: Request, res: Response) => {
+  const idx = db.groomings.findIndex((g) => g.id === req.params.id);
+  if (idx === -1) return err(res, 404, 'Grooming not found');
+  if (runner.isRunning(req.params.id)) return err(res, 409, 'Stop the grooming before deleting');
+  db.groomings.splice(idx, 1);
+  removeLog(req.params.id);
+  save();
+  broadcast({ type: 'grooming-removed', groomingId: req.params.id });
+  res.json({ ok: true });
+});
+
+app.get('/api/groomings/:id/logs', (req: Request, res: Response) => {
+  const grooming = getGrooming(req.params.id);
+  if (!grooming) return err(res, 404, 'Grooming not found');
+  res.json({ grooming, events: readLog(grooming.id) });
 });
 
 // ---------- linear (import a Linear issue as a groomed task) ----------
@@ -474,9 +795,11 @@ app.get('/api/linear/issues', async (req: Request, res: Response) => {
   res.json({ issues: result.issues });
 });
 
-// Turn a Linear issue (by UUID or identifier like ABC-123) into a groomed task.
-// Fetches the issue server-side, composes a brief from it, and routes it through
-// the same grooming pipeline as POST /api/briefs.
+// Turn a Linear issue (by UUID or identifier like ABC-123) into a grooming
+// card that starts right away. Fetches the issue server-side, composes an idea
+// brief from it, and routes it through the same pipeline as POST /api/groomings
+// (the import is part of the Linear plugin, so it works without the Idea
+// Grooming plugin installed — its card still lives in the Grooming column).
 app.post('/api/linear/briefs', async (req: Request, res: Response) => {
   const repo = getRepo(req.body.repoId);
   if (!repo) return err(res, 400, 'Unknown repo');
@@ -487,7 +810,7 @@ app.post('/api/linear/briefs', async (req: Request, res: Response) => {
   const result = await linear.getIssue(issueId);
   if (!result.ok) return linearFail(res, result.reason);
 
-  const brief = linear.briefFromIssue(result.issue);
+  const idea = linear.briefFromIssue(result.issue);
   // Default the branch to the issue's own identifier (e.g. "abc-123") so it
   // matches whatever convention the team already uses in Linear/GitHub; an
   // explicit branchName from the caller still wins.
@@ -495,10 +818,11 @@ app.post('/api/linear/briefs', async (req: Request, res: Response) => {
     ? String(req.body.branchName).trim()
     : slugify(result.issue.identifier);
   try {
-    res.json(startGrooming(repo, brief, req.body.model, {
+    const grooming = createGrooming(repo, idea, { ...req.body, branchName }, {
       linearIssue: { identifier: result.issue.identifier, url: result.issue.url },
-      branchName,
-    }));
+    });
+    runGrooming(grooming);
+    res.json(grooming);
   } catch (e) {
     err(res, 500, (e as Error).message);
   }
@@ -554,7 +878,7 @@ app.post(
   (req: Request, res: Response) => {
     const task = getTask(req.params.id);
     if (!task) return err(res, 404, 'Task not found');
-    if (task.status === 'running' || task.status === 'grooming') {
+    if (task.status === 'running') {
       return err(res, 409, 'Task is running; stop it first');
     }
     const header = req.header('X-Filename');
@@ -581,7 +905,7 @@ app.post(
 app.delete('/api/tasks/:id/attachments/:name', (req: Request, res: Response) => {
   const task = getTask(req.params.id);
   if (!task) return err(res, 404, 'Task not found');
-  if (task.status === 'running' || task.status === 'grooming') {
+  if (task.status === 'running') {
     return err(res, 409, 'Task is running; stop it first');
   }
   const name = attachments.sanitizeName(req.params.name);
@@ -600,20 +924,7 @@ app.post('/api/tasks/:id/dispatch', async (req: Request, res: Response) => {
   if (atCapacity()) return err(res, 409, capacityError());
 
   try {
-    if (task.useWorktree && !task.worktreePath) {
-      const { wtPath, branch } = await git.addWorktree(task.repoPath, task.id, slugify(task.title), task.branchName);
-      task.worktreePath = wtPath;
-      task.branch = branch;
-      save();
-    }
-    const followUp = req.body && req.body.message ? String(req.body.message) : null;
-    if (followUp && task.sessionId) {
-      runner.dispatch(task, followUp, { resume: true });
-    } else {
-      // Fresh run of the task prompt — framed (personas + prompt + add-ons +
-      // attachments) the same way the autonomous engine frames it.
-      runner.dispatch(task, framing.framePrompt(task), { resume: false });
-    }
+    await taskService.dispatchTask(task, req.body && req.body.message ? String(req.body.message) : null);
     res.json(task);
   } catch (e) {
     task.status = 'failed';
@@ -754,18 +1065,57 @@ async function backfillRepoNames(): Promise<void> {
 
 // ---------- boot ----------
 
+let httpServer: Server | null = null;
+
+// The interface to bind: 0.0.0.0 (reachable from the LAN) only when remote
+// access is on — and the token gate above is then always active. Otherwise
+// 127.0.0.1, so localhost stays the security boundary (invariant #1).
+function bindHost(): string {
+  return db.settings.remoteAccess ? '0.0.0.0' : '127.0.0.1';
+}
+
+// Re-bind the live server to match the current remoteAccess setting, on the SAME
+// port, without restarting the process (so db/session state survives). We must
+// close the old listener before re-listening on a different host; long-lived SSE
+// connections would keep it open forever, so force them closed — the board's
+// EventSource auto-reconnects. Bind errors are logged, never thrown, so toggling
+// remote access can't crash the app.
+function rebind(): void {
+  const server = httpServer;
+  if (!server) return;
+  const host = bindHost();
+  const port = listenPort;
+  server.once('close', () => {
+    server.listen(port, host, () => {
+      // The permission bridge always talks to us over localhost (see below), so
+      // its base URL is unchanged — nothing to re-point here.
+      console.log(`[remote-access] re-bound to ${host}:${port}`);
+    });
+    server.once('error', (e) => console.error('[remote-access] rebind failed:', (e as Error).message));
+  });
+  server.close();
+  // closeAllConnections lands in Node 18.2+; force-drop live sockets so the
+  // 'close' event fires promptly instead of waiting on open SSE streams.
+  const s = server as Server & { closeAllConnections?: () => void };
+  if (typeof s.closeAllConnections === 'function') s.closeAllConnections();
+}
+
 /**
- * Start the HTTP server on 127.0.0.1.
+ * Start the HTTP server. Binds 127.0.0.1 by default, or 0.0.0.0 when remote
+ * access is enabled in settings (see bindHost).
  * @param port - desired port; pass 0 for an OS-assigned free port.
  */
 function start(port: string | number = process.env.PORT || 7777): Promise<{ server: Server; port: number; url: string }> {
   return new Promise((resolve, reject) => {
-    const server = app.listen(Number(port), '127.0.0.1', () => {
-      const actual = (server.address() as AddressInfo).port;
-      const url = `http://127.0.0.1:${actual}`;
-      // Tell the runner where the permission bridge should POST approval requests.
+    const server = app.listen(Number(port), bindHost(), () => {
+      httpServer = server;
+      listenPort = (server.address() as AddressInfo).port;
+      // The local URL is always localhost: the Electron window loads it and the
+      // permission bridge POSTs approvals to it. Even with remote access on, the
+      // MCP bridge runs on this same machine and must never call across the LAN.
+      const url = `http://127.0.0.1:${listenPort}`;
       runner.setBaseUrl(url);
-      resolve({ server, port: actual, url });
+      resolve({ server, port: listenPort, url });
       backfillRepoNames();
     });
     server.on('error', reject);
@@ -773,6 +1123,8 @@ function start(port: string | number = process.env.PORT || 7777): Promise<{ serv
 }
 
 export { app, start, runner, terminal };
+// Test-only exports for the remote-access gate (see tests/smoke.test.ts).
+export { authorizeRemote as _authorizeRemote, parseCookies as _parseCookies, lanAddresses as _lanAddresses };
 
 // When run directly (`node server/index.js` / `tsx server/index.ts`), boot as a
 // standalone server.
