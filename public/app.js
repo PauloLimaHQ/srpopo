@@ -6,11 +6,13 @@
   const state = {
     repos: [],
     tasks: new Map(), // id -> task
+    groomings: new Map(), // id -> grooming card (own lifecycle, Grooming column)
     openTaskId: null, // task shown in drawer
+    openGroomingId: null, // grooming card shown in drawer (mutually exclusive)
     addons: [],       // catalog of optional task behaviors (from /api/addons)
     personas: [],     // catalog of expert personas (from /api/personas)
     plugins: [],      // marketplace catalog (from /api/plugins)
-    settings: { notifications: true, sounds: true, maxParallelSessions: 3, installedPlugins: [] }, // user preferences (from /api/settings)
+    settings: { notifications: true, sounds: true, maxParallelSessions: 3, installedPlugins: [], remoteAccess: false, remoteAccessConfigured: false }, // user preferences (from /api/settings)
     filters: { search: '' }, // board filters (free-text only — repo scope comes from state.view)
     view: { mode: 'super' }, // { mode: 'super' } | { mode: 'workspace', repoId }
     prByTask: new Map(), // taskId -> 'loading' | { pr, reason } from /api/tasks/:id/pr
@@ -39,20 +41,24 @@
   // surfaces; running uses Claude's terracotta accent to match the theme.
   const COLUMNS = [
     { key: 'backlog', label: 'Backlog', dot: '#94897a' },
-    { key: 'grooming', label: 'Grooming', dot: '#c06fce' },
     { key: 'ready', label: 'Ready', dot: '#5b8cbe' },
     { key: 'running', label: 'Running', dot: '#d97757' },
     { key: 'review', label: 'Review', dot: '#8a78d6' },
     { key: 'done', label: 'Done', dot: '#5aa873' },
   ];
+  // The Grooming column is not a task column: it's rendered first, holds only
+  // grooming cards (their own draft/running/finished lifecycle), and is locked —
+  // nothing is ever dragged into or out of it.
+  const GROOMING_COLUMN = { key: 'grooming', label: 'Grooming', dot: '#c06fce' };
   // failed tasks are surfaced in the Review column with a FAILED badge
   const COLUMN_OF_STATUS = {
-    backlog: 'backlog', grooming: 'grooming', ready: 'ready', running: 'running',
+    backlog: 'backlog', ready: 'ready', running: 'running',
     review: 'review', failed: 'review', done: 'done',
   };
-  // Live states run a claude child process — cards can't be dragged/edited and
-  // show a spinner + stop button instead.
-  const isLive = (t) => t.status === 'running' || t.status === 'grooming';
+  // A live task runs a claude child process — its card can't be dragged/edited
+  // and shows a spinner + stop button instead.
+  const isLive = (t) => t.status === 'running';
+  const isGroomingLive = (g) => g.status === 'running';
 
   const $ = (sel) => document.querySelector(sel);
 
@@ -84,8 +90,32 @@
     setTimeout(() => el.remove(), 5000);
   }
 
+  // Persistent "update ready" banner (Electron only) — unlike toast() above it
+  // does not auto-dismiss; it stays until the user relaunches.
+  function showUpdateBanner(version) {
+    if ($('#update-banner')) return;
+    const el = document.createElement('div');
+    el.id = 'update-banner';
+    el.className = 'toast info update-banner';
+    el.innerHTML =
+      `${icon('rotate-cw')}` +
+      `<span>A new version of Sr. Popo is ready${version ? ` (v${esc(version)})` : ''} — Relaunch to update.</span>` +
+      `<button class="btn primary" id="update-banner-btn">Relaunch</button>`;
+    $('#toasts').appendChild(el);
+    $('#update-banner-btn').addEventListener('click', () => window.srpopo.restartToUpdate());
+  }
+
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  // Extra class for the model chip so each model gets its own color, tiered by
+  // cost (fable reads red — the most expensive). Matches both the short alias
+  // the user picked ("opus") and a resolved model id ("claude-opus-4-8").
+  const modelClass = (name) => {
+    const n = String(name || '').toLowerCase();
+    for (const m of ['fable', 'opus', 'sonnet', 'haiku']) if (n.includes(m)) return ` model-${m}`;
+    return '';
+  };
 
   // Small, dependency-free markdown → HTML for Claude's own chat text (headings,
   // lists, code fences/spans, bold/italic, links). Always escapes the source first
@@ -203,6 +233,20 @@
     return [...state.tasks.values()].filter((t) => t.repoId === repoId);
   }
 
+  // Grooming cards scoped to a workspace, same idea as tasksForRepo.
+  function groomingsForRepo(repoId) {
+    return [...state.groomings.values()].filter((g) => g.repoId === repoId);
+  }
+
+  function groomingMatchesFilters(g) {
+    const f = state.filters;
+    if (f.search) {
+      const hay = `${g.title} ${g.repoName} ${g.idea || ''}`.toLowerCase();
+      if (!hay.includes(f.search)) return false;
+    }
+    return true;
+  }
+
   function updateFilterMeta() {
     const all = tasksForRepo(state.view.repoId);
     const shown = all.filter(taskMatchesFilters).length;
@@ -220,6 +264,34 @@
     const board = $('#board');
     board.innerHTML = '';
     const repoTasks = tasksForRepo(state.view.repoId);
+    const repoGroomings = groomingsForRepo(state.view.repoId);
+
+    // Grooming leads the board. It's part of the process but has its own
+    // lifecycle, so the column is locked: no drag in, no drag out. Shown when
+    // the Idea Grooming plugin is installed, or when cards already exist (e.g.
+    // a Linear import, or cards from before the plugin was uninstalled).
+    if (pluginInstalled('grooming') || repoGroomings.length) {
+      const groomings = repoGroomings
+        .filter(groomingMatchesFilters)
+        .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+      const colEl = document.createElement('div');
+      colEl.className = 'column grooming-column';
+      colEl.dataset.col = GROOMING_COLUMN.key;
+      colEl.innerHTML = `
+        <div class="column-head">
+          <span class="dot" style="background:${GROOMING_COLUMN.dot}"></span>
+          ${GROOMING_COLUMN.label}
+          <span class="count">${groomings.length}</span>
+        </div>
+        <div class="column-body"></div>`;
+      const body = colEl.querySelector('.column-body');
+      if (!groomings.length) {
+        body.innerHTML = `<div class="column-empty">${filtersActive() ? 'no matches' : 'brief an idea to fill this'}</div>`;
+      }
+      for (const g of groomings) body.appendChild(renderGroomingCard(g));
+      board.appendChild(colEl);
+    }
+
     for (const col of COLUMNS) {
       const tasks = repoTasks
         .filter((t) => COLUMN_OF_STATUS[t.status] === col.key)
@@ -231,7 +303,8 @@
       // see runner.runningCount), so a user can tell at a glance why a dispatch
       // was rejected without opening Settings.
       const max = state.settings.maxParallelSessions;
-      const liveCount = [...state.tasks.values()].filter(isLive).length;
+      const liveCount = [...state.tasks.values()].filter(isLive).length +
+        [...state.groomings.values()].filter(isGroomingLive).length;
       const countLabel = col.key === 'running' && max ? `${liveCount}/${max}` : tasks.length;
 
       const colEl = document.createElement('div');
@@ -248,8 +321,7 @@
 
       if (!tasks.length) {
         const hint = filtersActive() ? 'no matches'
-          : col.key === 'running' ? 'drag a card here to dispatch'
-          : col.key === 'grooming' ? 'brief an idea to fill this' : 'empty';
+          : col.key === 'running' ? 'drag a card here to dispatch' : 'empty';
         body.innerHTML = `<div class="column-empty">${hint}</div>`;
       }
       for (const t of tasks) body.appendChild(renderCard(t));
@@ -330,23 +402,27 @@
   }
 
   // A dependency-free "graph": a stacked bar whose segments are proportional
-  // (via flex-grow) to a repo's task counts per column.
-  function workspaceGraphHtml(tasks) {
-    if (!tasks.length) return `<div class="workspace-graph empty"></div>`;
+  // (via flex-grow) to a repo's task counts per column (grooming cards lead).
+  function workspaceGraphHtml(tasks, groomings) {
+    if (!tasks.length && !groomings.length) return `<div class="workspace-graph empty"></div>`;
     const counts = new Map();
     for (const t of tasks) {
       const col = COLUMN_OF_STATUS[t.status];
       counts.set(col, (counts.get(col) || 0) + 1);
     }
-    const segs = COLUMNS.filter((c) => counts.get(c.key)).map((c) =>
-      `<span class="workspace-graph-seg" style="background:${c.dot};flex:${counts.get(c.key)} 0 0" title="${esc(c.label)}: ${counts.get(c.key)}"></span>`
-    ).join('');
+    const segs = [GROOMING_COLUMN, ...COLUMNS]
+      .map((c) => ({ c, n: c.key === 'grooming' ? groomings.length : counts.get(c.key) }))
+      .filter(({ n }) => n)
+      .map(({ c, n }) =>
+        `<span class="workspace-graph-seg" style="background:${c.dot};flex:${n} 0 0" title="${esc(c.label)}: ${n}"></span>`
+      ).join('');
     return `<div class="workspace-graph">${segs}</div>`;
   }
 
   function workspaceCardHtml(r) {
     const tasks = tasksForRepo(r.id);
-    const liveCount = tasks.filter(isLive).length;
+    const groomings = groomingsForRepo(r.id);
+    const liveCount = tasks.filter(isLive).length + groomings.filter(isGroomingLive).length;
     const branch = state.repoBranchByRepo.get(r.id);
     const wt = state.worktreesByRepo.get(r.id);
     const wtCount = Array.isArray(wt) ? wt.length : null;
@@ -356,7 +432,7 @@
           <span class="workspace-card-name">${esc(r.name)}</span>
           ${liveCount ? `<span class="chip running-badge"><span class="spinner"></span>${liveCount} live</span>` : ''}
         </div>
-        ${workspaceGraphHtml(tasks)}
+        ${workspaceGraphHtml(tasks, groomings)}
         <div class="workspace-card-foot">
           ${branch && branch !== 'loading' ? `<span class="chip">${icon('git-branch')} ${esc(branch)}</span>` : ''}
           <span class="chip">${wtCount == null ? '…' : wtCount} worktree${wtCount === 1 ? '' : 's'}</span>
@@ -402,7 +478,7 @@
     if (!Array.isArray(list)) { el.innerHTML = '<div class="muted">Loading…</div>'; return; }
     if (!list.length) { el.innerHTML = '<div class="muted">No live worktrees.</div>'; return; }
     el.innerHTML = list.map((w) => {
-      const live = w.taskId && (w.taskStatus === 'running' || w.taskStatus === 'grooming');
+      const live = w.taskId && w.taskStatus === 'running';
       return `
       <div class="worktree-row">
         <span class="worktree-dot ${w.dirty ? 'dirty' : 'clean'}" title="${w.dirty ? 'Uncommitted changes' : 'Clean'}"></span>
@@ -670,15 +746,16 @@
 
   function renderCard(t) {
     const el = document.createElement('div');
-    el.className = `card ${t.status === 'running' ? 'running' : ''} ${t.status === 'grooming' ? 'grooming' : ''} ${t.status === 'failed' ? 'failed' : ''}`;
+    el.className = `card ${t.status === 'running' ? 'running' : ''} ${t.status === 'failed' ? 'failed' : ''}`;
     el.draggable = !isLive(t);
     el.dataset.id = t.id;
 
+    const modelName = t.model === 'default' ? (t.resolvedModel || 'default') : t.model;
     const chips = [
       `<span class="chip repo">${esc(t.repoName)}</span>`,
-      `<span class="chip model">${esc(t.model === 'default' ? (t.resolvedModel || 'default') : t.model)}</span>`,
+      `<span class="chip model${modelClass(modelName)}">${esc(modelName)}</span>`,
     ];
-    if (t.status === 'grooming') chips.push(`<span class="chip grooming-chip" title="Grooming a rough idea into a task prompt">${icon('lightbulb')} grooming</span>`);
+    if (t.groomingId) chips.push(`<span class="chip grooming-chip" title="Spawned by a grooming">${icon('lightbulb')} groomed</span>`);
     if (t.useWorktree) chips.push(`<span class="chip worktree" title="${esc(t.worktreePath || 'worktree on dispatch')}">${icon('git-branch')} ${esc(t.branch || t.branchName || 'worktree')}</span>`);
     if (t.addons && t.addons.includes('pull_request')) chips.push(`<span class="chip addon-chip" title="Opens a pull request when finished">${icon('git-pull-request')} PR</span>`);
     if (t.addons && t.addons.includes('code_review')) chips.push(`<span class="chip addon-chip" title="Self code-reviews and fixes issues before finishing">${icon('search')} review</span>`);
@@ -702,7 +779,6 @@
       statusRow = `
         <div class="card-status">
           <span class="spinner"></span>
-          ${t.status === 'grooming' ? '<span class="live-label">grooming</span>' : ''}
           <span class="elapsed" data-start="${esc(t.startedAt)}">${elapsedSince(t.startedAt)}</span>
           <button class="btn icon danger card-stop" data-action="stop" title="Stop run" aria-label="Stop run">${icon('square')}</button>
         </div>`;
@@ -732,6 +808,76 @@
     return el;
   }
 
+  // Human labels for a grooming's target — where its spawned tasks land.
+  const GROOMING_TARGET_LABEL = { backlog: 'to backlog', ready: 'to ready', auto: 'auto' };
+
+  // A grooming card. Unlike task cards it never moves columns: its status only
+  // recolors it in place — draft (gray), running (purple), finished (green,
+  // with links to the tasks it spawned), failed (red badge).
+  function renderGroomingCard(g) {
+    const el = document.createElement('div');
+    el.className = `card groom groom-${g.status}`;
+    el.draggable = false;
+    el.dataset.id = g.id;
+
+    const chips = [
+      `<span class="chip model">${esc(g.model === 'default' ? (g.resolvedModel || 'default') : g.model)}</span>`,
+      `<span class="chip" title="Where spawned tasks land">${esc(GROOMING_TARGET_LABEL[g.target] || 'to backlog')}</span>`,
+    ];
+    if (g.status === 'draft') chips.push(`<span class="chip badge-draft">DRAFT</span>`);
+    if (g.status === 'finished') chips.push(`<span class="chip badge-groomed">${icon('circle-check')} GROOMED</span>`);
+    if (g.status === 'failed') chips.push(`<span class="chip badge-failed">FAILED</span>`);
+    if (g.lastOutcome === 'stopped') chips.push(`<span class="chip badge-stopped">stopped</span>`);
+    if (g.costUsd > 0) chips.push(`<span class="chip cost">$${g.costUsd.toFixed(2)}</span>`);
+
+    let statusRow = '';
+    if (isGroomingLive(g)) {
+      statusRow = `
+        <div class="card-status">
+          <span class="spinner"></span>
+          <span class="live-label">grooming</span>
+          <span class="elapsed" data-start="${esc(g.startedAt)}">${elapsedSince(g.startedAt)}</span>
+          <button class="btn icon danger card-stop" data-action="stop" title="Stop grooming" aria-label="Stop grooming">${icon('square')}</button>
+        </div>`;
+    }
+
+    // A finished grooming links straight to the tasks it spawned.
+    let taskLinks = '';
+    if (g.status === 'finished' && (g.taskIds || []).length) {
+      taskLinks = `<div class="groom-tasks">` + g.taskIds.map((id) => {
+        const t = state.tasks.get(id);
+        const label = t ? t.title : 'task (removed)';
+        const status = t ? t.status : '';
+        return `<button type="button" class="groom-task-link" data-task-link="${esc(id)}" ${t ? '' : 'disabled'}>
+            ${icon('chevron-right')} <span class="groom-task-title">${esc(label)}</span>${status ? `<span class="chip">${esc(status)}</span>` : ''}
+          </button>`;
+      }).join('') + `</div>`;
+    }
+
+    el.innerHTML = `
+      <div class="card-title">${esc(g.title)}</div>
+      <div class="card-chips">${chips.join('')}</div>
+      ${statusRow}
+      ${taskLinks}
+      ${g.status === 'failed' && g.lastError ? `<div class="card-error">${esc(g.lastError.slice(0, 140))}</div>` : ''}`;
+
+    el.addEventListener('click', (e) => {
+      if (e.target.closest('[data-action="stop"]')) { stopGrooming(g.id); return; }
+      const link = e.target.closest('[data-task-link]');
+      if (link && !link.disabled) { openDrawer(link.dataset.taskLink); return; }
+      openGroomingDrawer(g.id);
+    });
+    el.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      openGroomingContextMenu(g, e.clientX, e.clientY);
+    });
+    return el;
+  }
+
+  async function stopGrooming(id) {
+    try { await api('POST', `/api/groomings/${id}/stop`); } catch (e) { toast(e.message); }
+  }
+
   // Tick elapsed timers without re-rendering the whole board.
   setInterval(() => {
     document.querySelectorAll('.elapsed[data-start]').forEach((el) => {
@@ -742,8 +888,6 @@
   async function onDrop(taskId, colKey) {
     const t = state.tasks.get(taskId);
     if (!t || COLUMN_OF_STATUS[t.status] === colKey) return;
-    // Grooming is entered only via "Brief an Idea", never by dragging a card in.
-    if (colKey === 'grooming') return;
     try {
       if (colKey === 'running') {
         if (t.status === 'backlog' || t.status === 'ready') {
@@ -863,6 +1007,7 @@
 
   async function openDrawer(taskId) {
     state.openTaskId = taskId;
+    state.openGroomingId = null;
     $('#drawer').classList.remove('hidden');
     $('#drawer-overlay').classList.remove('hidden');
     $('#timeline').innerHTML = '<div class="ev-meta">loading session…</div>';
@@ -882,8 +1027,31 @@
     } catch (e) { toast(e.message); }
   }
 
+  // The same drawer, showing a grooming card: its idea, the read-only session's
+  // timeline, and (once finished) the tasks it spawned.
+  async function openGroomingDrawer(groomingId) {
+    state.openTaskId = null;
+    state.openGroomingId = groomingId;
+    $('#drawer').classList.remove('hidden');
+    $('#drawer-overlay').classList.remove('hidden');
+    $('#timeline').innerHTML = '<div class="ev-meta">loading session…</div>';
+    timeline.toolRows.clear();
+    timeline.subagents.clear();
+    renderPermissionPrompts(null);
+
+    try {
+      const { grooming, events } = await api('GET', `/api/groomings/${groomingId}/logs`);
+      state.groomings.set(grooming.id, grooming);
+      renderGroomingDrawerHead(grooming);
+      $('#timeline').innerHTML = events.length ? '' : '<div class="ev-meta">not groomed yet — run it to start the session</div>';
+      for (const ev of events) appendEvent(ev);
+      scrollTimeline();
+    } catch (e) { toast(e.message); }
+  }
+
   function closeDrawer() {
     state.openTaskId = null;
+    state.openGroomingId = null;
     $('#drawer').classList.add('hidden');
     $('#drawer-overlay').classList.add('hidden');
     renderPermissionPrompts(null);
@@ -1009,13 +1177,49 @@
     return actions;
   }
 
+  // The per-grooming action set shared by the drawer's action row and the
+  // card's right-click menu — mirrors taskCoreActions for grooming cards.
+  function groomingCoreActions(g) {
+    const actions = [];
+    if (isGroomingLive(g)) {
+      actions.push({ id: 'stop', label: 'Stop', icon: 'square', cls: 'danger',
+        run: () => api('POST', `/api/groomings/${g.id}/stop`) });
+      return actions;
+    }
+    if (g.status === 'draft' || g.status === 'failed') {
+      actions.push({ id: 'groom', label: 'Groom', icon: 'sparkles', cls: 'primary',
+        run: () => api('POST', `/api/groomings/${g.id}/run`) });
+      actions.push({ id: 'edit', label: 'Edit', icon: 'pencil', cls: 'ghost',
+        run: () => { openBriefModal(g); } });
+    }
+    actions.push({ id: 'archive', label: 'Archive', cls: 'ghost',
+      run: async () => {
+        await api('POST', `/api/groomings/${g.id}/archive`);
+        if (state.openGroomingId === g.id) closeDrawer();
+      } });
+    actions.push({ id: 'delete', label: 'Delete', icon: 'trash', cls: 'ghost danger',
+      run: async () => {
+        if (!confirm(`Delete grooming “${g.title}”?\n\nThis removes the card and its session log. Tasks it spawned are kept.`)) return;
+        await api('DELETE', `/api/groomings/${g.id}`);
+        if (state.openGroomingId === g.id) closeDrawer();
+      } });
+    return actions;
+  }
+
   // ---------- card context menu ----------
   function closeContextMenu() {
     $('#context-menu').classList.add('hidden');
   }
 
   function openContextMenu(t, x, y) {
-    const actions = taskContextMenuActions(t);
+    showContextMenu(taskContextMenuActions(t), x, y);
+  }
+
+  function openGroomingContextMenu(g, x, y) {
+    showContextMenu(groomingCoreActions(g), x, y);
+  }
+
+  function showContextMenu(actions, x, y) {
     const menu = $('#context-menu');
     menu.innerHTML = actions.map((a) =>
       `<button class="context-menu-item${a.cls && a.cls.includes('danger') ? ' danger' : ''}" data-act="${a.id}"${a.title ? ` title="${esc(a.title)}"` : ''}>${a.icon ? icon(a.icon) : ''}<span>${esc(a.label)}</span></button>`
@@ -1050,7 +1254,7 @@
     $('#drawer-title').textContent = t.title;
     const meta = [
       `<span class="chip repo">${esc(t.repoName)}</span>`,
-      `<span class="chip model">${esc(t.resolvedModel || t.model)}</span>`,
+      `<span class="chip model${modelClass(t.resolvedModel || t.model)}">${esc(t.resolvedModel || t.model)}</span>`,
       `<span class="chip">${esc(t.permissionMode)}</span>`,
     ];
     if (t.promptPermissions) meta.push(`<span class="chip" title="Asks you to approve otherwise-denied tools">${icon('shield')} asks</span>`);
@@ -1075,13 +1279,13 @@
       if (e.target.closest('[data-act="refresh-pr"]')) { e.preventDefault(); refreshPr(t.id, true); }
     };
 
-    // The prompt block — always visible, even for a task that never ran. Briefed
-    // tasks show the original idea and, once groomed, the resulting prompt too.
+    // The prompt block — always visible, even for a task that never ran. Tasks
+    // spawned by a grooming show the original idea and the resulting prompt.
     const promptEl = $('#drawer-prompt');
+    promptEl.onclick = null; // drop any grooming task-link handler left behind
     const blocks = [];
     if (t.brief) {
-      const ideaTag = t.status === 'grooming' ? 'IDEA — GROOMING…' : 'IDEA';
-      blocks.push(`<div class="tag">${ideaTag}</div><div class="drawer-prompt-body">${esc(t.brief)}</div>`);
+      blocks.push(`<div class="tag">IDEA</div><div class="drawer-prompt-body">${esc(t.brief)}</div>`);
       if (t.prompt && t.prompt !== t.brief) {
         blocks.push(`<div class="tag">GROOMED PROMPT</div><div class="drawer-prompt-body">${esc(t.prompt)}</div>`);
       }
@@ -1112,8 +1316,65 @@
     $('#followup-input').disabled = !canFollowup;
     $('#followup-send').disabled = !canFollowup;
     $('#followup-input').placeholder = isLive(t)
-      ? (t.status === 'grooming' ? 'Grooming the idea…' : 'Task is running…')
+      ? 'Task is running…'
       : t.sessionId ? 'Send a follow-up to this session…' : 'Run the task first to start a session';
+  }
+
+  // Drawer head for a grooming card: status + idea, actions from
+  // groomingCoreActions, and (once finished) links to the spawned tasks. The
+  // follow-up composer stays disabled — grooming sessions are never resumed.
+  function renderGroomingDrawerHead(g) {
+    $('#drawer-title').textContent = g.title;
+    const statusLabel = { draft: 'draft', running: 'grooming…', finished: 'groomed', failed: 'failed' }[g.status] || g.status;
+    const meta = [
+      `<span class="chip repo">${esc(g.repoName)}</span>`,
+      `<span class="chip model">${esc(g.resolvedModel || g.model)}</span>`,
+      `<span class="chip groom-status groom-status-${esc(g.status)}">${esc(statusLabel)}</span>`,
+      `<span class="chip" title="Where spawned tasks land">${esc(GROOMING_TARGET_LABEL[g.target] || 'to backlog')}</span>`,
+    ];
+    if (g.linearIssue && g.linearIssue.identifier) {
+      meta.push(`<a class="chip linear-chip" href="${esc(g.linearIssue.url)}" target="_blank" rel="noopener" title="Open in Linear">${icon('linear')} ${esc(g.linearIssue.identifier)}</a>`);
+    }
+    if (g.costUsd > 0) meta.push(`<span class="chip cost">$${g.costUsd.toFixed(2)} total</span>`);
+    if (g.numTurns != null) meta.push(`<span class="chip">${g.numTurns} turns</span>`);
+    $('#drawer-meta').innerHTML = meta.join('');
+    $('#drawer-meta').onclick = null;
+
+    const promptEl = $('#drawer-prompt');
+    const blocks = [`<div class="tag">IDEA</div><div class="drawer-prompt-body">${esc(g.idea)}</div>`];
+    if (g.status === 'finished' && (g.taskIds || []).length) {
+      const links = g.taskIds.map((id) => {
+        const t = state.tasks.get(id);
+        return `<button type="button" class="groom-task-link" data-task-link="${esc(id)}" ${t ? '' : 'disabled'}>
+            ${icon('chevron-right')} <span class="groom-task-title">${esc(t ? t.title : 'task (removed)')}</span>${t ? `<span class="chip">${esc(t.status)}</span>` : ''}
+          </button>`;
+      }).join('');
+      blocks.push(`<div class="tag">GROOMED TASKS</div><div class="groom-tasks">${links}</div>`);
+    }
+    promptEl.classList.remove('hidden');
+    promptEl.innerHTML = blocks.join('');
+    promptEl.onclick = (e) => {
+      const link = e.target.closest('[data-task-link]');
+      if (link && !link.disabled) openDrawer(link.dataset.taskLink);
+    };
+
+    const actions = groomingCoreActions(g);
+    const box = $('#drawer-actions');
+    box.innerHTML = actions.map((a) =>
+      `<button class="btn ${a.cls}" data-act="${a.id}">${a.icon ? icon(a.icon) + ' ' : ''}${esc(a.label)}</button>`
+    ).join('');
+    box.onclick = async (e) => {
+      const act = e.target.closest('[data-act]')?.dataset.act;
+      const action = actions.find((a) => a.id === act);
+      if (!action) return;
+      try { await action.run(); } catch (err) { toast(err.message); }
+    };
+
+    $('#followup-input').disabled = true;
+    $('#followup-send').disabled = true;
+    $('#followup-input').placeholder = isGroomingLive(g)
+      ? 'Grooming the idea…'
+      : 'Grooming sessions run once and are never resumed';
   }
 
   // ---------- GitHub PR chip ----------
@@ -1806,39 +2067,70 @@
       : '<option value="">No repos yet — add one first</option>';
   }
 
-  function openBriefModal() {
+  // null => new grooming; a grooming card => edit that draft (or failed card).
+  let briefEditingId = null;
+
+  function openBriefModal(grooming = null) {
+    // Guard: the header button passes its click event here — treat it as "new".
+    if (!grooming || !grooming.id) grooming = null;
+    briefEditingId = grooming ? grooming.id : null;
     refreshBriefRepoSelect();
     const last = loadLastUsed();
-    $('#brief-text').value = '';
-    $('#brief-branch').value = '';
-    $('#brief-model').value = last.model || 'default';
-    if (currentWorkspaceRepoId()) $('#brief-repo').value = currentWorkspaceRepoId();
+    $('#brief-text').value = grooming ? grooming.idea : '';
+    $('#brief-branch').value = grooming ? (grooming.branchName || '') : '';
+    $('#brief-target').value = grooming ? (grooming.target || 'backlog') : 'backlog';
+    $('#brief-model').value = grooming ? (grooming.model || 'default') : (last.model || 'default');
+    // The repo is fixed once the card exists — hide the picker in edit mode.
+    $('#brief-repo-field').classList.toggle('hidden', !!grooming);
+    if (grooming) $('#brief-repo').value = grooming.repoId;
+    else if (currentWorkspaceRepoId()) $('#brief-repo').value = currentWorkspaceRepoId();
     else if (last.repoId && state.repos.some((r) => r.id === last.repoId)) $('#brief-repo').value = last.repoId;
     refreshRepoBranchHint($('#brief-repo').value, $('#brief-repo-branch'));
+    $('#brief-modal-title').innerHTML = `${icon('lightbulb')}${grooming ? 'Edit Draft' : 'Brief an Idea'}`;
+    $('#brief-draft').textContent = grooming ? 'Save Draft' : 'Save as Draft';
     $('#modal-brief').classList.remove('hidden');
     $('#brief-text').focus();
   }
 
-  async function submitBrief() {
-    const brief = $('#brief-text').value.trim();
+  // Create (or update) a grooming card. `run` starts the read-only session
+  // right away; otherwise the card stays parked in the Grooming column as a
+  // gray draft to groom later.
+  async function submitBrief(run) {
+    const idea = $('#brief-text').value.trim();
     const repoId = $('#brief-repo').value;
-    if (!brief) { toast('Describe your idea first'); return; }
-    if (!repoId) { toast('Add a repository first'); return; }
+    if (!idea) { toast('Describe your idea first'); return; }
+    if (!briefEditingId && !repoId) { toast('Add a repository first'); return; }
+    const fields = {
+      idea,
+      model: $('#brief-model').value,
+      branchName: $('#brief-branch').value.trim(),
+      target: $('#brief-target').value,
+    };
     try {
-      const task = await api('POST', '/api/briefs', {
-        brief, repoId, model: $('#brief-model').value, branchName: $('#brief-branch').value.trim(),
-      });
+      let grooming;
+      if (briefEditingId) {
+        grooming = await api('PATCH', `/api/groomings/${briefEditingId}`, fields);
+        if (run) grooming = await api('POST', `/api/groomings/${grooming.id}/run`);
+      } else {
+        grooming = await api('POST', '/api/groomings', { ...fields, repoId, run: !!run });
+      }
+      state.groomings.set(grooming.id, grooming);
       $('#modal-brief').classList.add('hidden');
-      toast('Grooming your idea into a task…', 'info');
-      openDrawer(task.id);
+      briefEditingId = null;
+      renderBoard();
+      if (run) {
+        toast('Grooming your idea into tasks…', 'info');
+        openGroomingDrawer(grooming.id);
+      }
     } catch (e) { toast(e.message); }
   }
 
-  $('#btn-brief').addEventListener('click', openBriefModal);
+  $('#btn-brief').addEventListener('click', () => openBriefModal());
   $('#brief-cancel').addEventListener('click', () => $('#modal-brief').classList.add('hidden'));
-  $('#brief-submit').addEventListener('click', submitBrief);
+  $('#brief-submit').addEventListener('click', () => submitBrief(true));
+  $('#brief-draft').addEventListener('click', () => submitBrief(false));
   $('#brief-text').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submitBrief();
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submitBrief(true);
   });
   $('#brief-add-repo').addEventListener('click', () => {
     $('#modal-brief').classList.add('hidden');
@@ -1930,12 +2222,14 @@
     if (!repoId) { toast('Add a repository first'); return; }
     if (!issueId) { toast('Paste an issue ID or pick one from the list'); return; }
     try {
-      const task = await api('POST', '/api/linear/briefs', {
+      const grooming = await api('POST', '/api/linear/briefs', {
         issueId, repoId, model: $('#linear-model').value, branchName: $('#linear-branch').value.trim(),
       });
+      state.groomings.set(grooming.id, grooming);
       $('#modal-linear').classList.add('hidden');
+      renderBoard();
       toast('Importing the Linear issue…', 'info');
-      openDrawer(task.id);
+      openGroomingDrawer(grooming.id);
     } catch (e) { toast(e.message); }
   }
 
@@ -2048,20 +2342,16 @@
     }
   }
 
-  const LIVE_STATUSES = new Set(['running', 'grooming']);
-  // Browser fallback: notify when a task leaves a live state (finished/failed/
-  // groomed). Under Electron the shell handles this natively, so skip it here.
+  // Browser fallback: notify when a task leaves the running state (finished/
+  // failed). Under Electron the shell handles this natively, so skip it here.
   function maybeNotifyBrowser(prev, task) {
     if (isElectron || !notificationsOn()) return;
-    if (!prev || !LIVE_STATUSES.has(prev.status) || LIVE_STATUSES.has(task.status)) return;
+    if (!prev || prev.status !== 'running' || task.status === 'running') return;
     if (task.lastOutcome === 'stopped') return;
     let title, body;
     if (task.status === 'failed') {
       title = `Task failed — ${task.title}`;
       body = task.lastError ? String(task.lastError).slice(0, 140) : task.repoName;
-    } else if (task.lastOutcome === 'groomed') {
-      title = `Idea groomed — ${task.title}`;
-      body = `${task.repoName} · ready to run`;
     } else {
       title = `Task finished — ${task.title}`;
       body = task.repoName;
@@ -2069,12 +2359,35 @@
     showBrowserNotification(title, { body, tag: `srpopo-${task.id}` });
   }
 
-  // Play a cue when a task leaves a live state — in both browser and Electron
-  // (unlike notifications, the tray shell doesn't sound these itself).
+  // Play a cue when a task leaves the running state — in both browser and
+  // Electron (unlike notifications, the tray shell doesn't sound these itself).
   function maybePlayTaskSound(prev, task) {
-    if (!prev || !LIVE_STATUSES.has(prev.status) || LIVE_STATUSES.has(task.status)) return;
-    if (task.lastOutcome === 'stopped' || task.lastOutcome === 'groomed') return;
+    if (!prev || prev.status !== 'running' || task.status === 'running') return;
+    if (task.lastOutcome === 'stopped') return;
     playSound(task.status === 'failed' ? 'failed' : 'finish');
+  }
+
+  // Same pair for grooming cards leaving their running state.
+  function maybeNotifyGroomingBrowser(prev, g) {
+    if (isElectron || !notificationsOn()) return;
+    if (!prev || prev.status !== 'running' || g.status === 'running') return;
+    if (g.lastOutcome === 'stopped') return;
+    let title, body;
+    if (g.status === 'failed') {
+      title = `Grooming failed — ${g.title}`;
+      body = g.lastError ? String(g.lastError).slice(0, 140) : g.repoName;
+    } else {
+      const n = (g.taskIds || []).length;
+      title = `Idea groomed — ${g.title}`;
+      body = `${g.repoName} · ${n} task${n === 1 ? '' : 's'} created`;
+    }
+    showBrowserNotification(title, { body, tag: `srpopo-${g.id}` });
+  }
+
+  function maybePlayGroomingSound(prev, g) {
+    if (!prev || prev.status !== 'running' || g.status === 'running') return;
+    if (g.lastOutcome === 'stopped') return;
+    playSound(g.status === 'failed' ? 'failed' : 'finish');
   }
 
   function updateNotifNote() {
@@ -2093,8 +2406,10 @@
   const pluginInstalled = (id) => installedPluginIds().includes(id);
 
   // Show/hide plugin-gated UI on the board. A plugin's features only surface once
-  // it's installed — the "From Linear" header button and the Autonomous control.
+  // it's installed — the "Brief an Idea" / "From Linear" header buttons and the
+  // Autonomous control. (The Grooming column itself is gated in renderBoard.)
   function renderPluginState() {
+    $('#btn-brief').classList.toggle('hidden', !pluginInstalled('grooming'));
     $('#btn-linear').classList.toggle('hidden', !pluginInstalled('linear'));
     renderAutonomous();
   }
@@ -2139,7 +2454,11 @@
     const done = (sess.tasks || []).filter((t) => t.status === 'done').length;
     const chips = live.map((t) =>
       `<span class="chip">${icon('loader')} ${esc(t.title)}</span>`).join('');
-    const state_ = sess.stopping ? 'Stopping — letting in-flight runs finish' : 'Running';
+    const state_ = sess.stopping
+      ? 'Stopping — letting in-flight runs finish'
+      : live.length === 0
+        ? 'Standing by — waiting for Ready tasks'
+        : 'Running';
     banner.innerHTML = `
       <span class="autonomous-banner-head">
         <span class="autonomous-pulse"></span>${icon('bot')} Autonomous Mode
@@ -2420,6 +2739,7 @@
     updateNotifNote();
     $('#setting-max-parallel').value = state.settings.maxParallelSessions || 3;
     renderPlugins();
+    renderRemoteAccess();
     showSettingsSection(typeof section === 'string' ? section : 'general');
     $('#modal-settings').classList.remove('hidden');
   }
@@ -2454,6 +2774,95 @@
     e.target.value = n;
     await saveSettings({ maxParallelSessions: n });
     renderBoard();
+  });
+
+  // ---------- remote access (LAN) ----------
+  const remoteAccessOn = () => !!state.settings.remoteAccess;
+
+  // Fetch the raw token + pairing URL(s) from the localhost-only endpoint. A
+  // browser that reached us over the LAN gets a 403 → returns null (it doesn't
+  // need the pairing info; it's already paired). Toggling remote access on
+  // re-binds the server, briefly dropping connections, so a transient failure is
+  // retried a couple of times before giving up.
+  async function fetchRemoteInfo() {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const res = await fetch('/api/remote-access');
+        if (res.status === 403) return null; // remote (already-paired) client
+        if (!res.ok) throw new Error(`status ${res.status}`);
+        return await res.json();
+      } catch (e) {
+        if (attempt === 2) throw e;
+        await new Promise((r) => setTimeout(r, 400)); // ride out the re-bind window
+      }
+    }
+    return null;
+  }
+
+  // Reflect the current toggle state, then — when enabled — render the token +
+  // pairing URL(s). The secret never rides in state.settings (it's not in
+  // publicSettings), so we ask for it here on demand.
+  async function renderRemoteAccess() {
+    const on = remoteAccessOn();
+    $('#setting-remote-access').checked = on;
+    $('#remote-warning').classList.toggle('hidden', !on);
+    const pairing = $('#remote-pairing');
+    pairing.classList.toggle('hidden', !on);
+    if (!on) return;
+    let info;
+    try {
+      info = await fetchRemoteInfo();
+    } catch {
+      pairing.classList.add('hidden');
+      return;
+    }
+    if (!info) { pairing.classList.add('hidden'); return; } // remote client
+    const urlsBox = $('#remote-urls');
+    const noLan = $('#remote-no-lan');
+    const urls = Array.isArray(info.urls) ? info.urls : (info.url ? [info.url] : []);
+    if (!urls.length) {
+      urlsBox.innerHTML = '';
+      noLan.textContent = 'No local network address was found. Connect this machine to Wi-Fi or a LAN, then reopen this pane.';
+      noLan.classList.remove('hidden');
+      return;
+    }
+    noLan.classList.add('hidden');
+    urlsBox.innerHTML = urls.map((u) => `
+      <div class="remote-url">
+        <code>${esc(u)}</code>
+        <button class="btn ghost icon remote-copy" data-url="${esc(u)}" title="Copy link" aria-label="Copy link">${icon('copy')}</button>
+      </div>`).join('');
+  }
+
+  $('#setting-remote-access').addEventListener('change', async (e) => {
+    const enabled = e.target.checked;
+    if (enabled && !confirm(
+      'Enable remote access?\n\nSr. Popo will be reachable from other devices on your ' +
+      'local network. Anyone with the link and token can control your tasks and repos. ' +
+      'Only do this on a network you trust.')) {
+      e.target.checked = false;
+      return;
+    }
+    await saveSettings({ remoteAccess: enabled });
+    await renderRemoteAccess();
+  });
+
+  $('#remote-regen').addEventListener('click', async () => {
+    if (!confirm('Regenerate the access token? Every currently-paired device will be signed out.')) return;
+    await saveSettings({ regenerateRemoteToken: true });
+    await renderRemoteAccess();
+    toast('Access token regenerated', 'info');
+  });
+
+  $('#remote-urls').addEventListener('click', async (e) => {
+    const btn = e.target.closest('.remote-copy');
+    if (!btn) return;
+    try {
+      await navigator.clipboard.writeText(btn.dataset.url);
+      toast('Link copied', 'info');
+    } catch {
+      toast('Could not copy — select and copy the link manually');
+    }
   });
 
   // ---------- repos modal ----------
@@ -2532,8 +2941,13 @@
   function paletteCommands() {
     return [
       { label: 'New Task', hint: 'Start a task from scratch', icon: 'plus', kbd: `${MOD}N`, run: () => openTaskModal() },
-      { label: 'Brief an Idea', hint: 'Groom a rough idea into a task', icon: 'lightbulb', run: () => openBriefModal() },
-      { label: 'Create Task from Linear', hint: 'Import an assigned issue', icon: 'linear', run: () => openLinearModal() },
+      // Plugin-gated commands surface only when their plugin is installed.
+      ...(pluginInstalled('grooming')
+        ? [{ label: 'Brief an Idea', hint: 'Groom a rough idea into tasks', icon: 'lightbulb', run: () => openBriefModal() }]
+        : []),
+      ...(pluginInstalled('linear')
+        ? [{ label: 'Create Task from Linear', hint: 'Import an assigned issue', icon: 'linear', run: () => openLinearModal() }]
+        : []),
       { label: 'Repositories', hint: 'Add or manage repos', icon: 'folder', run: () => openReposModal() },
       { label: 'Super View', hint: 'Back to the all-workspaces home screen', icon: 'arrow-left', run: () => exitWorkspace() },
       { label: 'Settings', hint: 'Notifications, sounds, Linear key', icon: 'settings', kbd: `${MOD},`, run: () => openSettingsModal() },
@@ -2710,7 +3124,11 @@
     window.srpopo.onMenuAction((action) => {
       switch (action) {
         case 'new-task': if (!modalOpen()) openTaskModal(); break;
-        case 'brief-idea': if (!modalOpen()) openBriefModal(); break;
+        case 'brief-idea':
+          if (modalOpen()) break;
+          if (pluginInstalled('grooming')) openBriefModal();
+          else toast('Install the Idea Grooming plugin (Settings → Plugins) first', 'info');
+          break;
         case 'repos': if (!modalOpen()) openReposModal(); break;
         case 'settings': if ($('#modal-settings').classList.contains('hidden')) openSettingsModal(); break;
         case 'palette': if (!modalOpen()) openPalette(); break;
@@ -2719,6 +3137,14 @@
         case 'toggle-theme': $('#btn-theme').click(); break;
       }
     });
+  }
+
+  // ---------- auto-update (Electron) ----------
+  // The main process downloads updates in the background (electron-updater)
+  // and tells us here once one is ready — never auto-restart without the user
+  // clicking Relaunch.
+  if (isElectron && window.srpopo.onUpdateReady) {
+    window.srpopo.onUpdateReady((version) => showUpdateBanner(version));
   }
 
   // ---------- drawer close ----------
@@ -2743,6 +3169,12 @@
         state.tasks.set(msg.task.id, msg.task);
         renderBoard();
         if (state.openTaskId === msg.task.id) renderDrawerHead(msg.task);
+        // Keep the open grooming drawer's spawned-task links (their status
+        // chips) in sync when one of its tasks changes.
+        if (state.openGroomingId && msg.task.groomingId === state.openGroomingId) {
+          const g = state.groomings.get(state.openGroomingId);
+          if (g) renderGroomingDrawerHead(g);
+        }
         maybeNotifyBrowser(prev, msg.task);
         maybePlayTaskSound(prev, msg.task);
       } else if (msg.type === 'settings') {
@@ -2754,11 +3186,23 @@
           $('#setting-max-parallel').value = state.settings.maxParallelSessions || 3;
           updateNotifNote();
           renderPlugins();
+          renderRemoteAccess();
         }
         if (!$('#modal-linear').classList.contains('hidden')) renderLinearConfigState();
         renderBoard();
       } else if (msg.type === 'task-removed') {
         state.tasks.delete(msg.taskId);
+        renderBoard();
+      } else if (msg.type === 'grooming') {
+        const prev = state.groomings.get(msg.grooming.id);
+        state.groomings.set(msg.grooming.id, msg.grooming);
+        renderBoard();
+        if (state.openGroomingId === msg.grooming.id) renderGroomingDrawerHead(msg.grooming);
+        maybeNotifyGroomingBrowser(prev, msg.grooming);
+        maybePlayGroomingSound(prev, msg.grooming);
+      } else if (msg.type === 'grooming-removed') {
+        state.groomings.delete(msg.groomingId);
+        if (state.openGroomingId === msg.groomingId) closeDrawer();
         renderBoard();
       } else if (msg.type === 'repos') {
         state.repos = msg.repos;
@@ -2769,7 +3213,7 @@
         // Fall back to the Super View if the workspace's own repo was just removed.
         if (state.view.mode === 'workspace' && !state.repos.some((r) => r.id === state.view.repoId)) exitWorkspace();
         else renderView();
-      } else if (msg.type === 'log' && msg.taskId === state.openTaskId) {
+      } else if (msg.type === 'log' && (msg.taskId === state.openTaskId || msg.taskId === state.openGroomingId)) {
         appendEvent(msg.event);
       } else if (msg.type === 'permission') {
         applyPermissionEvent(msg);
@@ -2833,9 +3277,10 @@
   // ---------- boot ----------
   async function boot() {
     try {
-      const { repos, tasks, settings, autonomous } = await api('GET', '/api/state');
+      const { repos, tasks, groomings, settings, autonomous } = await api('GET', '/api/state');
       state.repos = repos;
       state.tasks = new Map(tasks.map((t) => [t.id, t]));
+      state.groomings = new Map((groomings || []).map((g) => [g.id, g]));
       state.autonomous = autonomous || null;
       // Seed live tool-approval prompts, then drop the transient field off the task.
       state.permissions = new Map();

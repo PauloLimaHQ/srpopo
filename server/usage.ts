@@ -12,7 +12,20 @@
  * user isn't actually billed per token.
  */
 import * as store from './store';
-import type { ModelUsageStat, Task, UsageEntry, UsageSummary } from './types';
+import type { Grooming, ModelUsageStat, Task, UsageEntry, UsageSummary } from './types';
+
+// The subset of Task/Grooming fields a ledger row needs. Both lifecycles carry
+// all of these, so entriesFromResult doesn't need to know which one it's
+// looking at — only applyResult/applyGroomResult (which also decide whether to
+// accumulate a per-model breakdown onto the record) do.
+interface UsageSource {
+  id: string;
+  title: string;
+  repoId: string;
+  repoName: string;
+  model: string;
+  resolvedModel: string | null;
+}
 
 function emptyStat(): ModelUsageStat {
   return { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUsd: 0 };
@@ -22,16 +35,15 @@ function emptyStat(): ModelUsageStat {
 // versions report `modelUsage` (a model -> {inputTokens,outputTokens,...,costUSD}
 // map, since a run's subagents can use a different model than the main turn);
 // older/edge-case events without it fall back to a single row against the
-// task's resolved model so the run still counts.
-function entriesFromResult(task: Task, event: Record<string, unknown>): UsageEntry[] {
+// source's resolved model so the run still counts.
+function entriesFromResult(source: UsageSource, kind: UsageEntry['kind'], event: Record<string, unknown>): UsageEntry[] {
   const ts = (typeof event.ts === 'string' && event.ts) || store.now();
-  const kind: UsageEntry['kind'] = task.status === 'grooming' ? 'groom' : 'run';
   const base = {
     ts,
-    taskId: task.id,
-    taskTitle: task.title,
-    repoId: task.repoId,
-    repoName: task.repoName,
+    taskId: source.id,
+    taskTitle: source.title,
+    repoId: source.repoId,
+    repoName: source.repoName,
     kind,
     durationMs: Number(event.duration_ms) || 0,
     numTurns: Number(event.num_turns) || 0,
@@ -53,7 +65,7 @@ function entriesFromResult(task: Task, event: Record<string, unknown>): UsageEnt
   const usage = (event.usage as Record<string, number>) || {};
   return [{
     ...base,
-    model: task.resolvedModel || task.model || 'unknown',
+    model: source.resolvedModel || source.model || 'unknown',
     costUsd: Number(event.total_cost_usd) || 0,
     inputTokens: Number(usage.input_tokens) || 0,
     outputTokens: Number(usage.output_tokens) || 0,
@@ -63,7 +75,9 @@ function entriesFromResult(task: Task, event: Record<string, unknown>): UsageEnt
 }
 
 // Folds ledger rows into a task's cumulative per-model breakdown — mirrors how
-// runner.ts already accumulates task.costUsd across runs/resumes.
+// runner.ts already accumulates task.costUsd across runs/resumes. Grooming
+// cards have no such field (their spend is still fully captured in the
+// ledger; there is just nothing on the card itself to accumulate onto).
 function accumulate(task: Task, entries: UsageEntry[]): void {
   task.modelUsage = task.modelUsage || {};
   for (const e of entries) {
@@ -77,20 +91,29 @@ function accumulate(task: Task, entries: UsageEntry[]): void {
   }
 }
 
-// Called from runner.ts's `result` handler for every live run. Extends the
-// task with a per-model cumulative breakdown and appends one immutable ledger
-// row per model to data/usage.ndjson.
+// Called from runner.ts's `result` handler for every live dispatched run.
+// Extends the task with a per-model cumulative breakdown and appends one
+// immutable ledger row per model to data/usage.ndjson.
 function applyResult(task: Task, event: Record<string, unknown>): void {
-  const entries = entriesFromResult(task, event);
+  const entries = entriesFromResult(task, 'run', event);
   accumulate(task, entries);
   for (const e of entries) store.appendUsage(e);
 }
 
-// One-time migration for tasks that ran before this ledger existed: replay
-// every task's own NDJSON session log (store.appendLog keeps the raw
-// stream-json events forever) and rebuild ledger rows + task.modelUsage from
-// their `result` events. Guarded by the ledger file's existence, so this scans
-// at most once per install no matter how many times the server boots.
+// Called from runner.ts's `result` handler for every live grooming run. Same
+// ledger bookkeeping as applyResult, but grooming cards have no modelUsage
+// field to accumulate onto (see accumulate's comment above).
+function applyGroomResult(grooming: Grooming, event: Record<string, unknown>): void {
+  const entries = entriesFromResult(grooming, 'groom', event);
+  for (const e of entries) store.appendUsage(e);
+}
+
+// One-time migration for tasks/groomings that ran before this ledger existed:
+// replay every record's own NDJSON session log (store.appendLog keeps the raw
+// stream-json events forever, keyed by the same id for both lifecycles) and
+// rebuild ledger rows (+ task.modelUsage) from their `result` events. Guarded
+// by the ledger file's existence, so this scans at most once per install no
+// matter how many times the server boots.
 function backfillIfNeeded(): void {
   if (store.usageLogExists()) return;
   let touched = false;
@@ -98,9 +121,18 @@ function backfillIfNeeded(): void {
     const events = store.readLog(task.id) as Record<string, unknown>[];
     for (const event of events) {
       if (event && event.type === 'result') {
-        const entries = entriesFromResult(task, event);
+        const entries = entriesFromResult(task, 'run', event);
         accumulate(task, entries);
         for (const e of entries) store.appendUsage(e);
+        touched = true;
+      }
+    }
+  }
+  for (const grooming of store.db.groomings) {
+    const events = store.readLog(grooming.id) as Record<string, unknown>[];
+    for (const event of events) {
+      if (event && event.type === 'result') {
+        for (const e of entriesFromResult(grooming, 'groom', event)) store.appendUsage(e);
         touched = true;
       }
     }
@@ -211,4 +243,4 @@ function computeSummary(opts: { period?: string; repoId?: string } = {}): UsageS
 // since it's a no-op once the ledger file exists.
 backfillIfNeeded();
 
-export { applyResult, computeSummary, backfillIfNeeded };
+export { applyResult, applyGroomResult, computeSummary, backfillIfNeeded };

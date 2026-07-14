@@ -383,8 +383,31 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
 .card:active { cursor: grabbing; }
 .card.dragging { opacity: .4; }
 .card.running { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-.card.grooming { border-color: var(--groom); box-shadow: 0 0 0 3px var(--groom-soft); }
 .card.failed { border-color: var(--red-soft); }
+
+/* Grooming cards never move columns — their status only recolors them in
+   place: draft (gray), running (purple), finished (green), failed (red). */
+.card.groom { cursor: pointer; }
+.card.groom-draft { border-color: var(--border); opacity: .85; }
+.card.groom-running { border-color: var(--groom); box-shadow: 0 0 0 3px var(--groom-soft); }
+.card.groom-finished { border-color: var(--green); box-shadow: 0 0 0 2px var(--green-soft); }
+.card.groom-failed { border-color: var(--red-soft); }
+.chip.badge-draft { color: var(--text-dim); font-weight: 700; letter-spacing: .5px; }
+.chip.badge-groomed { color: var(--green); border-color: var(--green-soft); font-weight: 700; display: inline-flex; align-items: center; gap: 4px; }
+.chip.groom-status-running { color: var(--groom); border-color: var(--groom-soft); }
+.chip.groom-status-finished { color: var(--green); border-color: var(--green-soft); }
+.chip.groom-status-failed { color: var(--red); border-color: var(--red-soft); }
+/* Links from a finished grooming to the tasks it spawned. */
+.groom-tasks { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.groom-task-link {
+  display: flex; align-items: center; gap: 6px; width: 100%; text-align: left;
+  background: var(--bg-raised); border: 1px solid var(--border); border-radius: 8px;
+  padding: 5px 8px; font-size: 11px; color: var(--text); cursor: pointer;
+}
+.groom-task-link:hover:not(:disabled) { border-color: var(--green); }
+.groom-task-link:disabled { opacity: .5; cursor: default; }
+.groom-task-link .groom-task-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.groom-task-link svg { flex: none; color: var(--green); }
 .card-title { font-weight: 600; font-size: 13px; margin-bottom: 7px; word-break: break-word; }
 .card-chips { display: flex; flex-wrap: wrap; gap: 5px; }
 .chip {
@@ -394,6 +417,11 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
 }
 .chip.repo { color: var(--blue); }
 .chip.model { color: var(--purple); }
+/* Per-model tint, tiered by cost — fable (priciest) reads red as a warning. */
+.chip.model.model-fable { color: var(--red); border-color: var(--red-soft); font-weight: 600; }
+.chip.model.model-opus { color: var(--purple); border-color: var(--purple-soft); }
+.chip.model.model-sonnet { color: var(--blue); border-color: var(--blue-soft); }
+.chip.model.model-haiku { color: var(--green); border-color: var(--green-soft); }
 .chip.worktree { color: var(--green); }
 .chip.cost { color: var(--accent); }
 .chip.badge-failed { color: var(--red); border-color: var(--red-soft); font-weight: 700; }
@@ -613,6 +641,27 @@ a.chip.pr:hover { border-color: currentColor; }
 .settings-section { display: flex; flex-direction: column; gap: 15px; }
 .settings-section-title { font-family: var(--serif); font-size: 18px; font-weight: 600; }
 .settings-close { position: absolute; top: 14px; right: 14px; }
+
+/* ── remote access (LAN) ── */
+.remote-warning {
+  display: flex; gap: 10px; align-items: flex-start;
+  margin-top: 12px; padding: 10px 12px; border-radius: 8px;
+  font-size: 12px; line-height: 1.5;
+  color: var(--red); border: 1px solid var(--red-soft); background: var(--red-soft);
+}
+.remote-warning .icon { flex: none; margin-top: 1px; }
+.remote-urls { display: flex; flex-direction: column; gap: 8px; margin: 8px 0; }
+.remote-url {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--bg-raised);
+}
+.remote-url code {
+  flex: 1 1 auto; min-width: 0; overflow-x: auto; white-space: nowrap;
+  font-size: 12px; color: var(--text);
+}
+.remote-url .remote-copy { flex: none; }
+.remote-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 6px; }
 
 /* ── plugins / marketplace ── */
 .plugins-body { display: flex; flex-direction: column; gap: 20px; }
@@ -946,6 +995,11 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--a
 }
 .toast.info { border-color: var(--accent); }
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
+
+.update-banner { display: flex; align-items: center; gap: 10px; }
+.update-banner .icon { flex: none; color: var(--accent); }
+.update-banner span { flex: 1; }
+.update-banner .btn { flex: none; }
 
 .hidden { display: none !important; }
 

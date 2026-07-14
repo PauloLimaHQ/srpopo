@@ -7,6 +7,11 @@
  * `claude -p` run that already plans → builds → tests → self-reviews → opens a
  * PR), then when that PR is green it merges it and moves the task to `done`.
  *
+ * The engine can be started with an empty `ready` queue: instead of ending, it
+ * stands by and picks up tasks the moment they land in `ready` (it watches the
+ * same SSE bus every board does). It keeps running until the user stops it or the
+ * budget is spent — the queue draining to empty just returns it to stand-by.
+ *
  * Design mirrors permissions.ts: a single, process-local, in-memory session with
  * NO persistence. If the server restarts the session is gone — the normal task
  * state it changed along the way is persisted through store.save() as usual, but
@@ -250,15 +255,25 @@ async function handleReview(task: Task): Promise<void> {
   await pump();
 }
 
-// React to owned tasks reaching a terminal state on the SSE bus. Runs land as
-// review (success), failed, or back to ready (a user stop) — we act once per task
-// by keying on session.running, which we clear on the first terminal event.
+// React to task events on the SSE bus. Two jobs:
+//  - owned runs reaching a terminal state — review (success), failed, or back to
+//    ready (a user stop) — acted on once per task by keying on session.running,
+//    which we clear on the first terminal event.
+//  - any *other* task freshly sitting in `ready` for our repo — fresh work to pick
+//    up while we stand by, so we re-pump (pump is a no-op if nothing's eligible).
 function onBus(msg: unknown): void {
   if (!session) return;
   const m = msg as { type?: string; task?: Task };
   if (m.type !== 'task' || !m.task) return;
   const task = m.task;
-  if (!session.running.has(task.id)) return; // not ours, or already handled
+  if (!session.running.has(task.id)) {
+    // Not one of our in-flight runs. If it just entered `ready` in our repo it's
+    // new work to grab while standing by — re-pump to dispatch it.
+    if (!session.stopping && task.repoId === session.repoId && task.status === 'ready' && !session.owned.has(task.id)) {
+      void pump();
+    }
+    return; // otherwise not ours, or already handled
+  }
 
   if (task.status === 'running') return; // still in flight — many events fire mid-run
   session.running.delete(task.id);
@@ -278,14 +293,16 @@ function onBus(msg: unknown): void {
   }
 }
 
-// End the session when nothing is in flight and there is nothing more to start:
-// drained (no eligible tasks), budget-reached (cap hit with tasks left), or a
-// user stop whose in-flight runs have now finished.
+// Settle the session once nothing is in flight. Two states genuinely end it: a
+// user stop whose in-flight runs have now finished, and the budget being spent
+// (nothing more can run). Otherwise — an empty `ready` queue — we do NOT end;
+// the session stands by, waiting for onBus to re-pump when a task arrives.
 function maybeEnd(): void {
   if (!session || session.running.size > 0) return;
   if (session.stopping) return end('stopped');
-  if (eligible().length === 0) return end('drained');
   if (spent() >= session.budgetUsd) return end('budget-reached');
+  // Nothing to start right now: announce stand-by once so the board reflects it.
+  if (eligible().length === 0 && lastReason !== 'standby') emit('standby');
 }
 
 // Tear the session down and announce it. In-flight runs (if any) are NOT killed —

@@ -1,5 +1,6 @@
 import path from 'path';
 import { app, BrowserWindow, Tray, Menu, nativeImage, shell, ipcMain, dialog, Notification } from 'electron';
+import { autoUpdater } from 'electron-updater';
 
 import { appRoot } from '../server/paths';
 
@@ -23,6 +24,7 @@ let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let httpUrl = '';
 let isQuitting = false;
+let updateReadyVersion: string | null = null; // set once electron-updater has a downloaded update waiting
 
 // Single-instance: focus the existing window instead of spawning a second app.
 if (!app.requestSingleInstanceLock()) {
@@ -258,22 +260,21 @@ function runningTasks() {
 }
 
 // ── desktop notifications ──
-// A task is "live" while its claude child process runs; when it leaves that
-// state a run (or grooming session) has just finished. We remember each task's
+// A task (or grooming card) is "live" while its claude child process runs; when
+// it leaves that state the run has just finished. We remember each record's
 // last-seen status so we can fire a native notification on that transition only.
-const LIVE_STATUSES = new Set(['running', 'grooming']);
-const lastStatus = new Map<string, string>(); // taskId -> last status seen on the bus
+const lastStatus = new Map<string, string>(); // task/grooming id -> last status seen on the bus
 
 function notificationsEnabled(): boolean {
   return !store.db.settings || store.db.settings.notifications !== false;
 }
 
-// Fire a native notification when a task finishes. Only on a live→finished
+// Fire a native notification when a task finishes. Only on a running→finished
 // transition, and never for a user-initiated stop (they already know).
 function maybeNotify(task: import('../server/types').Task): void {
   const prev = lastStatus.get(task.id);
   lastStatus.set(task.id, task.status);
-  if (!LIVE_STATUSES.has(prev as string) || LIVE_STATUSES.has(task.status)) return;
+  if (prev !== 'running' || task.status === 'running') return;
   if (task.lastOutcome === 'stopped') return;
   if (!notificationsEnabled() || !Notification.isSupported()) return;
 
@@ -281,9 +282,6 @@ function maybeNotify(task: import('../server/types').Task): void {
   if (task.status === 'failed') {
     title = `❌ Task failed — ${task.title}`;
     body = task.lastError ? String(task.lastError).slice(0, 140) : task.repoName;
-  } else if (task.lastOutcome === 'groomed') {
-    title = `✨ Idea groomed — ${task.title}`;
-    body = `${task.repoName} · ready to run`;
   } else {
     title = `✅ Task finished — ${task.title}`;
     const bits = [task.repoName];
@@ -297,6 +295,29 @@ function maybeNotify(task: import('../server/types').Task): void {
   note.show();
 }
 
+// Same transition watch for grooming cards: notify when one finishes or fails.
+function maybeNotifyGrooming(grooming: import('../server/types').Grooming): void {
+  const prev = lastStatus.get(grooming.id);
+  lastStatus.set(grooming.id, grooming.status);
+  if (prev !== 'running' || grooming.status === 'running') return;
+  if (grooming.lastOutcome === 'stopped') return;
+  if (!notificationsEnabled() || !Notification.isSupported()) return;
+
+  let title: string, body: string;
+  if (grooming.status === 'failed') {
+    title = `❌ Grooming failed — ${grooming.title}`;
+    body = grooming.lastError ? String(grooming.lastError).slice(0, 140) : grooming.repoName;
+  } else {
+    const n = (grooming.taskIds || []).length;
+    title = `✨ Idea groomed — ${grooming.title}`;
+    body = `${grooming.repoName} · ${n} task${n === 1 ? '' : 's'} created`;
+  }
+
+  const note = new Notification({ title, body, silent: false });
+  note.on('click', () => showWindow());
+  note.show();
+}
+
 // Rebuild the tray context menu from the current set of running tasks so the
 // list (and each task's elapsed time) stays live in the menu bar.
 function refreshTray(): void {
@@ -304,6 +325,13 @@ function refreshTray(): void {
   const running = runningTasks();
 
   const items: Electron.MenuItemConstructorOptions[] = [];
+  if (updateReadyVersion) {
+    items.push({
+      label: `Restart to Update (v${updateReadyVersion})`,
+      click: () => autoUpdater.quitAndInstall(),
+    });
+    items.push({ type: 'separator' });
+  }
   if (running.length) {
     items.push({ label: `Running (${running.length})`, enabled: false });
     for (const t of running) {
@@ -371,6 +399,8 @@ function createTray(): void {
     if (msg.type === 'task') {
       maybeNotify(msg.task);
       refreshTray();
+    } else if (msg.type === 'grooming') {
+      maybeNotifyGrooming(msg.grooming);
     } else if (msg.type === 'task-removed') {
       refreshTray();
     }
@@ -417,6 +447,24 @@ app.whenReady().then(async () => {
   createTray();
   createWindow();
 
+  // Auto-update: only against a real packaged build — dev has no update feed
+  // and would just throw/log noise every time `npm start` runs.
+  if (app.isPackaged) {
+    autoUpdater.on('update-downloaded', (info) => {
+      updateReadyVersion = info.version;
+      if (mainWindow) mainWindow.webContents.send('srpopo:update-ready', info.version);
+      refreshTray();
+    });
+    autoUpdater.on('error', (err) => {
+      console.error('[autoUpdater]', err);
+    });
+
+    autoUpdater.checkForUpdates().catch((err) => console.error('[autoUpdater]', err));
+    setInterval(() => {
+      autoUpdater.checkForUpdates().catch((err) => console.error('[autoUpdater]', err));
+    }, 4 * 60 * 60 * 1000); // re-check every 4 hours
+  }
+
   app.on('activate', () => showWindow()); // dock icon click on mac
 });
 
@@ -435,6 +483,10 @@ app.on('before-quit', () => {
 
 // Let the renderer ask the main process for its own base URL if it ever needs it.
 ipcMain.handle('srpopo:get-url', () => httpUrl);
+
+// The renderer's "Relaunch to update" banner button — restarts into the
+// already-downloaded update. Only ever reachable once update-downloaded fired.
+ipcMain.handle('srpopo:restart-to-update', () => autoUpdater.quitAndInstall());
 
 // Open the native folder picker so the user can select a repo instead of
 // typing an absolute path. Returns the chosen path, or null if cancelled.

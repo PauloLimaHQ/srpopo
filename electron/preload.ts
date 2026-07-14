@@ -13,6 +13,14 @@ contextBridge.exposeInMainWorld('srpopo', {
     ipcRenderer.on('srpopo:menu-action', listener);
     return () => ipcRenderer.removeListener('srpopo:menu-action', listener);
   },
+  // Auto-update: main process notifies once a new version has finished
+  // downloading in the background; the renderer shows a "relaunch" banner.
+  onUpdateReady: (callback: (version: string) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, version: string) => callback(version);
+    ipcRenderer.on('srpopo:update-ready', listener);
+    return () => ipcRenderer.removeListener('srpopo:update-ready', listener);
+  },
+  restartToUpdate: () => ipcRenderer.invoke('srpopo:restart-to-update'),
 });
 
 // Electron-only presentation tweaks — untouched when the UI runs in a browser.

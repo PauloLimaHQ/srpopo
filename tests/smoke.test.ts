@@ -14,6 +14,7 @@ test('store exposes id/now helpers', () => {
   assert.match(store.id(), /^[0-9a-f]{10}$/, 'id() should be 10 hex chars');
   assert.match(store.now(), /^\d{4}-\d{2}-\d{2}T/, 'now() should be an ISO timestamp');
   assert.ok(store.db && Array.isArray(store.db.tasks), 'db.tasks should be an array');
+  assert.ok(Array.isArray(store.db.groomings), 'db.groomings should be an array (backfilled)');
 });
 
 test('store: settings default to notifications + sounds on and are backfilled', () => {
@@ -38,6 +39,8 @@ test('server modules load without throwing', () => {
     require('../server/github');
     require('../server/linear');
     require('../server/plugins');
+    require('../server/tasks');
+    require('../server/mcp');
     require('../server/index');
   });
 });
@@ -46,11 +49,135 @@ test('plugins: catalog lists Linear and sanitize keeps only known ids', () => {
   const plugins = require('../server/plugins');
   const ids = plugins.catalog().map((p: { id: string }) => p.id);
   assert.ok(ids.includes('linear'), 'Linear is in the marketplace catalog');
+  assert.ok(ids.includes('grooming'), 'Idea Grooming is in the marketplace catalog');
   assert.ok(plugins.isKnown('linear'), 'isKnown recognizes a catalog id');
   assert.strictEqual(plugins.isKnown('nope'), false, 'isKnown rejects unknown ids');
   assert.deepStrictEqual(plugins.sanitize(['linear', 'bogus']), ['linear'], 'unknown ids dropped');
   assert.deepStrictEqual(plugins.sanitize('not-an-array'), [], 'non-array yields []');
   assert.deepStrictEqual(plugins.sanitize(['linear', 'linear']), ['linear'], 'ids deduped');
+});
+
+test('store: remote access defaults off with an empty token, and is backfilled', () => {
+  const store = require('../server/store');
+  assert.strictEqual(store.db.settings.remoteAccess, false, 'remote access defaults off');
+  assert.strictEqual(store.db.settings.remoteAccessToken, '', 'no token until first enabled');
+  assert.strictEqual(store.DEFAULT_SETTINGS.remoteAccess, false, 'default is exported');
+  assert.strictEqual(store.DEFAULT_SETTINGS.remoteAccessToken, '', 'token default is exported');
+});
+
+test('index: GET /api/settings exposes remote flags over localhost but never the raw token', async () => {
+  const store = require('../server/store');
+  const index = require('../server/index');
+  const prevOn = store.db.settings.remoteAccess;
+  const prevTok = store.db.settings.remoteAccessToken;
+  store.db.settings.remoteAccess = true;
+  store.db.settings.remoteAccessToken = 'deadbeefdeadbeefdeadbeef';
+  const { server, port } = await index.start(0); // localhost bind; always allowed
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/settings`);
+    assert.strictEqual(res.status, 200, 'localhost is allowed even with remote access on');
+    const body = await res.json();
+    assert.strictEqual(body.remoteAccess, true, 'derived remoteAccess flag is exposed');
+    assert.strictEqual(body.remoteAccessConfigured, true, 'derived configured flag is exposed');
+    assert.ok(!('remoteAccessToken' in body), 'the raw token is never in the public settings');
+    assert.strictEqual(JSON.stringify(body).includes('deadbeef'), false, 'the token value never leaks');
+  } finally {
+    await new Promise<void>((r) => server.close(() => r()));
+    store.db.settings.remoteAccess = prevOn;
+    store.db.settings.remoteAccessToken = prevTok;
+  }
+});
+
+test('index: toggling remote access re-binds the live server, staying reachable over localhost', async () => {
+  const store = require('../server/store');
+  const index = require('../server/index');
+  const prevOn = store.db.settings.remoteAccess;
+  const prevTok = store.db.settings.remoteAccessToken;
+  store.db.settings.remoteAccess = false;
+  store.db.settings.remoteAccessToken = '';
+  const { server, port } = await index.start(0); // starts on 127.0.0.1 (remote off)
+  try {
+    assert.strictEqual((await fetch(`http://127.0.0.1:${port}/api/health`)).status, 200, 'reachable with remote off');
+
+    // Turn remote access on: the PATCH generates a token and, on response finish,
+    // re-binds the listener (to 0.0.0.0). The server must stay reachable over
+    // localhost across the re-bind, and a token must now exist.
+    const patched = await (await fetch(`http://127.0.0.1:${port}/api/settings`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ remoteAccess: true }),
+    })).json();
+    assert.strictEqual(patched.remoteAccess, true, 'PATCH reports remote access on');
+    assert.strictEqual(patched.remoteAccessConfigured, true, 'a token was generated on enable');
+    assert.ok(store.db.settings.remoteAccessToken.length >= 32, 'the token is a decent-length secret');
+
+    // Give the re-bind (scheduled on response finish) a moment to complete.
+    await new Promise((r) => setTimeout(r, 600));
+    assert.strictEqual((await fetch(`http://127.0.0.1:${port}/api/health`)).status, 200, 'still reachable after re-bind');
+  } finally {
+    await new Promise<void>((r) => server.close(() => r()));
+    store.db.settings.remoteAccess = prevOn;
+    store.db.settings.remoteAccessToken = prevTok;
+  }
+});
+
+test('index: authorizeRemote gates LAN requests by token (off → open, on → token or localhost)', () => {
+  const store = require('../server/store');
+  const index = require('../server/index');
+  const prevOn = store.db.settings.remoteAccess;
+  const prevTok = store.db.settings.remoteAccessToken;
+  const TOKEN = 'a'.repeat(48);
+  try {
+    // Off (the default): every request is allowed, no cookie set — today's behavior.
+    store.db.settings.remoteAccess = false;
+    store.db.settings.remoteAccessToken = '';
+    let d = index._authorizeRemote({ local: false, cookieToken: '', headerToken: '', queryToken: '' });
+    assert.deepStrictEqual(d, { allow: true }, 'remote off allows a LAN request with no token');
+
+    // On: localhost is always allowed, never prompted, no cookie set.
+    store.db.settings.remoteAccess = true;
+    store.db.settings.remoteAccessToken = TOKEN;
+    d = index._authorizeRemote({ local: true, cookieToken: '', headerToken: '', queryToken: '' });
+    assert.deepStrictEqual(d, { allow: true }, 'localhost is always allowed');
+
+    // On + LAN + no token → denied.
+    d = index._authorizeRemote({ local: false, cookieToken: '', headerToken: '', queryToken: '' });
+    assert.strictEqual(d.allow, false, 'a LAN request without a token is denied');
+
+    // On + LAN + wrong token → denied (guards the timingSafeEqual length mismatch).
+    d = index._authorizeRemote({ local: false, cookieToken: 'short', headerToken: '', queryToken: '' });
+    assert.strictEqual(d.allow, false, 'a wrong-length token is denied without throwing');
+    d = index._authorizeRemote({ local: false, cookieToken: 'b'.repeat(48), headerToken: '', queryToken: '' });
+    assert.strictEqual(d.allow, false, 'a same-length wrong token is denied');
+
+    // On + LAN + valid cookie → allowed, and no Set-Cookie (already the cookie).
+    d = index._authorizeRemote({ local: false, cookieToken: TOKEN, headerToken: '', queryToken: '' });
+    assert.deepStrictEqual(d, { allow: true }, 'a valid cookie token is allowed without re-setting it');
+
+    // On + LAN + valid Authorization header → allowed, and the cookie is set so
+    // subsequent EventSource requests (which can't send headers) authenticate.
+    d = index._authorizeRemote({ local: false, cookieToken: '', headerToken: TOKEN, queryToken: '' });
+    assert.strictEqual(d.allow, true, 'a valid bearer token is allowed');
+    assert.ok(d.setCookie && d.setCookie.includes('srpopo_token=') && /HttpOnly/i.test(d.setCookie)
+      && /SameSite=Lax/i.test(d.setCookie), 'header token persists an HttpOnly SameSite=Lax cookie');
+
+    // On + LAN + valid ?token= query → allowed, and the cookie is set.
+    d = index._authorizeRemote({ local: false, cookieToken: '', headerToken: '', queryToken: TOKEN });
+    assert.strictEqual(d.allow, true, 'a valid query token is allowed');
+    assert.ok(d.setCookie && d.setCookie.includes('srpopo_token='), 'query token persists the cookie');
+  } finally {
+    store.db.settings.remoteAccess = prevOn;
+    store.db.settings.remoteAccessToken = prevTok;
+  }
+});
+
+test('index: parseCookies parses a Cookie header by hand; lanAddresses lists IPv4 strings', () => {
+  const index = require('../server/index');
+  assert.deepStrictEqual(index._parseCookies('a=1; srpopo_token=xyz; b=2').srpopo_token, 'xyz');
+  assert.deepStrictEqual(index._parseCookies(undefined), {}, 'no header yields an empty map');
+  assert.deepStrictEqual(index._parseCookies('novalue').novalue, undefined, 'a valueless part is skipped');
+  const lan = index._lanAddresses();
+  assert.ok(Array.isArray(lan), 'lanAddresses returns an array');
+  assert.ok(lan.every((ip: string) => typeof ip === 'string' && !ip.includes(':')), 'entries are IPv4 strings');
 });
 
 test('github: module exports prForTask, mergePrForTask, and a pure parsePrList helper', () => {
@@ -356,7 +483,7 @@ test('usage: applyResult falls back to a single row keyed by resolvedModel when 
   const usage = require('../server/usage');
   const store = require('../server/store');
   const task: Record<string, unknown> = {
-    id: 't-usage-2', title: 'No modelUsage', status: 'grooming',
+    id: 't-usage-2', title: 'No modelUsage', status: 'running',
     repoId: 'repoA', repoName: 'RepoA', model: 'default', resolvedModel: 'claude-haiku-4-5-20251001',
   };
   const event = {
@@ -368,8 +495,29 @@ test('usage: applyResult falls back to a single row keyed by resolvedModel when 
   const rows = store.readUsage().filter((r: { taskId: string }) => r.taskId === 't-usage-2');
   assert.strictEqual(rows.length, 1);
   assert.strictEqual(rows[0].model, 'claude-haiku-4-5-20251001', 'falls back to the resolved model');
-  assert.strictEqual(rows[0].kind, 'groom', 'grooming status maps to kind groom');
+  assert.strictEqual(rows[0].kind, 'run', 'a dispatched task run always maps to kind run');
   assert.strictEqual(rows[0].costUsd, 0.01);
+});
+
+test('usage: applyGroomResult records a groom-kind ledger row without touching task.modelUsage', () => {
+  const usage = require('../server/usage');
+  const store = require('../server/store');
+  const grooming: Record<string, unknown> = {
+    id: 'g-usage-1', title: 'Groom a rough idea',
+    repoId: 'repoA', repoName: 'RepoA', model: 'default', resolvedModel: 'claude-haiku-4-5-20251001',
+  };
+  const event = {
+    type: 'result', ts: '2024-01-01T00:00:00.000Z', total_cost_usd: 0.02,
+    usage: { input_tokens: 40, output_tokens: 15 },
+  };
+  usage.applyGroomResult(grooming, event);
+
+  assert.strictEqual(grooming.modelUsage, undefined, 'grooming cards have no modelUsage field to accumulate onto');
+  const rows = store.readUsage().filter((r: { taskId: string }) => r.taskId === 'g-usage-1');
+  assert.strictEqual(rows.length, 1);
+  assert.strictEqual(rows[0].model, 'claude-haiku-4-5-20251001');
+  assert.strictEqual(rows[0].kind, 'groom', 'grooming runs always map to kind groom');
+  assert.strictEqual(rows[0].costUsd, 0.02);
 });
 
 test('usage: computeSummary aggregates totals/byModel/byRepo and has no previous window for "all"', () => {
@@ -414,6 +562,65 @@ test('permission-mcp: respond builds MCP replies and routes tools/call to the de
   // An unknown tool denies rather than throwing.
   const bad = await mcp.respond({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'nope', arguments: {} } });
   assert.strictEqual(JSON.parse(bad.result.content[0].text).behavior, 'deny', 'unknown tool is denied');
+});
+
+test('mcp: respond builds MCP replies, lists the board tools, and routes tools/call', async () => {
+  const mcp = require('../server/mcp');
+
+  const init = await mcp.respond({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } });
+  assert.strictEqual(init.result.protocolVersion, '2025-06-18', 'echoes the client protocol version');
+  assert.ok(init.result.capabilities.tools, 'advertises tool capability');
+  assert.strictEqual(init.result.serverInfo.name, 'srpopo', 'identifies as srpopo');
+
+  const list = await mcp.respond({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
+  const names = list.result.tools.map((t: { name: string }) => t.name);
+  for (const n of ['list_repos', 'list_tasks', 'get_task', 'create_task', 'dispatch_task', 'stop_task']) {
+    assert.ok(names.includes(n), `${n} is advertised`);
+  }
+
+  // notifications get no reply; ping is answered; unknown methods report not-found.
+  assert.strictEqual(await mcp.respond({ method: 'notifications/initialized' }), null, 'notifications are not answered');
+  assert.deepStrictEqual((await mcp.respond({ jsonrpc: '2.0', id: 3, method: 'ping' })).result, {}, 'ping replies empty');
+  assert.strictEqual((await mcp.respond({ jsonrpc: '2.0', id: 4, method: 'nope' })).error.code, -32601, 'unknown method is not-found');
+
+  // tools/call routes to the injected executor and returns its result.
+  const seen: unknown[] = [];
+  const call = await mcp.respond(
+    { jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'list_repos', arguments: {} } },
+    async (name: string, args: unknown) => { seen.push([name, args]); return { content: [{ type: 'text', text: 'ok' }] }; },
+  );
+  assert.deepStrictEqual(seen[0], ['list_repos', {}], 'executor receives the tool name and args');
+  assert.strictEqual(call.result.content[0].text, 'ok', 'the tool result is returned');
+
+  // An unknown tool is a tool-level error (isError), not a JSON-RPC error.
+  const bad = await mcp.respond({ jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'nope', arguments: {} } });
+  assert.strictEqual(bad.result.isError, true, 'unknown tool is an isError result');
+});
+
+test('mcp: create_task / list_tasks / get_task round-trip through the store', async () => {
+  const store = require('../server/store');
+  const mcp = require('../server/mcp');
+
+  const repo = { id: store.id(), path: '/tmp/mcp-repo', name: 'o/mcp', branch: null, addedAt: store.now() };
+  store.db.repos.push(repo);
+
+  // create_task queues a backlog task through the shared task service.
+  const created = JSON.parse((await mcp.callTool('create_task', { repoId: repo.id, title: 'MCP task', prompt: 'do the thing' })).content[0].text);
+  assert.strictEqual(created.status, 'backlog', 'created in backlog by default');
+  assert.strictEqual(created.repoId, repo.id, 'attached to the target repo');
+
+  // list_tasks (filtered by repo) shows the compact summary.
+  const list = JSON.parse((await mcp.callTool('list_tasks', { repoId: repo.id })).content[0].text);
+  assert.ok(list.some((t: { id: string }) => t.id === created.id), 'the new task is listed');
+
+  // get_task returns the full task plus a (bounded) log tail.
+  const got = JSON.parse((await mcp.callTool('get_task', { taskId: created.id })).content[0].text);
+  assert.strictEqual(got.task.id, created.id, 'returns the requested task');
+  assert.ok(Array.isArray(got.events), 'includes a log-event array');
+
+  // Missing input is a plain throw that respond() surfaces as an isError result.
+  await assert.rejects(() => mcp.callTool('get_task', { taskId: 'nope' }), /Task not found/, 'a missing task throws');
+  await assert.rejects(() => mcp.callTool('create_task', { repoId: repo.id, title: 'x' }), /required/, 'a prompt-less create throws');
 });
 
 test('permissions: a pending prompt resolves with the user decision and is listed until settled', async () => {
@@ -527,28 +734,37 @@ test('groomer: metaPrompt embeds the idea and asks for a sentinel-delimited spec
   const mp = groomer.metaPrompt('archive done tasks in bulk');
   assert.match(mp, /archive done tasks in bulk/, 'the rough idea is embedded');
   assert.ok(mp.includes(groomer.SPEC_START) && mp.includes(groomer.SPEC_END), 'spec markers are present');
+  assert.match(mp, /"tasks"/, 'asks for the multi-task shape');
 });
 
-test('groomer: parseResult recovers { title, prompt } from the session output', () => {
+test('groomer: parseResult recovers task specs from the session output', () => {
   const groomer = require('../server/groomer');
 
-  // Primary path: JSON between the sentinels, even with prose around it.
+  // Primary path: the { tasks: […] } shape between the sentinels, with prose
+  // around it and a per-task ready flag.
   const sentinel = `Here is my spec.\n${groomer.SPEC_START}\n` +
-    '{ "title": "Add bulk archive", "prompt": "Add a button that archives all Done tasks." }' +
+    '{ "tasks": [' +
+    '{ "title": "Add bulk archive", "prompt": "Add a button that archives all Done tasks.", "ready": true },' +
+    '{ "title": "Add undo", "prompt": "Let the user undo the bulk archive." }' +
+    '] }' +
     `\n${groomer.SPEC_END}\nthanks!`;
-  assert.deepStrictEqual(groomer.parseResult(sentinel), {
-    title: 'Add bulk archive',
-    prompt: 'Add a button that archives all Done tasks.',
-  });
+  assert.deepStrictEqual(groomer.parseResult(sentinel), [
+    { title: 'Add bulk archive', prompt: 'Add a button that archives all Done tasks.', ready: true },
+    { title: 'Add undo', prompt: 'Let the user undo the bulk archive.', ready: false },
+  ]);
+
+  // Legacy single-object shape still parses as one task.
+  const single = `${groomer.SPEC_START}{ "title": "T", "prompt": "P" }${groomer.SPEC_END}`;
+  assert.deepStrictEqual(groomer.parseResult(single), [{ title: 'T', prompt: 'P', ready: false }]);
 
   // Fallback: a ```json fenced block when the markers are missing.
-  const fenced = 'blah\n```json\n{"title":"T","prompt":"P"}\n```\n';
-  assert.deepStrictEqual(groomer.parseResult(fenced), { title: 'T', prompt: 'P' });
+  const fenced = 'blah\n```json\n{"tasks":[{"title":"T","prompt":"P","ready":true}]}\n```\n';
+  assert.deepStrictEqual(groomer.parseResult(fenced), [{ title: 'T', prompt: 'P', ready: true }]);
 
   // No usable prompt → null (never a partial/empty spec).
   assert.strictEqual(groomer.parseResult('no spec here at all'), null);
-  assert.strictEqual(groomer.parseResult(`${groomer.SPEC_START}{"title":"x"}${groomer.SPEC_END}`), null,
-    'a spec without a prompt is rejected');
+  assert.strictEqual(groomer.parseResult(`${groomer.SPEC_START}{"tasks":[{"title":"x"}]}${groomer.SPEC_END}`), null,
+    'a spec without any prompt is rejected');
   assert.strictEqual(groomer.parseResult(''), null);
   assert.strictEqual(groomer.parseResult(undefined), null);
 });
@@ -701,7 +917,7 @@ test('autonomous: rejects a second start while a session is active', async () =>
   }
 });
 
-test('autonomous: a session with no ready work drains to idle immediately', async () => {
+test('autonomous: a session with no ready work stands by instead of ending', async () => {
   const autonomous = require('../server/autonomous');
   const restore = withStore([mkTask('e1', 'backlog', 'repoA')], 10);
   let dispatched = 0;
@@ -709,9 +925,32 @@ test('autonomous: a session with no ready work drains to idle immediately', asyn
   try {
     const status = await autonomous.start({ repoId: 'repoA', budgetUsd: 100 });
     assert.strictEqual(dispatched, 0, 'nothing to dispatch');
-    assert.strictEqual(status.active, false, 'the session ends right away when there is no ready work');
-    assert.strictEqual(status.reason, 'drained', 'and reports why it ended');
-    assert.strictEqual(autonomous.isActive(), false, 'no session lingers');
+    assert.strictEqual(status.active, true, 'the session stays alive with an empty queue');
+    assert.strictEqual(status.reason, 'standby', 'and reports it is standing by');
+    assert.strictEqual(autonomous.isActive(), true, 'the session lingers, ready to pick up work');
+  } finally {
+    autonomous._reset();
+    autonomous._setDeps(null);
+    restore();
+  }
+});
+
+test('autonomous: a standing-by session picks up a task the moment it enters ready', async () => {
+  const autonomous = require('../server/autonomous');
+  const bus = require('../server/bus');
+  const task = mkTask('e2', 'backlog', 'repoA');
+  const restore = withStore([task], 10);
+  const dispatched: string[] = [];
+  autonomous._setDeps({ dispatch: async (t: { id: string; status: string }) => { dispatched.push(t.id); t.status = 'running'; } });
+  try {
+    await autonomous.start({ repoId: 'repoA', budgetUsd: 100 });
+    assert.deepStrictEqual(dispatched, [], 'nothing dispatched while the task is still backlog');
+    // Move it to ready and announce it exactly as the API route does.
+    task.status = 'ready';
+    bus.broadcast({ type: 'task', task });
+    await new Promise((r) => setImmediate(r)); // let the async pump run
+    assert.deepStrictEqual(dispatched, ['e2'], 'the newly-ready task is picked up');
+    assert.strictEqual(autonomous.status().active, true, 'the session is still active');
   } finally {
     autonomous._reset();
     autonomous._setDeps(null);

@@ -33,7 +33,7 @@
       <button class="btn ghost" id="btn-theme" title="Theme: System" aria-label="Toggle theme"></button>
       <button class="btn ghost" id="btn-settings" title="Settings" aria-label="Settings"><span class="i" data-icon="settings"></span></button>
       <button class="btn ghost" id="btn-repos"><span class="i" data-icon="folder"></span>Repos</button>
-      <button class="btn ghost" id="btn-brief"><span class="i" data-icon="lightbulb"></span>Brief an Idea</button>
+      <button class="btn ghost hidden" id="btn-brief"><span class="i" data-icon="lightbulb"></span>Brief an Idea</button>
       <button class="btn ghost hidden" id="btn-linear"><span class="i" data-icon="linear"></span>From Linear</button>
       <button class="btn primary" id="btn-new-task"><span class="i" data-icon="plus"></span>New Task</button>
     </div>
@@ -68,7 +68,7 @@
     <div class="modal-box">
       <h2><span class="i" data-icon="bot"></span> Autonomous Mode</h2>
       <p class="field-hint" id="autonomous-modal-repo"></p>
-      <p class="field-hint">Sr. Popo will drive every <strong>Ready</strong> task in this workspace end-to-end — dispatch each run (which plans, builds, tests, self-reviews, and opens a PR), then merge the PR and move the task to Done once it’s green — until the budget is spent or the queue is empty. Runs are unattended: tool-permission prompts are turned off for them, so make sure each task is configured to run without a human.</p>
+      <p class="field-hint">Sr. Popo will drive every <strong>Ready</strong> task in this workspace end-to-end — dispatch each run (which plans, builds, tests, self-reviews, and opens a PR), then merge the PR and move the task to Done once it’s green — until the budget is spent. You can start it with an empty queue: it stands by and picks up each task the moment it lands in Ready. Runs are unattended: tool-permission prompts are turned off for them, so make sure each task is configured to run without a human.</p>
       <label>Budget cap (USD)
         <input id="autonomous-budget" type="number" min="0.5" max="1000" step="0.5" value="10" />
         <span class="field-hint">New tasks stop being picked up once this total spend is reached; in-flight runs still finish.</span>
@@ -217,9 +217,9 @@
   <!-- Brief an Idea modal (grooming) -->
   <div id="modal-brief" class="modal hidden">
     <div class="modal-box">
-      <h2><span class="i" data-icon="lightbulb"></span>Brief an Idea</h2>
+      <h2 id="brief-modal-title"><span class="i" data-icon="lightbulb"></span>Brief an Idea</h2>
       <p class="muted">Describe a rough idea and pick a project. Sr. Popo runs a quick, read-only Claude
-        session in that repo to groom it into a well-formed task prompt, then drops it in <strong>Ready</strong>.</p>
+        session in that repo to think it through, then spawns one or more well-formed tasks on the board.</p>
       <label id="brief-repo-field">Repository
         <div class="row">
           <select id="brief-repo"></select>
@@ -231,7 +231,14 @@
         <textarea id="brief-text" rows="5"
                   placeholder="e.g. it'd be nice to archive all Done tasks in one click"></textarea>
       </label>
-      <label>Branch name <span class="field-hint">— optional, defaults to <code>srpopo/&lt;task&gt;-&lt;id&gt;</code></span>
+      <label>Groomed tasks land in
+        <select id="brief-target">
+          <option value="backlog">Backlog — review them before running</option>
+          <option value="auto">Let the grooming decide per task</option>
+          <option value="ready">Ready — dispatchable right away</option>
+        </select>
+      </label>
+      <label>Branch name <span class="field-hint">— optional, used only when a single task is spawned</span>
         <input id="brief-branch" type="text" placeholder="e.g. feature/ABC-123, matching your repo's convention" />
       </label>
       <label>Model <span class="field-hint">— used for the grooming session</span>
@@ -245,6 +252,7 @@
       </label>
       <div class="modal-actions">
         <button class="btn ghost" id="brief-cancel">Cancel</button>
+        <button class="btn" id="brief-draft">Save as Draft</button>
         <button class="btn primary" id="brief-submit">Groom it <span class="i" data-icon="sparkles"></span></button>
       </div>
     </div>
@@ -310,6 +318,9 @@
           <button class="settings-nav-item" data-section="usage">
             <span class="i" data-icon="bar-chart-3"></span>Usage
           </button>
+          <button class="settings-nav-item" data-section="remote">
+            <span class="i" data-icon="wifi"></span>Remote Access
+          </button>
           <button class="settings-nav-item" data-section="plugins">
             <span class="i" data-icon="puzzle"></span>Plugins
           </button>
@@ -372,6 +383,43 @@
               </select>
             </div>
             <div id="settings-usage-body" class="usage-body"></div>
+          </section>
+
+          <section class="settings-section hidden" data-section="remote">
+            <h2 class="settings-section-title">Remote Access (LAN)</h2>
+            <p class="muted">Open and control this board from another device on the same
+              local network — a laptop, tablet, or phone on the same Wi-Fi. The board looks
+              and works exactly like it does here.</p>
+            <fieldset class="addons">
+              <legend>Local network access</legend>
+              <label class="check addon">
+                <input type="checkbox" id="setting-remote-access" />
+                <span class="addon-text">
+                  <span class="addon-label">Enable remote access</span>
+                  <span class="addon-hint">Binds Sr. Popo to your local network and protects it with a shared
+                    access token. Off by default; only this machine can reach it while off.</span>
+                </span>
+              </label>
+              <div class="remote-warning" id="remote-warning">
+                <span class="i" data-icon="triangle-alert"></span>
+                <span>Anyone on your network who has the link and token can control your tasks and
+                  repositories. Keep this off unless you need it, and only on networks you trust.
+                  Traffic is unencrypted (HTTP) — LAN use only, not the public internet.</span>
+              </div>
+            </fieldset>
+            <fieldset class="addons hidden" id="remote-pairing">
+              <legend>Pair a device</legend>
+              <p class="addon-hint">Open this URL from another device on the same Wi-Fi/network. The token is
+                included, so it signs in automatically.</p>
+              <div id="remote-urls" class="remote-urls"></div>
+              <p class="addon-hint hidden" id="remote-no-lan"></p>
+              <div class="remote-actions">
+                <button class="btn ghost" id="remote-regen">
+                  <span class="i" data-icon="rotate-cw"></span>Regenerate token
+                </button>
+                <span class="field-hint">Rotating the token signs out every currently-paired device.</span>
+              </div>
+            </fieldset>
           </section>
 
           <section class="settings-section hidden" data-section="plugins">
