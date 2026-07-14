@@ -14,6 +14,7 @@ test('store exposes id/now helpers', () => {
   assert.match(store.id(), /^[0-9a-f]{10}$/, 'id() should be 10 hex chars');
   assert.match(store.now(), /^\d{4}-\d{2}-\d{2}T/, 'now() should be an ISO timestamp');
   assert.ok(store.db && Array.isArray(store.db.tasks), 'db.tasks should be an array');
+  assert.ok(Array.isArray(store.db.groomings), 'db.groomings should be an array (backfilled)');
 });
 
 test('store: settings default to notifications + sounds on and are backfilled', () => {
@@ -48,6 +49,7 @@ test('plugins: catalog lists Linear and sanitize keeps only known ids', () => {
   const plugins = require('../server/plugins');
   const ids = plugins.catalog().map((p: { id: string }) => p.id);
   assert.ok(ids.includes('linear'), 'Linear is in the marketplace catalog');
+  assert.ok(ids.includes('grooming'), 'Idea Grooming is in the marketplace catalog');
   assert.ok(plugins.isKnown('linear'), 'isKnown recognizes a catalog id');
   assert.strictEqual(plugins.isKnown('nope'), false, 'isKnown rejects unknown ids');
   assert.deepStrictEqual(plugins.sanitize(['linear', 'bogus']), ['linear'], 'unknown ids dropped');
@@ -649,28 +651,37 @@ test('groomer: metaPrompt embeds the idea and asks for a sentinel-delimited spec
   const mp = groomer.metaPrompt('archive done tasks in bulk');
   assert.match(mp, /archive done tasks in bulk/, 'the rough idea is embedded');
   assert.ok(mp.includes(groomer.SPEC_START) && mp.includes(groomer.SPEC_END), 'spec markers are present');
+  assert.match(mp, /"tasks"/, 'asks for the multi-task shape');
 });
 
-test('groomer: parseResult recovers { title, prompt } from the session output', () => {
+test('groomer: parseResult recovers task specs from the session output', () => {
   const groomer = require('../server/groomer');
 
-  // Primary path: JSON between the sentinels, even with prose around it.
+  // Primary path: the { tasks: […] } shape between the sentinels, with prose
+  // around it and a per-task ready flag.
   const sentinel = `Here is my spec.\n${groomer.SPEC_START}\n` +
-    '{ "title": "Add bulk archive", "prompt": "Add a button that archives all Done tasks." }' +
+    '{ "tasks": [' +
+    '{ "title": "Add bulk archive", "prompt": "Add a button that archives all Done tasks.", "ready": true },' +
+    '{ "title": "Add undo", "prompt": "Let the user undo the bulk archive." }' +
+    '] }' +
     `\n${groomer.SPEC_END}\nthanks!`;
-  assert.deepStrictEqual(groomer.parseResult(sentinel), {
-    title: 'Add bulk archive',
-    prompt: 'Add a button that archives all Done tasks.',
-  });
+  assert.deepStrictEqual(groomer.parseResult(sentinel), [
+    { title: 'Add bulk archive', prompt: 'Add a button that archives all Done tasks.', ready: true },
+    { title: 'Add undo', prompt: 'Let the user undo the bulk archive.', ready: false },
+  ]);
+
+  // Legacy single-object shape still parses as one task.
+  const single = `${groomer.SPEC_START}{ "title": "T", "prompt": "P" }${groomer.SPEC_END}`;
+  assert.deepStrictEqual(groomer.parseResult(single), [{ title: 'T', prompt: 'P', ready: false }]);
 
   // Fallback: a ```json fenced block when the markers are missing.
-  const fenced = 'blah\n```json\n{"title":"T","prompt":"P"}\n```\n';
-  assert.deepStrictEqual(groomer.parseResult(fenced), { title: 'T', prompt: 'P' });
+  const fenced = 'blah\n```json\n{"tasks":[{"title":"T","prompt":"P","ready":true}]}\n```\n';
+  assert.deepStrictEqual(groomer.parseResult(fenced), [{ title: 'T', prompt: 'P', ready: true }]);
 
   // No usable prompt → null (never a partial/empty spec).
   assert.strictEqual(groomer.parseResult('no spec here at all'), null);
-  assert.strictEqual(groomer.parseResult(`${groomer.SPEC_START}{"title":"x"}${groomer.SPEC_END}`), null,
-    'a spec without a prompt is rejected');
+  assert.strictEqual(groomer.parseResult(`${groomer.SPEC_START}{"tasks":[{"title":"x"}]}${groomer.SPEC_END}`), null,
+    'a spec without any prompt is rejected');
   assert.strictEqual(groomer.parseResult(''), null);
   assert.strictEqual(groomer.parseResult(undefined), null);
 });

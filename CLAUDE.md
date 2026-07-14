@@ -72,12 +72,10 @@ change is done. `npm run server` / `npm test` run the TypeScript directly with
 A task moves through fixed board columns. Preserve these names and semantics — the
 UI, the API, and `runner.ts` all agree on them:
 
-`backlog` → `ready` → **`running`** → `review` → `done`, with **`grooming`** as an
-entry state (from "Brief an Idea") and `failed` as a side state.
+`backlog` → `ready` → **`running`** → `review` → `done`, with `failed` as a side
+state. (Grooming cards are a separate entity with their own lifecycle — see
+"Grooming" below — and live in their own locked, leftmost column.)
 
-- **grooming** — a live, read-only `claude -p` session (`runner.groom`) that rewrites
-  a rough idea into a well-formed prompt; on success the task moves to `ready`. Like
-  `running`, it is set only by the runner, never via `PATCH /api/tasks/:id`.
 - **backlog / ready** — configured but not dispatched.
 - **running** — a live `claude -p --output-format stream-json` process. Set only by
   `runner.dispatch`, never via `PATCH /api/tasks/:id` (the API rejects that on purpose).
@@ -211,15 +209,31 @@ bridge the CLI spawns to *ask the user* about a tool; this one is a long-lived
 
 ## Grooming: "Brief an Idea"
 
-`POST /api/briefs` (a rough idea + a repo) creates a task in the `grooming` state and
-kicks off `runner.groom`. That runs a **read-only** `claude -p` session in the repo
-(only research tools are auto-approved — see `groomArgs`, no worktree, never a write)
-whose whole job is prompt engineering: explore the code, then rewrite the idea into a
-self-contained task prompt. `server/groomer.ts` owns the meta-prompt and the parser
-that recovers the `{ title, prompt }` spec (emitted between `@@SRPOPO_SPEC_*@@`
-sentinels). On success the task lands in `ready` with the groomed prompt; the original
-idea is preserved on `task.brief`. To change how ideas are groomed, edit `groomer.ts` —
-it is the single source of truth for that flow.
+Grooming is an **installable plugin** (`grooming` in `server/plugins.ts`) — the
+"Brief an Idea" button, the board's Grooming column, and `POST /api/groomings` only
+surface once it's installed. (The Linear import routes through the same pipeline but
+is gated on its own plugin, not this one.)
+
+A grooming is **not a task** — it's its own entity (`db.groomings`, `Grooming` in
+`types.ts`) with its own lifecycle and REST routes (`/api/groomings/...`): **draft**
+(gray, parked) → **running** (purple, set only by `runner.groom`) → **finished**
+(green) or **failed**. Its card never leaves the Grooming column — the first, locked
+column on the board (no drag in or out); the status only recolors the card in place.
+Finished cards link to the tasks they spawned and can be archived or deleted
+(deletion also drops the session log; spawned tasks are independent and are kept).
+
+Running a card kicks off a **read-only** `claude -p` session in the repo (only
+research tools are auto-approved — see `groomArgs`; no worktree is ever created and
+nothing is written, so there's nothing on disk to clean up). Its job is to think the
+idea through and propose **one or more** self-contained task prompts.
+`server/groomer.ts` owns the meta-prompt and the parser that recovers the
+`{ tasks: [{ title, prompt, ready }] }` spec (emitted between `@@SRPOPO_SPEC_*@@`
+sentinels). On success `spawnGroomedTasks` (in `index.ts`) creates the tasks — in
+`backlog` or `ready` per the card's `target` (`backlog` | `ready` | `auto`, where
+`auto` honors each spec's own `ready` flag) — and the card finishes with their ids on
+`grooming.taskIds`; each spawned task keeps the original idea on `task.brief` and a
+back-pointer on `task.groomingId`. To change how ideas are groomed, edit
+`groomer.ts` — it is the single source of truth for that flow.
 
 ## Maintaining this repo with Claude (the meta-workflow)
 

@@ -260,22 +260,21 @@ function runningTasks() {
 }
 
 // ── desktop notifications ──
-// A task is "live" while its claude child process runs; when it leaves that
-// state a run (or grooming session) has just finished. We remember each task's
+// A task (or grooming card) is "live" while its claude child process runs; when
+// it leaves that state the run has just finished. We remember each record's
 // last-seen status so we can fire a native notification on that transition only.
-const LIVE_STATUSES = new Set(['running', 'grooming']);
-const lastStatus = new Map<string, string>(); // taskId -> last status seen on the bus
+const lastStatus = new Map<string, string>(); // task/grooming id -> last status seen on the bus
 
 function notificationsEnabled(): boolean {
   return !store.db.settings || store.db.settings.notifications !== false;
 }
 
-// Fire a native notification when a task finishes. Only on a live→finished
+// Fire a native notification when a task finishes. Only on a running→finished
 // transition, and never for a user-initiated stop (they already know).
 function maybeNotify(task: import('../server/types').Task): void {
   const prev = lastStatus.get(task.id);
   lastStatus.set(task.id, task.status);
-  if (!LIVE_STATUSES.has(prev as string) || LIVE_STATUSES.has(task.status)) return;
+  if (prev !== 'running' || task.status === 'running') return;
   if (task.lastOutcome === 'stopped') return;
   if (!notificationsEnabled() || !Notification.isSupported()) return;
 
@@ -283,9 +282,6 @@ function maybeNotify(task: import('../server/types').Task): void {
   if (task.status === 'failed') {
     title = `❌ Task failed — ${task.title}`;
     body = task.lastError ? String(task.lastError).slice(0, 140) : task.repoName;
-  } else if (task.lastOutcome === 'groomed') {
-    title = `✨ Idea groomed — ${task.title}`;
-    body = `${task.repoName} · ready to run`;
   } else {
     title = `✅ Task finished — ${task.title}`;
     const bits = [task.repoName];
@@ -296,6 +292,29 @@ function maybeNotify(task: import('../server/types').Task): void {
 
   const note = new Notification({ title, body, silent: false });
   note.on('click', () => openTask(task.id)); // jump straight to the task
+  note.show();
+}
+
+// Same transition watch for grooming cards: notify when one finishes or fails.
+function maybeNotifyGrooming(grooming: import('../server/types').Grooming): void {
+  const prev = lastStatus.get(grooming.id);
+  lastStatus.set(grooming.id, grooming.status);
+  if (prev !== 'running' || grooming.status === 'running') return;
+  if (grooming.lastOutcome === 'stopped') return;
+  if (!notificationsEnabled() || !Notification.isSupported()) return;
+
+  let title: string, body: string;
+  if (grooming.status === 'failed') {
+    title = `❌ Grooming failed — ${grooming.title}`;
+    body = grooming.lastError ? String(grooming.lastError).slice(0, 140) : grooming.repoName;
+  } else {
+    const n = (grooming.taskIds || []).length;
+    title = `✨ Idea groomed — ${grooming.title}`;
+    body = `${grooming.repoName} · ${n} task${n === 1 ? '' : 's'} created`;
+  }
+
+  const note = new Notification({ title, body, silent: false });
+  note.on('click', () => showWindow());
   note.show();
 }
 
@@ -380,6 +399,8 @@ function createTray(): void {
     if (msg.type === 'task') {
       maybeNotify(msg.task);
       refreshTray();
+    } else if (msg.type === 'grooming') {
+      maybeNotifyGrooming(msg.grooming);
     } else if (msg.type === 'task-removed') {
       refreshTray();
     }

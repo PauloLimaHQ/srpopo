@@ -17,6 +17,14 @@ import type { PluginInfo } from './types';
 
 const PLUGINS: PluginInfo[] = [
   {
+    id: 'grooming',
+    name: 'Idea Grooming',
+    description:
+      'Brief a rough idea and let a read-only Claude session think it through, then spawn one or more well-formed tasks in Backlog (or Ready). Adds a "Brief an Idea" button and a Grooming column to the board.',
+    icon: 'lightbulb',
+    requiresApiKey: false,
+  },
+  {
     id: 'linear',
     name: 'Linear',
     description:

@@ -82,17 +82,64 @@ export type TaskStatus =
   | 'backlog'
   | 'ready'
   | 'running'
-  | 'grooming'
   | 'review'
   | 'done'
   | 'failed';
+
+// A grooming card's own lifecycle — separate from tasks. It never becomes a
+// task; it spawns them. `running` (like a task's) is set only by the runner.
+export type GroomingStatus = 'draft' | 'running' | 'finished' | 'failed';
+
+// Where a grooming's spawned tasks land: always backlog, always ready, or let
+// the grooming session decide per task (its `ready` flag on each spec).
+export type GroomingTarget = 'backlog' | 'ready' | 'auto';
+
+// A "Brief an Idea" card. Lives in db.groomings with its own board column and
+// lifecycle: draft → running → finished (or failed), archive/delete when done.
+// The grooming session is read-only research in the repo — it never gets a
+// worktree or a resumable session, so there is nothing on disk to clean up.
+export interface Grooming {
+  id: string;
+  title: string;
+  // The rough idea being groomed (the brief).
+  idea: string;
+  repoId: string;
+  repoName: string;
+  repoPath: string;
+  model: string;
+  target: GroomingTarget;
+  // Origin pointer when the idea was imported from a Linear issue.
+  linearIssue?: { identifier: string; url: string };
+  // Suggested worktree branch, applied only when exactly one task is spawned
+  // (branch names must be unique across tasks).
+  branchName: string | null;
+  status: GroomingStatus;
+  sessionId: string | null;
+  resolvedModel: string | null;
+  costUsd: number;
+  numTurns: number | null;
+  durationMs: number | null;
+  runCount: number;
+  activeSubagents: number;
+  lastOutcome: string | null;
+  lastError: string | null;
+  // Ids of the tasks this grooming spawned when it finished.
+  taskIds: string[];
+  archived: boolean;
+  createdAt: string;
+  updatedAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
 
 export interface Task {
   id: string;
   title: string;
   prompt: string;
-  // The original rough idea, present only on tasks created via "Brief an Idea".
+  // The original rough idea, present only on tasks spawned by a grooming.
   brief?: string;
+  // The grooming card that spawned this task, so the two can link to each other.
+  groomingId?: string;
   // Origin pointer for tasks imported from a Linear issue, so the drawer can
   // link back to it. Present only on the Linear import path.
   linearIssue?: { identifier: string; url: string };
@@ -147,6 +194,7 @@ export interface Attachment {
 export interface Db {
   repos: Repo[];
   tasks: Task[];
+  groomings: Grooming[];
   settings: Settings;
 }
 
