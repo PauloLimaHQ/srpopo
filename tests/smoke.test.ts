@@ -53,6 +53,129 @@ test('plugins: catalog lists Linear and sanitize keeps only known ids', () => {
   assert.deepStrictEqual(plugins.sanitize(['linear', 'linear']), ['linear'], 'ids deduped');
 });
 
+test('store: remote access defaults off with an empty token, and is backfilled', () => {
+  const store = require('../server/store');
+  assert.strictEqual(store.db.settings.remoteAccess, false, 'remote access defaults off');
+  assert.strictEqual(store.db.settings.remoteAccessToken, '', 'no token until first enabled');
+  assert.strictEqual(store.DEFAULT_SETTINGS.remoteAccess, false, 'default is exported');
+  assert.strictEqual(store.DEFAULT_SETTINGS.remoteAccessToken, '', 'token default is exported');
+});
+
+test('index: GET /api/settings exposes remote flags over localhost but never the raw token', async () => {
+  const store = require('../server/store');
+  const index = require('../server/index');
+  const prevOn = store.db.settings.remoteAccess;
+  const prevTok = store.db.settings.remoteAccessToken;
+  store.db.settings.remoteAccess = true;
+  store.db.settings.remoteAccessToken = 'deadbeefdeadbeefdeadbeef';
+  const { server, port } = await index.start(0); // localhost bind; always allowed
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/settings`);
+    assert.strictEqual(res.status, 200, 'localhost is allowed even with remote access on');
+    const body = await res.json();
+    assert.strictEqual(body.remoteAccess, true, 'derived remoteAccess flag is exposed');
+    assert.strictEqual(body.remoteAccessConfigured, true, 'derived configured flag is exposed');
+    assert.ok(!('remoteAccessToken' in body), 'the raw token is never in the public settings');
+    assert.strictEqual(JSON.stringify(body).includes('deadbeef'), false, 'the token value never leaks');
+  } finally {
+    await new Promise<void>((r) => server.close(() => r()));
+    store.db.settings.remoteAccess = prevOn;
+    store.db.settings.remoteAccessToken = prevTok;
+  }
+});
+
+test('index: toggling remote access re-binds the live server, staying reachable over localhost', async () => {
+  const store = require('../server/store');
+  const index = require('../server/index');
+  const prevOn = store.db.settings.remoteAccess;
+  const prevTok = store.db.settings.remoteAccessToken;
+  store.db.settings.remoteAccess = false;
+  store.db.settings.remoteAccessToken = '';
+  const { server, port } = await index.start(0); // starts on 127.0.0.1 (remote off)
+  try {
+    assert.strictEqual((await fetch(`http://127.0.0.1:${port}/api/health`)).status, 200, 'reachable with remote off');
+
+    // Turn remote access on: the PATCH generates a token and, on response finish,
+    // re-binds the listener (to 0.0.0.0). The server must stay reachable over
+    // localhost across the re-bind, and a token must now exist.
+    const patched = await (await fetch(`http://127.0.0.1:${port}/api/settings`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ remoteAccess: true }),
+    })).json();
+    assert.strictEqual(patched.remoteAccess, true, 'PATCH reports remote access on');
+    assert.strictEqual(patched.remoteAccessConfigured, true, 'a token was generated on enable');
+    assert.ok(store.db.settings.remoteAccessToken.length >= 32, 'the token is a decent-length secret');
+
+    // Give the re-bind (scheduled on response finish) a moment to complete.
+    await new Promise((r) => setTimeout(r, 600));
+    assert.strictEqual((await fetch(`http://127.0.0.1:${port}/api/health`)).status, 200, 'still reachable after re-bind');
+  } finally {
+    await new Promise<void>((r) => server.close(() => r()));
+    store.db.settings.remoteAccess = prevOn;
+    store.db.settings.remoteAccessToken = prevTok;
+  }
+});
+
+test('index: authorizeRemote gates LAN requests by token (off → open, on → token or localhost)', () => {
+  const store = require('../server/store');
+  const index = require('../server/index');
+  const prevOn = store.db.settings.remoteAccess;
+  const prevTok = store.db.settings.remoteAccessToken;
+  const TOKEN = 'a'.repeat(48);
+  try {
+    // Off (the default): every request is allowed, no cookie set — today's behavior.
+    store.db.settings.remoteAccess = false;
+    store.db.settings.remoteAccessToken = '';
+    let d = index._authorizeRemote({ local: false, cookieToken: '', headerToken: '', queryToken: '' });
+    assert.deepStrictEqual(d, { allow: true }, 'remote off allows a LAN request with no token');
+
+    // On: localhost is always allowed, never prompted, no cookie set.
+    store.db.settings.remoteAccess = true;
+    store.db.settings.remoteAccessToken = TOKEN;
+    d = index._authorizeRemote({ local: true, cookieToken: '', headerToken: '', queryToken: '' });
+    assert.deepStrictEqual(d, { allow: true }, 'localhost is always allowed');
+
+    // On + LAN + no token → denied.
+    d = index._authorizeRemote({ local: false, cookieToken: '', headerToken: '', queryToken: '' });
+    assert.strictEqual(d.allow, false, 'a LAN request without a token is denied');
+
+    // On + LAN + wrong token → denied (guards the timingSafeEqual length mismatch).
+    d = index._authorizeRemote({ local: false, cookieToken: 'short', headerToken: '', queryToken: '' });
+    assert.strictEqual(d.allow, false, 'a wrong-length token is denied without throwing');
+    d = index._authorizeRemote({ local: false, cookieToken: 'b'.repeat(48), headerToken: '', queryToken: '' });
+    assert.strictEqual(d.allow, false, 'a same-length wrong token is denied');
+
+    // On + LAN + valid cookie → allowed, and no Set-Cookie (already the cookie).
+    d = index._authorizeRemote({ local: false, cookieToken: TOKEN, headerToken: '', queryToken: '' });
+    assert.deepStrictEqual(d, { allow: true }, 'a valid cookie token is allowed without re-setting it');
+
+    // On + LAN + valid Authorization header → allowed, and the cookie is set so
+    // subsequent EventSource requests (which can't send headers) authenticate.
+    d = index._authorizeRemote({ local: false, cookieToken: '', headerToken: TOKEN, queryToken: '' });
+    assert.strictEqual(d.allow, true, 'a valid bearer token is allowed');
+    assert.ok(d.setCookie && d.setCookie.includes('srpopo_token=') && /HttpOnly/i.test(d.setCookie)
+      && /SameSite=Lax/i.test(d.setCookie), 'header token persists an HttpOnly SameSite=Lax cookie');
+
+    // On + LAN + valid ?token= query → allowed, and the cookie is set.
+    d = index._authorizeRemote({ local: false, cookieToken: '', headerToken: '', queryToken: TOKEN });
+    assert.strictEqual(d.allow, true, 'a valid query token is allowed');
+    assert.ok(d.setCookie && d.setCookie.includes('srpopo_token='), 'query token persists the cookie');
+  } finally {
+    store.db.settings.remoteAccess = prevOn;
+    store.db.settings.remoteAccessToken = prevTok;
+  }
+});
+
+test('index: parseCookies parses a Cookie header by hand; lanAddresses lists IPv4 strings', () => {
+  const index = require('../server/index');
+  assert.deepStrictEqual(index._parseCookies('a=1; srpopo_token=xyz; b=2').srpopo_token, 'xyz');
+  assert.deepStrictEqual(index._parseCookies(undefined), {}, 'no header yields an empty map');
+  assert.deepStrictEqual(index._parseCookies('novalue').novalue, undefined, 'a valueless part is skipped');
+  const lan = index._lanAddresses();
+  assert.ok(Array.isArray(lan), 'lanAddresses returns an array');
+  assert.ok(lan.every((ip: string) => typeof ip === 'string' && !ip.includes(':')), 'entries are IPv4 strings');
+});
+
 test('github: module exports prForTask, mergePrForTask, and a pure parsePrList helper', () => {
   const github = require('../server/github');
   assert.strictEqual(typeof github.prForTask, 'function', 'prForTask is exported');

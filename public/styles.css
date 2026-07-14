@@ -614,6 +614,27 @@ a.chip.pr:hover { border-color: currentColor; }
 .settings-section-title { font-family: var(--serif); font-size: 18px; font-weight: 600; }
 .settings-close { position: absolute; top: 14px; right: 14px; }
 
+/* ── remote access (LAN) ── */
+.remote-warning {
+  display: flex; gap: 10px; align-items: flex-start;
+  margin-top: 12px; padding: 10px 12px; border-radius: 8px;
+  font-size: 12px; line-height: 1.5;
+  color: var(--red); border: 1px solid var(--red-soft); background: var(--red-soft);
+}
+.remote-warning .icon { flex: none; margin-top: 1px; }
+.remote-urls { display: flex; flex-direction: column; gap: 8px; margin: 8px 0; }
+.remote-url {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--bg-raised);
+}
+.remote-url code {
+  flex: 1 1 auto; min-width: 0; overflow-x: auto; white-space: nowrap;
+  font-size: 12px; color: var(--text);
+}
+.remote-url .remote-copy { flex: none; }
+.remote-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 6px; }
+
 /* ── plugins / marketplace ── */
 .plugins-body { display: flex; flex-direction: column; gap: 20px; }
 .plugin-group { display: flex; flex-direction: column; gap: 10px; }

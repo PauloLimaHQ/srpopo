@@ -1,7 +1,9 @@
 import express from 'express';
-import type { Request, Response } from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
+import crypto from 'crypto';
 import { execFile } from 'child_process';
 import type { Server } from 'http';
 import type { AddressInfo } from 'net';
@@ -25,6 +27,165 @@ import * as framing from './framing';
 import * as terminal from './terminal';
 
 const app = express();
+
+// ---------- remote access (opt-in LAN mode) ----------
+//
+// Invariant #1 normally pins the server to 127.0.0.1 with no auth — localhost IS
+// the security boundary. The opt-in "Remote Access (LAN)" mode deliberately
+// relaxes that so the board is reachable from other machines on the same
+// network; to keep it safe it MUST replace the lost boundary with a shared
+// token. HTTPS / internet tunneling / multi-user accounts are out of scope for
+// v1 (LAN + single shared token only).
+const REMOTE_TOKEN_COOKIE = 'srpopo_token';
+
+// The port the HTTP server is actually listening on, captured at start()/rebind
+// so GET /api/remote-access can build the LAN pairing URL.
+let listenPort = 0;
+
+// Non-internal IPv4 addresses of this machine, e.g. ['192.168.1.20']. Cross-
+// platform via os.networkInterfaces(); used to build the pairing URL(s).
+function lanAddresses(): string[] {
+  const out: string[] = [];
+  for (const nets of Object.values(os.networkInterfaces())) {
+    for (const net of nets || []) {
+      if (net.family === 'IPv4' && !net.internal) out.push(net.address);
+    }
+  }
+  return out;
+}
+
+// True when a request originates from this same machine. We read the raw socket
+// address (never a forwardable header) so a LAN client can't spoof localhost.
+// Localhost is always trusted: the Electron window and a local browser must
+// never be prompted for a token, and GET /api/remote-access is localhost-only.
+function isLocalRequest(req: Request): boolean {
+  const ip = req.socket.remoteAddress || '';
+  return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+}
+
+// Hand-rolled Cookie header parser — no cookie-parser dependency (invariant:
+// express is the only runtime dep). Returns a { name: value } map.
+function parseCookies(header: string | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!header) return out;
+  for (const part of header.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq === -1) continue;
+    const name = part.slice(0, eq).trim();
+    if (!name) continue;
+    try { out[name] = decodeURIComponent(part.slice(eq + 1).trim()); }
+    catch { out[name] = part.slice(eq + 1).trim(); }
+  }
+  return out;
+}
+
+// Constant-time compare of a provided token against the configured secret,
+// guarding the length mismatch timingSafeEqual would throw on.
+function tokenMatches(provided: string): boolean {
+  const expected = db.settings.remoteAccessToken || '';
+  if (!expected || !provided) return false;
+  const a = Buffer.from(provided);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+// A tiny, dependency-free "enter access token" page served to unauthorized
+// top-level navigations from the LAN. It just posts the token back as ?token=
+// so the middleware can validate it and set the auth cookie.
+function tokenPromptPage(): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sr. Popo — Access token</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center;
+    background: #1a1436; color: #ece9f5;
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; }
+  .card { width: min(360px, 90vw); background: #241c4a; border: 1px solid #3a2f6b;
+    border-radius: 14px; padding: 28px; box-shadow: 0 12px 40px rgba(0,0,0,.35); }
+  h1 { font-size: 18px; margin: 0 0 6px; }
+  p { margin: 0 0 18px; color: #b7b0d6; font-size: 13px; }
+  input { width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: 8px;
+    border: 1px solid #46397f; background: #171132; color: #ece9f5; font-size: 14px; }
+  button { margin-top: 14px; width: 100%; padding: 10px 12px; border: 0; border-radius: 8px;
+    background: #7c5cff; color: #fff; font-size: 14px; font-weight: 600; cursor: pointer; }
+  button:hover { background: #6b4bf0; }
+</style></head>
+<body><form class="card" onsubmit="event.preventDefault();
+    var t=document.getElementById('t').value.trim();
+    if(t)location.href='/?token='+encodeURIComponent(t);">
+  <h1>Sr. Popo</h1>
+  <p>This board is protected. Enter the access token from the host machine's Settings &rsaquo; Remote Access.</p>
+  <input id="t" type="password" autofocus placeholder="Access token" autocomplete="off">
+  <button type="submit">Unlock</button>
+</form></body></html>`;
+}
+
+// The remote-access authorization decision, split out from the middleware so it
+// is unit-testable without spoofing socket addresses. Reads the configured token
+// from db.settings; every request-derived value is passed in. Returns whether to
+// allow the request and, when allowing, the Set-Cookie value to persist (only
+// when the token didn't already arrive as the cookie).
+interface RemoteAuthResult {
+  allow: boolean;
+  setCookie?: string;
+}
+function authorizeRemote(input: {
+  local: boolean;
+  cookieToken: string;
+  headerToken: string;
+  queryToken: string;
+}): RemoteAuthResult {
+  // Off by default → today's behavior exactly: no auth (the server is bound to
+  // 127.0.0.1 only, so only this machine can reach it anyway).
+  if (!db.settings.remoteAccess) return { allow: true };
+  // Localhost is always trusted and never prompted.
+  if (input.local) return { allow: true };
+
+  const provided = input.cookieToken || input.headerToken || input.queryToken;
+  if (provided && tokenMatches(provided)) {
+    // If the token came via header or query (not already the cookie), persist it
+    // as a cookie so subsequent same-origin fetch AND EventSource requests
+    // authenticate automatically — EventSource can't send custom headers, so the
+    // cookie is essential for the live SSE board. HttpOnly keeps the secret out
+    // of page JS; SameSite=Lax is right for a same-origin app.
+    if (input.cookieToken !== provided) {
+      return {
+        allow: true,
+        setCookie: `${REMOTE_TOKEN_COOKIE}=${encodeURIComponent(provided)}; HttpOnly; SameSite=Lax; Path=/`,
+      };
+    }
+    return { allow: true };
+  }
+  return { allow: false };
+}
+
+// Gate every request when remote access is on. Registered before the body
+// parser and the static handler so unauthorized LAN clients can't reach either.
+app.use((req: Request, res: Response, next: NextFunction) => {
+  const cookies = parseCookies(req.headers.cookie);
+  const bearer = /^Bearer\s+(.+)$/i.exec(req.headers.authorization || '');
+  const decision = authorizeRemote({
+    local: isLocalRequest(req),
+    cookieToken: cookies[REMOTE_TOKEN_COOKIE] || '',
+    headerToken: bearer ? bearer[1] : '',
+    queryToken: typeof req.query.token === 'string' ? req.query.token : '',
+  });
+
+  if (decision.allow) {
+    if (decision.setCookie) res.setHeader('Set-Cookie', decision.setCookie);
+    return next();
+  }
+
+  // Unauthorized LAN request: a plain 401 for the API, a token-entry page for a
+  // top-level navigation (which then retries with ?token=).
+  if (req.path.startsWith('/api/')) {
+    return err(res, 401, 'Remote access requires a valid token');
+  }
+  res.status(401).type('html').send(tokenPromptPage());
+});
+
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static(path.join(appRoot(), 'public')));
 
@@ -52,6 +213,10 @@ function publicSettings(): PublicSettings {
     linearConfigured: !!(db.settings.linearApiToken && db.settings.linearApiToken.trim()),
     maxParallelSessions: db.settings.maxParallelSessions,
     installedPlugins: plugins.sanitize(db.settings.installedPlugins),
+    remoteAccess: !!db.settings.remoteAccess,
+    // Derived boolean only — the raw token never leaves the localhost-only
+    // GET /api/remote-access endpoint.
+    remoteAccessConfigured: !!(db.settings.remoteAccessToken && db.settings.remoteAccessToken.trim()),
   };
 }
 
@@ -193,10 +358,49 @@ app.patch('/api/settings', (req: Request, res: Response) => {
   // Marketplace: the board sends the full desired set of installed plugin ids;
   // unknown ids are dropped so only real plugins can be toggled on.
   if ('installedPlugins' in req.body) db.settings.installedPlugins = plugins.sanitize(req.body.installedPlugins);
+
+  // Remote access: rotate the token on request (revokes all remote sessions),
+  // then apply the on/off toggle — generating a token lazily when first enabling
+  // so LAN binding is never exposed without the gate active. A change to the
+  // toggle re-binds the live server (LAN vs localhost) below.
+  if (req.body.regenerateRemoteToken === true) {
+    db.settings.remoteAccessToken = crypto.randomBytes(24).toString('hex');
+  }
+  let rebindNeeded = false;
+  if ('remoteAccess' in req.body) {
+    const enabled = !!req.body.remoteAccess;
+    if (enabled && !db.settings.remoteAccessToken) {
+      db.settings.remoteAccessToken = crypto.randomBytes(24).toString('hex');
+    }
+    if (enabled !== db.settings.remoteAccess) rebindNeeded = true;
+    db.settings.remoteAccess = enabled;
+  }
+
   save();
   const settings = publicSettings();
   broadcast({ type: 'settings', settings });
+  // Re-bind only AFTER this response has flushed: rebind() force-closes every live
+  // connection (including this request's own socket), so doing it inline would
+  // truncate the reply the local board is waiting on.
+  if (rebindNeeded) res.on('finish', () => rebind());
   res.json(settings);
+});
+
+// The raw token + full LAN pairing URL(s). Localhost-only: this is the single
+// place the secret is exposed, and only to an already-trusted local connection
+// (the desktop app / a local browser) — never to the LAN, never in a broadcast.
+app.get('/api/remote-access', (req: Request, res: Response) => {
+  if (!isLocalRequest(req)) return err(res, 403, 'Only available on this machine');
+  const token = db.settings.remoteAccessToken || '';
+  const lan = lanAddresses();
+  const urls = token ? lan.map((ip) => `http://${ip}:${listenPort}/?token=${token}`) : [];
+  res.json({
+    enabled: !!db.settings.remoteAccess,
+    token,
+    lan,
+    url: urls[0] || null,
+    urls,
+  });
 });
 
 // Catalog of optional task behaviors the UI renders as checkboxes.
@@ -753,18 +957,57 @@ async function backfillRepoNames(): Promise<void> {
 
 // ---------- boot ----------
 
+let httpServer: Server | null = null;
+
+// The interface to bind: 0.0.0.0 (reachable from the LAN) only when remote
+// access is on — and the token gate above is then always active. Otherwise
+// 127.0.0.1, so localhost stays the security boundary (invariant #1).
+function bindHost(): string {
+  return db.settings.remoteAccess ? '0.0.0.0' : '127.0.0.1';
+}
+
+// Re-bind the live server to match the current remoteAccess setting, on the SAME
+// port, without restarting the process (so db/session state survives). We must
+// close the old listener before re-listening on a different host; long-lived SSE
+// connections would keep it open forever, so force them closed — the board's
+// EventSource auto-reconnects. Bind errors are logged, never thrown, so toggling
+// remote access can't crash the app.
+function rebind(): void {
+  const server = httpServer;
+  if (!server) return;
+  const host = bindHost();
+  const port = listenPort;
+  server.once('close', () => {
+    server.listen(port, host, () => {
+      // The permission bridge always talks to us over localhost (see below), so
+      // its base URL is unchanged — nothing to re-point here.
+      console.log(`[remote-access] re-bound to ${host}:${port}`);
+    });
+    server.once('error', (e) => console.error('[remote-access] rebind failed:', (e as Error).message));
+  });
+  server.close();
+  // closeAllConnections lands in Node 18.2+; force-drop live sockets so the
+  // 'close' event fires promptly instead of waiting on open SSE streams.
+  const s = server as Server & { closeAllConnections?: () => void };
+  if (typeof s.closeAllConnections === 'function') s.closeAllConnections();
+}
+
 /**
- * Start the HTTP server on 127.0.0.1.
+ * Start the HTTP server. Binds 127.0.0.1 by default, or 0.0.0.0 when remote
+ * access is enabled in settings (see bindHost).
  * @param port - desired port; pass 0 for an OS-assigned free port.
  */
 function start(port: string | number = process.env.PORT || 7777): Promise<{ server: Server; port: number; url: string }> {
   return new Promise((resolve, reject) => {
-    const server = app.listen(Number(port), '127.0.0.1', () => {
-      const actual = (server.address() as AddressInfo).port;
-      const url = `http://127.0.0.1:${actual}`;
-      // Tell the runner where the permission bridge should POST approval requests.
+    const server = app.listen(Number(port), bindHost(), () => {
+      httpServer = server;
+      listenPort = (server.address() as AddressInfo).port;
+      // The local URL is always localhost: the Electron window loads it and the
+      // permission bridge POSTs approvals to it. Even with remote access on, the
+      // MCP bridge runs on this same machine and must never call across the LAN.
+      const url = `http://127.0.0.1:${listenPort}`;
       runner.setBaseUrl(url);
-      resolve({ server, port: actual, url });
+      resolve({ server, port: listenPort, url });
       backfillRepoNames();
     });
     server.on('error', reject);
@@ -772,6 +1015,8 @@ function start(port: string | number = process.env.PORT || 7777): Promise<{ serv
 }
 
 export { app, start, runner, terminal };
+// Test-only exports for the remote-access gate (see tests/smoke.test.ts).
+export { authorizeRemote as _authorizeRemote, parseCookies as _parseCookies, lanAddresses as _lanAddresses };
 
 // When run directly (`node server/index.js` / `tsx server/index.ts`), boot as a
 // standalone server.
