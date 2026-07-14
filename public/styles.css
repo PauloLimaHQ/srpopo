@@ -924,6 +924,11 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--a
 .toast.info { border-color: var(--accent); }
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
 
+.update-banner { display: flex; align-items: center; gap: 10px; }
+.update-banner .icon { flex: none; color: var(--accent); }
+.update-banner span { flex: 1; }
+.update-banner .btn { flex: none; }
+
 .hidden { display: none !important; }
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
