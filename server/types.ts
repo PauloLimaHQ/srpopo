@@ -158,6 +158,9 @@ export interface Task {
   // Origin pointer for tasks imported from a Linear issue, so the drawer can
   // link back to it. Present only on the Linear import path.
   linearIssue?: { identifier: string; url: string };
+  // Origin pointer for tasks imported from a repo spec file, so the drawer can
+  // show where the prompt came from. Present only on the repo-specs import path.
+  specOrigin?: { path: string };
   repoId: string;
   repoName: string;
   repoPath: string;
@@ -426,4 +429,13 @@ export interface LinearIssue {
   url: string;
   state: string;
   comments: LinearIssueComment[];
+}
+
+// One markdown spec file discovered by repoSpecs.discoverSpecs, under a repo's
+// specs/ or .specs/ directory.
+export interface RepoSpecFile {
+  path: string;
+  title: string;
+  updatedAt: string;
+  size: number;
 }

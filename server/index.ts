@@ -22,6 +22,7 @@ import * as personas from './personas';
 import * as groomer from './groomer';
 import * as github from './github';
 import * as linear from './linear';
+import * as repoSpecs from './repoSpecs';
 import * as plugins from './plugins';
 import * as autonomous from './autonomous';
 import * as conflicts from './conflicts';
@@ -852,6 +853,103 @@ app.post('/api/linear/briefs', async (req: Request, res: Response) => {
   } catch (e) {
     err(res, 500, (e as Error).message);
   }
+});
+
+// ---------- repo specs (import a spec file straight onto the board as a task) ----------
+
+// The markdown spec files discovered under the repo's specs/ and .specs/
+// directories, for the "From Specs" browse list.
+app.get('/api/repos/:id/specs', (req: Request, res: Response) => {
+  if (!pluginInstalled('repo-specs')) return err(res, 400, 'Install the Repository Specs plugin first');
+  const repo = db.repos.find((r) => r.id === req.params.id);
+  if (!repo) return err(res, 404, 'Repo not found');
+  res.json({ specs: repoSpecs.discoverSpecs(repo.path) });
+});
+
+// Read-only preview of one spec file's content, keyed by the relative `path`
+// discoverSpecs returned. `path` is client-supplied, so readSpec re-validates
+// it against the repo's spec roots rather than trusting it.
+app.get('/api/repos/:id/specs/preview', (req: Request, res: Response) => {
+  if (!pluginInstalled('repo-specs')) return err(res, 400, 'Install the Repository Specs plugin first');
+  const repo = db.repos.find((r) => r.id === req.params.id);
+  if (!repo) return err(res, 404, 'Repo not found');
+  const result = repoSpecs.readSpec(repo.path, String(req.query.path || ''));
+  if (!result.ok) {
+    const map: Record<string, [number, string]> = {
+      'not-found': [404, 'Spec file not found'],
+      'invalid-path': [400, 'Invalid spec path'],
+      error: [500, 'Could not read spec file'],
+    };
+    const [code, message] = map[result.reason];
+    return err(res, code, message);
+  }
+  res.json({ content: result.content });
+});
+
+// Import one or more spec files straight onto the board as tasks — a file's
+// content becomes its task's prompt as-is (no grooming pass in between, unlike
+// the Linear import: a spec file already reads like a self-contained
+// instruction). Paths that fail to read are skipped rather than failing the
+// whole request, so the UI can report "N imported, M skipped". Doesn't spawn a
+// `claude` process, so (unlike dispatch/groom) there's no capacity check here.
+app.post('/api/repos/:id/specs/import', (req: Request, res: Response) => {
+  if (!pluginInstalled('repo-specs')) return err(res, 400, 'Install the Repository Specs plugin first');
+  const repo = db.repos.find((r) => r.id === req.params.id);
+  if (!repo) return err(res, 404, 'Repo not found');
+
+  const paths = Array.isArray(req.body.paths) ? req.body.paths.map((p: unknown) => String(p)) : [];
+  const status = req.body.target === 'ready' ? 'ready' : 'backlog';
+  const model = req.body.model ? String(req.body.model) : 'default';
+  const useWorktree = req.body.useWorktree !== false;
+
+  const tasks: Task[] = [];
+  const skipped: string[] = [];
+  for (const relPath of paths) {
+    const result = repoSpecs.readSpec(repo.path, relPath);
+    if (!result.ok) { skipped.push(relPath); continue; }
+    const task: Task = {
+      id: id(),
+      title: repoSpecs.deriveTitle(relPath, result.content),
+      prompt: result.content,
+      specOrigin: { path: relPath },
+      repoId: repo.id,
+      repoName: repo.name,
+      repoPath: repo.path,
+      addons: [],
+      personas: [],
+      attachments: [],
+      useWorktree,
+      worktreePath: null,
+      branchName: null,
+      branch: null,
+      model,
+      permissionMode: 'acceptEdits',
+      allowedTools: '',
+      promptPermissions: true,
+      status,
+      sessionId: null,
+      resolvedModel: null,
+      costUsd: 0,
+      numTurns: null,
+      durationMs: null,
+      modelUsage: {},
+      runCount: 0,
+      activeSubagents: 0,
+      lastOutcome: null,
+      lastError: null,
+      resolvingConflicts: false,
+      archived: false,
+      createdAt: now(),
+      updatedAt: now(),
+      startedAt: null,
+      finishedAt: null,
+    };
+    db.tasks.push(task);
+    tasks.push(task);
+    broadcast({ type: 'task', task });
+  }
+  save();
+  res.json({ tasks, skipped });
 });
 
 app.patch('/api/tasks/:id', (req: Request, res: Response) => {

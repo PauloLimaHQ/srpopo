@@ -35,6 +35,7 @@
       <button class="btn ghost" id="btn-repos"><span class="i" data-icon="folder"></span>Repos</button>
       <button class="btn ghost hidden" id="btn-brief"><span class="i" data-icon="lightbulb"></span>Brief an Idea</button>
       <button class="btn ghost hidden" id="btn-linear"><span class="i" data-icon="linear"></span>From Linear</button>
+      <button class="btn ghost hidden" id="btn-specs"><span class="i" data-icon="folder"></span>From Specs</button>
       <button class="btn primary" id="btn-new-task"><span class="i" data-icon="plus"></span>New Task</button>
     </div>
   </header>
@@ -309,6 +310,57 @@
       <div class="modal-actions">
         <button class="btn ghost" id="linear-cancel">Cancel</button>
         <button class="btn primary" id="linear-submit">Groom it <span class="i" data-icon="sparkles"></span></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Import task(s) from Repository Specs modal -->
+  <div id="modal-specs" class="modal hidden">
+    <div class="modal-box specs-box">
+      <h2><span class="i" data-icon="folder"></span>Import from Specs</h2>
+      <p class="muted">Pick one or more spec files already committed under <code>specs/</code> or
+        <code>.specs/</code> — each file's content becomes the task's prompt as-is, no grooming pass.</p>
+      <label id="specs-repo-field">Repository
+        <div class="row">
+          <select id="specs-repo"></select>
+          <button class="btn ghost" id="specs-add-repo" title="Add a repository" aria-label="Add a repository"><span class="i" data-icon="plus"></span></button>
+        </div>
+      </label>
+      <div class="specs-layout">
+        <div class="specs-list-pane">
+          <div class="specs-list-head">
+            <label class="check specs-select-all" title="Select all">
+              <input type="checkbox" id="specs-select-all" />
+              <span>All</span>
+            </label>
+            <input type="text" id="specs-filter" placeholder="Filter specs…" autocomplete="off" spellcheck="false" />
+          </div>
+          <div id="specs-list" class="specs-file-list"></div>
+        </div>
+        <div class="specs-preview-pane">
+          <div class="specs-preview-head">Preview</div>
+          <div id="specs-preview" class="specs-preview-body muted">Select a spec to preview it.</div>
+        </div>
+      </div>
+      <div class="grid-2">
+        <label>Target
+          <select id="specs-target">
+            <option value="backlog">Backlog</option>
+            <option value="ready">Ready</option>
+          </select>
+        </label>
+        <label>Model
+          <select id="specs-model">
+            <option value="default">Account default</option>
+            <option value="sonnet">Sonnet</option>
+            <option value="opus">Opus</option>
+            <option value="haiku">Haiku</option>
+          </select>
+        </label>
+      </div>
+      <div class="modal-actions">
+        <button class="btn ghost" id="specs-cancel">Cancel</button>
+        <button class="btn primary" id="specs-submit">Import <span class="i" data-icon="check"></span></button>
       </div>
     </div>
   </div>

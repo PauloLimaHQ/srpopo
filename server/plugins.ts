@@ -41,6 +41,14 @@ const PLUGINS: PluginInfo[] = [
     icon: 'bot',
     requiresApiKey: false,
   },
+  {
+    id: 'repo-specs',
+    name: 'Repository Specs',
+    description:
+      'Import spec files already committed under specs/ or .specs/ straight onto the board as tasks — the file becomes the task prompt as-is. Adds a "From Specs" button.',
+    icon: 'folder',
+    requiresApiKey: false,
+  },
 ];
 
 const byId = new Map(PLUGINS.map((p) => [p.id, p]));
