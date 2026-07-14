@@ -23,6 +23,7 @@ import * as plugins from './plugins';
 import * as autonomous from './autonomous';
 import * as framing from './framing';
 import * as terminal from './terminal';
+import * as usage from './usage';
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -110,6 +111,7 @@ function startGrooming(repo: Repo, brief: string, model: unknown, extra?: Partia
     costUsd: 0,
     numTurns: null,
     durationMs: null,
+    modelUsage: {},
     runCount: 0,
     activeSubagents: 0,
     lastOutcome: null,
@@ -210,6 +212,18 @@ app.get('/api/personas', (req: Request, res: Response) => res.json(personas.cata
 // /api/settings (installedPlugins), keeping settings' single writer.
 app.get('/api/plugins', (req: Request, res: Response) =>
   res.json({ plugins: plugins.catalog(), installed: plugins.sanitize(db.settings.installedPlugins) }));
+
+// ---------- usage ----------
+
+// Local spend/token dashboard (Settings → Usage): aggregates the append-only
+// usage ledger (server/usage.ts) by period, model, and repo. `period` is one of
+// '7d' | '30d' | '90d' | 'all' (default '30d'); `repoId` optionally scopes to
+// one repo/project.
+app.get('/api/usage', (req: Request, res: Response) => {
+  const period = typeof req.query.period === 'string' ? req.query.period : undefined;
+  const repoId = typeof req.query.repoId === 'string' && req.query.repoId ? req.query.repoId : undefined;
+  res.json(usage.computeSummary({ period, repoId }));
+});
 
 // ---------- autonomous mode (marketplace plugin) ----------
 
@@ -424,6 +438,7 @@ app.post('/api/tasks', (req: Request, res: Response) => {
     costUsd: 0,
     numTurns: null,
     durationMs: null,
+    modelUsage: {},
     runCount: 0,
     activeSubagents: 0,
     lastOutcome: null,

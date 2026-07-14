@@ -2,13 +2,18 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 
-import type { Db, LogEvent, Repo, Settings, Task } from './types';
+import type { Db, LogEvent, Repo, Settings, Task, UsageEntry } from './types';
 
 // When embedded in Electron the packaged app dir is read-only, so the main
 // process points us at a writable per-user location via SRPOPO_DATA_DIR.
 const DATA_DIR = process.env.SRPOPO_DATA_DIR || path.join(__dirname, '..', 'data');
 const DB_PATH = path.join(DATA_DIR, 'db.json');
 const LOGS_DIR = path.join(DATA_DIR, 'logs');
+// Append-only usage ledger (see server/usage.ts) — one JSON line per model per
+// run, the source the Usage dashboard aggregates from. Kept separate from the
+// per-task NDJSON logs so reading it for a dashboard never has to replay every
+// task's full tool-call/assistant-text history.
+const USAGE_PATH = path.join(DATA_DIR, 'usage.ndjson');
 
 fs.mkdirSync(LOGS_DIR, { recursive: true });
 
@@ -101,4 +106,39 @@ function getRepo(repoId: string): Repo | undefined {
   return db.repos.find((r) => r.id === repoId);
 }
 
-export { db, save, id, now, appendLog, readLog, logPath, getTask, getRepo, DATA_DIR, DEFAULT_SETTINGS };
+// In-memory cache of the parsed ledger, invalidated on every append. Local,
+// single-user tool — one small file, so a full re-read is cheap the one time
+// it's needed and free every other time GET /api/usage is hit.
+let usageCache: UsageEntry[] | null = null;
+
+function usageLogExists(): boolean {
+  return fs.existsSync(USAGE_PATH);
+}
+
+// Creates an empty ledger file if none exists yet — the sentinel usage.ts's
+// one-time backfill checks so it never re-scans every task's logs on boot.
+function touchUsageLog(): void {
+  if (!fs.existsSync(USAGE_PATH)) fs.writeFileSync(USAGE_PATH, '');
+}
+
+function appendUsage(entry: UsageEntry): void {
+  fs.appendFileSync(USAGE_PATH, JSON.stringify(entry) + '\n');
+  usageCache = null;
+}
+
+function readUsage(): UsageEntry[] {
+  if (usageCache) return usageCache;
+  if (!fs.existsSync(USAGE_PATH)) return (usageCache = []);
+  const out: UsageEntry[] = [];
+  for (const line of fs.readFileSync(USAGE_PATH, 'utf8').split('\n')) {
+    if (!line.trim()) continue;
+    try { out.push(JSON.parse(line)); } catch { /* skip partial line */ }
+  }
+  usageCache = out;
+  return out;
+}
+
+export {
+  db, save, id, now, appendLog, readLog, logPath, getTask, getRepo, DATA_DIR, DEFAULT_SETTINGS,
+  appendUsage, readUsage, usageLogExists, touchUsageLog,
+};

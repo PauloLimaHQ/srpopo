@@ -8,6 +8,7 @@ import { broadcast } from './bus';
 import * as groomer from './groomer';
 import * as addons from './addons';
 import * as permissions from './permissions';
+import * as usage from './usage';
 import type { LogEvent, Task } from './types';
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
@@ -247,6 +248,7 @@ function launch(task: Task, { args, workDir, prompt, promptEvent, resolveExit }:
       task.costUsd = (task.costUsd || 0) + (event.total_cost_usd || 0);
       task.numTurns = event.num_turns;
       task.durationMs = event.duration_ms;
+      usage.applyResult(task, event);
       emitTask(task);
     }
 
