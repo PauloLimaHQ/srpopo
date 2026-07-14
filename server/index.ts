@@ -229,8 +229,9 @@ app.post('/api/autonomous/start', async (req: Request, res: Response) => {
     return err(res, 400, 'budgetUsd must be a number between 0 and 1000');
   }
   if (autonomous.isActive()) return err(res, 409, 'Autonomous mode is already running');
+  const reviewMode = !!req.body.reviewMode;
   try {
-    res.json(await autonomous.start({ repoId: repo.id, budgetUsd }));
+    res.json(await autonomous.start({ repoId: repo.id, budgetUsd, reviewMode }));
   } catch (e) {
     err(res, 500, (e as Error).message);
   }

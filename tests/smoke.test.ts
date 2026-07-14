@@ -675,3 +675,161 @@ test('autonomous: stop stops pumping but lets in-flight runs finish', async () =
     restore();
   }
 });
+
+// ---------- autonomous mode: review loop (opt-in) ----------
+//
+// These drive the bus-driven review loop the way real runs do: the stubbed
+// review dispatch only marks the task `running`, and each test broadcasts the
+// task's completion itself (mirroring runner.dispatch's terminal event). A
+// controllable `headSha` stands in for git so a pass "committing a fix" is just
+// the test advancing the sha before it completes the pass.
+
+// Let the engine's async completion handlers (headSha / checkPr / merge) settle.
+function tick() {
+  return new Promise((r) => setTimeout(r, 5));
+}
+
+test('autonomous review: re-reviews while a pass commits fixes, then merges when clean', async () => {
+  const autonomous = require('../server/autonomous');
+  const bus = require('../server/bus');
+  const review = mkTask('rv1', 'review', 'repoA', { sessionId: 'sess-rv1', worktreePath: '/tmp/wt/rv1' });
+  const restore = withStore([review], 10);
+
+  let sha = 'sha0';
+  const passes: string[] = [];
+  let merged = 0;
+  let removed = 0;
+  autonomous._setDeps({
+    headSha: async () => sha,
+    reviewDispatch: async (t: { id: string; status: string }) => { passes.push(t.id); t.status = 'running'; },
+    checkPr: async () => ({ status: 'green', pr: { number: 1 } }),
+    merge: async () => { merged += 1; return { ok: true }; },
+    removeWorktree: async () => { removed += 1; },
+  });
+
+  // Complete an in-flight review pass, optionally advancing HEAD first (a "fix").
+  async function completePass(newSha?: string) {
+    if (newSha) sha = newSha; // the pass committed a change
+    review.status = 'review';
+    bus.broadcast({ type: 'task', task: review });
+    await tick();
+  }
+
+  try {
+    await autonomous.start({ repoId: 'repoA', budgetUsd: 100, reviewMode: true });
+    assert.strictEqual(passes.length, 1, 'the parked review task is picked up for a first review pass');
+    assert.strictEqual(review.status, 'running', 'the pass bounced it back to running');
+
+    await completePass('sha1'); // pass 1 committed a fix → HEAD advanced → review again
+    assert.strictEqual(passes.length, 2, 'a committed fix triggers another review pass');
+
+    await completePass(); // pass 2 made no change → clean → merge
+    assert.strictEqual(merged, 1, 'a clean pass merges the PR exactly once');
+    assert.strictEqual(removed, 1, 'the worktree is dropped after the merge');
+    assert.strictEqual(review.status, 'done', 'the task lands in done');
+    assert.strictEqual(review.worktreePath, null, 'the worktree path is cleared');
+    assert.strictEqual(autonomous.isActive(), false, 'the session drains once the work is finished');
+  } finally {
+    autonomous._reset();
+    autonomous._setDeps(null);
+    restore();
+  }
+});
+
+test('autonomous review: a clean first pass merges without any extra rounds', async () => {
+  const autonomous = require('../server/autonomous');
+  const bus = require('../server/bus');
+  const review = mkTask('rv2', 'review', 'repoA', { sessionId: 'sess-rv2', worktreePath: '/tmp/wt/rv2' });
+  const restore = withStore([review], 10);
+
+  let merged = 0;
+  const passes: string[] = [];
+  autonomous._setDeps({
+    headSha: async () => 'stable', // never advances → no fixes were needed
+    reviewDispatch: async (t: { id: string; status: string }) => { passes.push(t.id); t.status = 'running'; },
+    checkPr: async () => ({ status: 'green', pr: { number: 2 } }),
+    merge: async () => { merged += 1; return { ok: true }; },
+    removeWorktree: async () => {},
+  });
+
+  try {
+    await autonomous.start({ repoId: 'repoA', budgetUsd: 100, reviewMode: true });
+    review.status = 'review';
+    bus.broadcast({ type: 'task', task: review });
+    await tick();
+    assert.strictEqual(passes.length, 1, 'exactly one review pass runs when nothing changes');
+    assert.strictEqual(merged, 1, 'a clean pass merges straight away');
+    assert.strictEqual(review.status, 'done', 'the task is finished');
+  } finally {
+    autonomous._reset();
+    autonomous._setDeps(null);
+    restore();
+  }
+});
+
+test('autonomous review: a non-green PR is left in review for the human, not merged', async () => {
+  const autonomous = require('../server/autonomous');
+  const bus = require('../server/bus');
+  const review = mkTask('rv3', 'review', 'repoA', { sessionId: 'sess-rv3', worktreePath: '/tmp/wt/rv3' });
+  const restore = withStore([review], 10);
+
+  let merged = 0;
+  autonomous._setDeps({
+    headSha: async () => 'stable',
+    reviewDispatch: async (t: { status: string }) => { t.status = 'running'; },
+    checkPr: async () => ({ status: 'failing', pr: { number: 3 } }),
+    merge: async () => { merged += 1; return { ok: true }; },
+    removeWorktree: async () => {},
+  });
+
+  try {
+    const started = await autonomous.start({ repoId: 'repoA', budgetUsd: 100, reviewMode: true });
+    assert.strictEqual(started.reviewMode, true, 'status reports review mode is on');
+    review.status = 'review';
+    bus.broadcast({ type: 'task', task: review });
+    await tick();
+    assert.strictEqual(merged, 0, 'a failing PR is never merged');
+    assert.strictEqual(review.status, 'review', 'the task is left in review for the human');
+    assert.strictEqual(autonomous.isActive(), false, 'the session still drains (it settled the task)');
+  } finally {
+    autonomous._reset();
+    autonomous._setDeps(null);
+    restore();
+  }
+});
+
+test('autonomous review: the per-task round cap stops an endless fix loop and forces a merge', async () => {
+  const autonomous = require('../server/autonomous');
+  const bus = require('../server/bus');
+  const review = mkTask('rv4', 'review', 'repoA', { sessionId: 'sess-rv4', worktreePath: '/tmp/wt/rv4' });
+  const restore = withStore([review], 10);
+
+  let sha = 0;
+  let merged = 0;
+  const passes: string[] = [];
+  autonomous._setDeps({
+    headSha: async () => `sha${sha}`,
+    reviewDispatch: async (t: { id: string; status: string }) => { passes.push(t.id); t.status = 'running'; },
+    checkPr: async () => ({ status: 'green', pr: { number: 4 } }),
+    merge: async () => { merged += 1; return { ok: true }; },
+    removeWorktree: async () => {},
+  });
+
+  try {
+    await autonomous.start({ repoId: 'repoA', budgetUsd: 100, reviewMode: true });
+    // Every pass "commits" (advances HEAD), so it would loop forever without the cap.
+    for (let i = 0; i < 6 && autonomous.isActive(); i += 1) {
+      sha += 1;
+      review.status = 'review';
+      bus.broadcast({ type: 'task', task: review });
+      await tick();
+    }
+    assert.strictEqual(passes.length, autonomous.MAX_REVIEW_ROUNDS, 'the loop is capped at MAX_REVIEW_ROUNDS passes');
+    assert.strictEqual(merged, 1, 'once capped it falls through to a single merge');
+    assert.strictEqual(review.status, 'done', 'the task is finished rather than looping');
+  } finally {
+    autonomous._reset();
+    autonomous._setDeps(null);
+    restore();
+  }
+});

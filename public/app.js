@@ -2139,9 +2139,10 @@
     const chips = live.map((t) =>
       `<span class="chip">${icon('loader')} ${esc(t.title)}</span>`).join('');
     const state_ = sess.stopping ? 'Stopping — letting in-flight runs finish' : 'Running';
+    const reviewTag = sess.reviewMode ? ' · reviewing' : '';
     banner.innerHTML = `
       <span class="autonomous-banner-head">
-        <span class="autonomous-pulse"></span>${icon('bot')} Autonomous Mode
+        <span class="autonomous-pulse"></span>${icon('bot')} Autonomous Mode${reviewTag}
       </span>
       <span class="autonomous-banner-reason">${esc(state_)}</span>
       <span class="autonomous-banner-spend">Spent <strong>${money(sess.spentUsd)}</strong> / ${money(sess.budgetUsd)}${done ? ` · ${done} merged` : ''}</span>
@@ -2154,8 +2155,9 @@
     if (!repoId) return;
     const budgetUsd = Number($('#autonomous-budget').value);
     if (!Number.isFinite(budgetUsd) || budgetUsd <= 0) return toast('Enter a budget greater than 0');
+    const reviewMode = $('#autonomous-review-mode').checked;
     try {
-      state.autonomous = await api('POST', '/api/autonomous/start', { repoId, budgetUsd });
+      state.autonomous = await api('POST', '/api/autonomous/start', { repoId, budgetUsd, reviewMode });
       $('#modal-autonomous').classList.add('hidden');
       renderAutonomous();
     } catch (e) { toast(e.message); }

@@ -209,6 +209,9 @@ export interface AutonomousStatus {
   repoName: string | null;
   budgetUsd: number | null;
   spentUsd: number;
+  // Whether this session also actively reviews + finishes tasks parked in `review`
+  // (resume with a review pass, then green-merge → done), not just merge green PRs.
+  reviewMode: boolean;
   startedAt: string | null;
   // True once a user stop was requested but in-flight runs are still finishing.
   stopping: boolean;

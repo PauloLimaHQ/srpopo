@@ -73,6 +73,13 @@
         <input id="autonomous-budget" type="number" min="0.5" max="1000" step="0.5" value="10" />
         <span class="field-hint">New tasks stop being picked up once this total spend is reached; in-flight runs still finish.</span>
       </label>
+      <label class="check addon">
+        <input type="checkbox" id="autonomous-review-mode" />
+        <span class="addon-text">
+          <span class="addon-label">Review &amp; finish tasks in Review</span>
+          <span class="addon-hint">Also take tasks sitting in <strong>Review</strong>: re-review the branch and, if it needs fixes, resume the session to apply them; once a pass leaves it clean, merge the PR, drop the worktree, and move it to Done.</span>
+        </span>
+      </label>
       <div class="modal-actions">
         <button class="btn ghost" id="autonomous-cancel">Cancel</button>
         <button class="btn primary" id="autonomous-start"><span class="i" data-icon="play"></span>Start</button>

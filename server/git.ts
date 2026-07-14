@@ -30,6 +30,17 @@ async function currentBranch(repoPath: string): Promise<string | null> {
   }
 }
 
+// The full commit SHA at HEAD in a working directory (a repo or a worktree), or
+// null if it can't be read. The autonomous review loop uses it to tell whether a
+// review pass actually committed a change (HEAD advanced) or left the branch as-is.
+async function headSha(repoPath: string): Promise<string | null> {
+  try {
+    return await git(repoPath, ['rev-parse', 'HEAD']);
+  } catch {
+    return null;
+  }
+}
+
 // Extracts the "org/repo" slug from a git remote URL, e.g.
 // "git@github.com:anplabs/platform.git" or "https://github.com/anplabs/platform"
 // both become "anplabs/platform". Returns null for URLs that don't fit the
@@ -130,6 +141,7 @@ async function listWorktrees(repoPath: string): Promise<{ path: string; branch: 
 export {
   isGitRepo,
   currentBranch,
+  headSha,
   displayName,
   addWorktree,
   removeWorktree,
