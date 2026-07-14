@@ -263,6 +263,39 @@ test('index: parseCookies parses a Cookie header by hand; lanAddresses lists IPv
   assert.ok(lan.every((ip: string) => typeof ip === 'string' && !ip.includes(':')), 'entries are IPv4 strings');
 });
 
+test('git: listBranches/createBranch/checkoutBranch and worktree base off a chosen branch', async () => {
+  const git = require('../server/git');
+  const { execFileSync } = require('child_process');
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'srpopo-git-'));
+  const g = (...args: string[]) => execFileSync('git', ['-C', repo, ...args]).toString().trim();
+  g('init', '-q');
+  g('config', 'user.email', 't@t.co');
+  g('config', 'user.name', 't');
+  g('commit', '-q', '--allow-empty', '-m', 'init');
+  const trunk = g('rev-parse', '--abbrev-ref', 'HEAD');
+  g('branch', 'develop');
+
+  const listed = await git.listBranches(repo);
+  assert.strictEqual(listed.current, trunk, 'current branch is reported');
+  assert.ok(listed.branches.includes('develop') && listed.branches.includes(trunk), 'both branches listed');
+
+  // createBranch cuts from HEAD and checks the new branch out.
+  const now = await git.createBranch(repo, 'feature/x');
+  assert.strictEqual(now, 'feature/x', 'new branch is checked out');
+  assert.strictEqual((await git.listBranches(repo)).current, 'feature/x');
+  assert.strictEqual(await git.checkoutBranch(repo, 'develop'), 'develop', 'checkoutBranch switches back');
+
+  // A worktree with a baseBranch is cut from that branch, not the current HEAD.
+  const wt = await git.addWorktree(repo, 'tid', 'slug', null, 'feature/x');
+  assert.strictEqual(wt.branch, 'srpopo/slug-tid');
+  const base = execFileSync('git', ['-C', wt.wtPath, 'merge-base', 'HEAD', 'feature/x']).toString().trim();
+  assert.strictEqual(base, g('rev-parse', 'feature/x'), 'worktree is based on feature/x');
+  await git.removeWorktree(repo, wt.wtPath);
+
+  // A duplicate branch name fails loudly rather than silently succeeding.
+  await assert.rejects(() => git.createBranch(repo, 'feature/x'), 'creating an existing branch throws');
+});
+
 test('github: module exports prForTask, mergePrForTask, and a pure parsePrList helper', () => {
   const github = require('../server/github');
   assert.strictEqual(typeof github.prForTask, 'function', 'prForTask is exported');

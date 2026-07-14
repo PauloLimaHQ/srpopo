@@ -1742,6 +1742,28 @@
     }
   }
 
+  // Populate the base-branch <select> for a repo: every local branch, with the
+  // one currently checked out flagged. The picker defaults to `selected` (a task's
+  // stored baseBranch) or the current branch. `dataset.current` remembers the live
+  // branch so saveTask can tell "left on the default" from an explicit pick.
+  async function refreshBaseBranchPicker(repoId, selectEl, selected) {
+    selectEl.dataset.current = '';
+    if (!repoId) { selectEl.innerHTML = ''; selectEl.disabled = true; return; }
+    selectEl.disabled = true;
+    selectEl.innerHTML = '<option>Loading…</option>';
+    let current = null, branches = [];
+    try { ({ current, branches } = await api('GET', `/api/repos/${repoId}/branches`)); } catch { /* leave empty */ }
+    // Guard against a racing repo switch that already moved on to another repo.
+    if ($('#task-repo').value && $('#task-repo').value !== repoId && !editingTaskId) return;
+    if (current && !branches.includes(current)) branches = [current, ...branches];
+    const want = (selected && branches.includes(selected)) ? selected : current;
+    selectEl.dataset.current = current || '';
+    selectEl.innerHTML = branches.length
+      ? branches.map((b) => `<option value="${esc(b)}"${b === want ? ' selected' : ''}>${esc(b)}${b === current ? ' (current)' : ''}</option>`).join('')
+      : '<option value="">No branches</option>';
+    selectEl.disabled = !branches.length;
+  }
+
   // Optional task behaviors — checkboxes derived from the /api/addons catalog.
   // These render below the worktree toggle inside the "Extra behavior" section.
   function renderAddonOptions(selected = []) {
@@ -1759,6 +1781,15 @@
   function selectedAddons() {
     return [...document.querySelectorAll('#task-addons input[data-addon]:checked')]
       .map((el) => el.dataset.addon);
+  }
+
+  // The chosen base branch, but only when it differs from the repo's current
+  // branch — leaving the picker on the default keeps the historical behavior
+  // (worktree cut from HEAD at dispatch), so we send an empty value there.
+  function selectedBaseBranch() {
+    const sel = $('#task-base-branch');
+    const val = sel.value.trim();
+    return val && val !== (sel.dataset.current || '') ? val : '';
   }
 
   // Expert personas — a compact, Claude-style multi-select instead of a wall of
@@ -2033,6 +2064,11 @@
     // Restore the last-used repo if it still exists in the current list.
     else if (last.repoId && state.repos.some((r) => r.id === last.repoId)) $('#task-repo').value = last.repoId;
     refreshRepoBranchHint($('#task-repo').value, $('#task-repo-branch'));
+    // The base branch is fixed once the worktree is materialized.
+    const baseLocked = !!(task && task.worktreePath);
+    $('#task-new-branch').disabled = baseLocked;
+    refreshBaseBranchPicker($('#task-repo').value, $('#task-base-branch'), task ? task.baseBranch : null)
+      .then(() => { if (baseLocked) $('#task-base-branch').disabled = true; });
 
     $('#task-modal-title').textContent = task ? 'Edit Task' : 'New Task';
     $('#task-create').textContent = task ? 'Save' : 'Create in Backlog';
@@ -2055,6 +2091,9 @@
       promptPermissions: $('#task-prompt-permissions').checked,
       useWorktree: $('#task-worktree').checked,
       branchName: $('#task-branch').value.trim(),
+      // Only pin a base branch when the user picked one other than the repo's
+      // current branch; otherwise keep the historical "cut from HEAD" default.
+      baseBranch: selectedBaseBranch(),
       addons: selectedAddons(),
       personas: selectedPersonas(),
     };
@@ -2090,6 +2129,21 @@
   });
   $('#task-repo').addEventListener('change', () => {
     refreshRepoBranchHint($('#task-repo').value, $('#task-repo-branch'));
+    refreshBaseBranchPicker($('#task-repo').value, $('#task-base-branch'), null);
+  });
+  // Create a fresh branch (checked out from the repo's current one) and select it.
+  $('#task-new-branch').addEventListener('click', async () => {
+    const repoId = editingTaskId ? (state.tasks.get(editingTaskId)?.repoId) : $('#task-repo').value;
+    if (!repoId) { toast('Add a repository first'); return; }
+    const current = $('#task-base-branch').dataset.current || '';
+    const name = (prompt(current ? `New branch name (checked out from ${current}):` : 'New branch name:') || '').trim();
+    if (!name) return;
+    try {
+      await api('POST', `/api/repos/${repoId}/branches`, { name });
+      await refreshBaseBranchPicker(repoId, $('#task-base-branch'), name);
+      refreshRepoBranchHint(repoId, $('#task-repo-branch'));
+      toast(`Created and checked out ${name}`, 'info');
+    } catch (e) { toast(e.message); }
   });
 
   // ---------- attachments (picker + drag-and-drop) ----------

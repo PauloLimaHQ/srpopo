@@ -356,6 +356,7 @@ function spawnGroomedTasks(grooming: Grooming, specs: GroomSpec[]): string[] {
       // A fixed branch name only makes sense when the grooming spawned exactly
       // one task — branches must be unique per worktree.
       branchName: specs.length === 1 ? grooming.branchName : null,
+      baseBranch: null,
       branch: null,
       model: grooming.model,
       permissionMode: 'acceptEdits',
@@ -618,6 +619,33 @@ app.get('/api/repos/:id/branch', async (req: Request, res: Response) => {
   const repo = db.repos.find((r) => r.id === req.params.id);
   if (!repo) return err(res, 404, 'Repo not found');
   res.json({ branch: await git.currentBranch(repo.path) });
+});
+
+// The repo's local branches (plus the current one), so the New Task / Brief
+// modals can offer a base-branch picker instead of always cutting from HEAD.
+app.get('/api/repos/:id/branches', async (req: Request, res: Response) => {
+  const repo = db.repos.find((r) => r.id === req.params.id);
+  if (!repo) return err(res, 404, 'Repo not found');
+  res.json(await git.listBranches(repo.path));
+});
+
+// Create a new branch off the repo's current HEAD (or an explicit `from`) and
+// check it out, so the user can spin up a fresh branch from the board and base
+// tasks on it. Refreshes the repo's stored branch snapshot and re-lists.
+app.post('/api/repos/:id/branches', async (req: Request, res: Response) => {
+  const repo = db.repos.find((r) => r.id === req.params.id);
+  if (!repo) return err(res, 404, 'Repo not found');
+  const name = String(req.body?.name || '').trim();
+  if (!name) return err(res, 400, 'Branch name is required');
+  const from = req.body?.from ? String(req.body.from).trim() : null;
+  try {
+    repo.branch = await git.createBranch(repo.path, name, from);
+    save();
+    broadcast({ type: 'repos', repos: db.repos });
+    res.json(await git.listBranches(repo.path));
+  } catch (e) {
+    err(res, 400, (e as Error).message);
+  }
 });
 
 // Live worktree list for a repo, sourced from `git worktree list` (ground
@@ -960,6 +988,7 @@ app.post('/api/repos/:id/specs/import', (req: Request, res: Response) => {
       useWorktree,
       worktreePath: null,
       branchName: null,
+      baseBranch: null,
       branch: null,
       model,
       permissionMode: 'acceptEdits',
@@ -996,7 +1025,7 @@ app.patch('/api/tasks/:id', (req: Request, res: Response) => {
   if (!task) return err(res, 404, 'Task not found');
   if (runner.isRunning(task.id)) return err(res, 409, 'Task is running; stop it first');
 
-  const allowed = ['title', 'prompt', 'model', 'permissionMode', 'allowedTools', 'promptPermissions', 'useWorktree', 'branchName', 'status', 'addons', 'personas'] as const;
+  const allowed = ['title', 'prompt', 'model', 'permissionMode', 'allowedTools', 'promptPermissions', 'useWorktree', 'branchName', 'baseBranch', 'status', 'addons', 'personas'] as const;
   for (const key of allowed) {
     if (key in req.body) {
       if (key === 'addons') {
@@ -1018,6 +1047,9 @@ app.patch('/api/tasks/:id', (req: Request, res: Response) => {
       } else if (key === 'branchName') {
         // Branch is fixed once the worktree is materialized; ignore edits after that.
         if (!task.worktreePath) task.branchName = req.body.branchName ? String(req.body.branchName).trim() : null;
+      } else if (key === 'baseBranch') {
+        // Base is only consulted at dispatch; fixed once the worktree exists.
+        if (!task.worktreePath) task.baseBranch = req.body.baseBranch ? String(req.body.baseBranch).trim() : null;
       } else {
         (task as unknown as Record<string, unknown>)[key] = req.body[key];
       }

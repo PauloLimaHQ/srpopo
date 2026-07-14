@@ -74,22 +74,72 @@ async function displayName(repoPath: string): Promise<string> {
   }
 }
 
-// Creates a worktree with a new branch off the repo's current HEAD. `branchOverride`,
-// when given, is used verbatim as the branch name (e.g. a repo's own naming
-// convention, or a Linear issue identifier) instead of the auto-generated one;
-// the worktree directory name is still derived from the task's slug/id so it
-// stays filesystem-safe regardless of what the branch name looks like.
+// Lists the repo's local branches (sorted most-recently-committed first) plus
+// whichever one is currently checked out, so the UI can offer a base-branch
+// picker. Returns empty/null on any git failure rather than throwing.
+async function listBranches(repoPath: string): Promise<{ current: string | null; branches: string[] }> {
+  let branches: string[] = [];
+  try {
+    const out = await git(repoPath, [
+      'for-each-ref',
+      '--sort=-committerdate',
+      '--format=%(refname:short)',
+      'refs/heads',
+    ]);
+    branches = out.split('\n').map((s) => s.trim()).filter(Boolean);
+  } catch {
+    branches = [];
+  }
+  return { current: await currentBranch(repoPath), branches };
+}
+
+// Creates a new branch off `from` (defaulting to the repo's current HEAD) and
+// checks it out in the repo, so the user can spin up a fresh branch from the
+// board. `git checkout -b` fails loudly if the name already exists or the tree
+// can't be switched, and the caller surfaces that message verbatim. Returns the
+// resulting current branch so the caller can refresh its snapshot.
+async function createBranch(repoPath: string, name: string, from?: string | null): Promise<string | null> {
+  const branch = name.trim();
+  if (!branch) throw new Error('Branch name is required');
+  const args = ['checkout', '-b', branch];
+  if (from?.trim()) args.push(from.trim());
+  await git(repoPath, args);
+  return currentBranch(repoPath);
+}
+
+// Checks out an existing branch in the repo itself (used for non-worktree tasks
+// that should run against a specific branch). Fails loudly if the working tree
+// is dirty in a way git won't carry over, or the branch is already checked out
+// in another worktree — the caller surfaces the message.
+async function checkoutBranch(repoPath: string, name: string): Promise<string | null> {
+  const branch = name.trim();
+  if (!branch) throw new Error('Branch name is required');
+  await git(repoPath, ['checkout', branch]);
+  return currentBranch(repoPath);
+}
+
+// Creates a worktree with a new branch. Without `baseBranch` the branch is cut
+// from the repo's current HEAD (historical behavior); with it, from that branch
+// instead — so a task can be based on a branch other than whatever the repo
+// happens to have checked out. `branchOverride`, when given, is used verbatim as
+// the branch name (e.g. a repo's own naming convention, or a Linear issue
+// identifier) instead of the auto-generated one; the worktree directory name is
+// still derived from the task's slug/id so it stays filesystem-safe regardless
+// of what the branch name looks like.
 async function addWorktree(
   repoPath: string,
   taskId: string,
   slug: string,
   branchOverride?: string | null,
+  baseBranch?: string | null,
 ): Promise<{ wtPath: string; branch: string }> {
   fs.mkdirSync(WORKTREES_DIR, { recursive: true });
   const repoName = path.basename(repoPath);
   const wtPath = path.join(WORKTREES_DIR, `${repoName}--${slug}-${taskId}`);
   const branch = branchOverride?.trim() || `srpopo/${slug}-${taskId}`;
-  await git(repoPath, ['worktree', 'add', wtPath, '-b', branch]);
+  const args = ['worktree', 'add', wtPath, '-b', branch];
+  if (baseBranch?.trim()) args.push(baseBranch.trim());
+  await git(repoPath, args);
   return { wtPath, branch };
 }
 
@@ -141,6 +191,9 @@ async function listWorktrees(repoPath: string): Promise<{ path: string; branch: 
 export {
   isGitRepo,
   currentBranch,
+  listBranches,
+  createBranch,
+  checkoutBranch,
   headSha,
   displayName,
   addWorktree,

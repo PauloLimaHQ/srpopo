@@ -31,6 +31,7 @@ export interface CreateTaskInput {
   personas?: unknown;
   allowedTools?: unknown;
   branchName?: unknown;
+  baseBranch?: unknown;
   promptPermissions?: unknown;
 }
 
@@ -70,6 +71,7 @@ export function createTask(input: CreateTaskInput): Task {
     useWorktree: !!input.useWorktree,
     worktreePath: null,
     branchName: input.branchName ? String(input.branchName).trim() : null,
+    baseBranch: input.baseBranch ? String(input.baseBranch).trim() : null,
     branch: null,
     model: (input.model as string) || 'default',
     permissionMode: (input.permissionMode as string) || 'acceptEdits',
@@ -112,10 +114,17 @@ export async function dispatchTask(task: Task, message?: string | null): Promise
       task.id,
       framing.slugify(task.title),
       task.branchName,
+      task.baseBranch,
     );
     task.worktreePath = wtPath;
     task.branch = branch;
     save();
+  } else if (!task.useWorktree && task.baseBranch) {
+    // Direct run: put the repo on the chosen branch first, but only when it
+    // isn't already there — git errors loudly (dirty tree, branch busy in
+    // another worktree) rather than clobbering anything.
+    const current = await git.currentBranch(task.repoPath);
+    if (current !== task.baseBranch) await git.checkoutBranch(task.repoPath, task.baseBranch);
   }
   const followUp = message ? String(message) : null;
   if (followUp && task.sessionId) {

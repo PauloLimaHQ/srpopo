@@ -133,6 +133,12 @@
         </div>
         <span id="task-repo-branch" class="field-hint"></span>
       </label>
+      <label id="task-base-branch-field">Base branch <span class="field-hint">— new work branches off this</span>
+        <div class="row">
+          <select id="task-base-branch"></select>
+          <button class="btn ghost" id="task-new-branch" title="Create a new branch, checked out from the current one" aria-label="Create a new branch"><span class="i" data-icon="git-branch"></span></button>
+        </div>
+      </label>
       <label>Title
         <input id="task-title" placeholder="e.g. Add dark mode toggle" maxlength="120" />
       </label>
