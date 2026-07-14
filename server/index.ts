@@ -6,10 +6,11 @@ import { execFile } from 'child_process';
 import type { Server } from 'http';
 import type { AddressInfo } from 'net';
 
-import { db, save, id, now, readLog, getTask, getRepo } from './store';
+import { db, save, id, now, readLog, removeLog, getTask, getRepo, getGrooming } from './store';
 import { broadcast, sse } from './bus';
 import { appRoot } from './paths';
-import type { Task, Attachment, Repo, PublicSettings, WorktreeInfo } from './types';
+import type { GroomSpec } from './groomer';
+import type { Task, Attachment, Grooming, GroomingTarget, Repo, PublicSettings, WorktreeInfo } from './types';
 import * as git from './git';
 import * as runner from './runner';
 import * as attachments from './attachments';
@@ -80,31 +81,31 @@ function linearFail(res: Response, reason: linear.LinearReason): void {
   err(res, code, message);
 }
 
-// Build a grooming task from a composed brief and kick off runner.groom — the
-// single source of truth for the "create a grooming task and dispatch it" dance,
-// shared by POST /api/briefs and the Linear import path. Like dispatch, the
-// `grooming` status is entered only here (via runner.groom), never via PATCH.
-// On a groom failure the task is rolled back to backlog and the error rethrown.
-function startGrooming(repo: Repo, brief: string, model: unknown, extra?: Partial<Task>): Task {
-  const task: Task = {
+// Is a marketplace plugin currently installed?
+function pluginInstalled(pluginId: string): boolean {
+  return plugins.sanitize(db.settings.installedPlugins).includes(pluginId);
+}
+
+// Normalize the "where do spawned tasks land" knob; anything unknown → backlog.
+function sanitizeTarget(value: unknown): GroomingTarget {
+  return value === 'ready' || value === 'auto' ? value : 'backlog';
+}
+
+// Build a grooming card (draft) from a composed idea — the single source of
+// truth for the card's shape, shared by POST /api/groomings and the Linear
+// import path. The caller decides whether to run it right away.
+function createGrooming(repo: Repo, idea: string, body: Record<string, unknown>, extra?: Partial<Grooming>): Grooming {
+  const grooming: Grooming = {
     id: id(),
-    title: groomer.deriveTitle(brief),
-    prompt: brief, // the composed brief, until grooming rewrites it
-    brief, // preserved even after grooming (the drawer renders it)
+    title: groomer.deriveTitle(idea),
+    idea,
     repoId: repo.id,
     repoName: repo.name,
     repoPath: repo.path,
-    addons: [],
-    personas: [],
-    useWorktree: true,
-    worktreePath: null,
-    branchName: null,
-    branch: null,
-    model: (model as string) || 'default',
-    permissionMode: 'acceptEdits',
-    allowedTools: '',
-    promptPermissions: true, // applies once dispatched; grooming itself is read-only
-    status: 'grooming',
+    model: (body.model as string) || 'default',
+    target: sanitizeTarget(body.target),
+    branchName: body.branchName ? String(body.branchName).trim() : null,
+    status: 'draft',
     sessionId: null,
     resolvedModel: null,
     costUsd: 0,
@@ -114,6 +115,7 @@ function startGrooming(repo: Repo, brief: string, model: unknown, extra?: Partia
     activeSubagents: 0,
     lastOutcome: null,
     lastError: null,
+    taskIds: [],
     archived: false,
     createdAt: now(),
     updatedAt: now(),
@@ -121,22 +123,83 @@ function startGrooming(repo: Repo, brief: string, model: unknown, extra?: Partia
     finishedAt: null,
     ...extra,
   };
-  db.tasks.push(task);
+  db.groomings.push(grooming);
   save();
-  broadcast({ type: 'task', task });
+  broadcast({ type: 'grooming', grooming });
+  return grooming;
+}
 
-  try {
-    runner.groom(task, brief);
-  } catch (e) {
-    task.status = 'backlog';
-    task.lastOutcome = 'error';
-    task.lastError = (e as Error).message;
-    task.updatedAt = now();
-    save();
+// Create the tasks a finished grooming proposed. Where they land follows the
+// card's target: always backlog, always ready, or (auto) the session's own
+// per-task `ready` judgment. Returns the new task ids for grooming.taskIds.
+function spawnGroomedTasks(grooming: Grooming, specs: GroomSpec[]): string[] {
+  const ids: string[] = [];
+  for (const spec of specs) {
+    const status =
+      grooming.target === 'ready' ? 'ready'
+      : grooming.target === 'auto' && spec.ready ? 'ready'
+      : 'backlog';
+    const task: Task = {
+      id: id(),
+      title: spec.title || grooming.title,
+      prompt: spec.prompt,
+      brief: grooming.idea, // preserved so the drawer can show idea → prompt
+      groomingId: grooming.id,
+      repoId: grooming.repoId,
+      repoName: grooming.repoName,
+      repoPath: grooming.repoPath,
+      addons: [],
+      personas: [],
+      attachments: [],
+      useWorktree: true,
+      worktreePath: null,
+      // A fixed branch name only makes sense when the grooming spawned exactly
+      // one task — branches must be unique per worktree.
+      branchName: specs.length === 1 ? grooming.branchName : null,
+      branch: null,
+      model: grooming.model,
+      permissionMode: 'acceptEdits',
+      allowedTools: '',
+      promptPermissions: true,
+      status,
+      sessionId: null,
+      resolvedModel: null,
+      costUsd: 0,
+      numTurns: null,
+      durationMs: null,
+      runCount: 0,
+      activeSubagents: 0,
+      lastOutcome: null,
+      lastError: null,
+      archived: false,
+      createdAt: now(),
+      updatedAt: now(),
+      startedAt: null,
+      finishedAt: null,
+    };
+    if (grooming.linearIssue) task.linearIssue = { ...grooming.linearIssue };
+    db.tasks.push(task);
+    ids.push(task.id);
     broadcast({ type: 'task', task });
+  }
+  save();
+  return ids;
+}
+
+// Kick off the read-only grooming session for a card. On a launch failure the
+// card is rolled back to draft and the error rethrown for the route to report.
+function runGrooming(grooming: Grooming): Grooming {
+  try {
+    return runner.groom(grooming, { onSpawn: (specs) => spawnGroomedTasks(grooming, specs) });
+  } catch (e) {
+    grooming.status = 'draft';
+    grooming.lastOutcome = 'error';
+    grooming.lastError = (e as Error).message;
+    grooming.updatedAt = now();
+    save();
+    broadcast({ type: 'grooming', grooming });
     throw e;
   }
-  return task;
 }
 
 // ---------- health ----------
@@ -163,6 +226,7 @@ app.get('/api/state', (req: Request, res: Response) => {
     tasks: db.tasks
       .filter((t) => !t.archived)
       .map((t) => ({ ...t, pendingPermissions: permissions.listForTask(t.id) })),
+    groomings: db.groomings.filter((g) => !g.archived),
     settings: publicSettings(),
     // Live autonomous-session snapshot so a reconnecting board rebuilds its banner
     // (like pendingPermissions above, this is process-local and never persisted).
@@ -382,8 +446,9 @@ app.post('/api/terminal/:tid/close', (req: Request, res: Response) => {
 app.delete('/api/repos/:id', (req: Request, res: Response) => {
   const idx = db.repos.findIndex((r) => r.id === req.params.id);
   if (idx === -1) return err(res, 404, 'Repo not found');
-  const active = db.tasks.some((t) => t.repoId === req.params.id && !t.archived);
-  if (active) return err(res, 409, 'Repo has non-archived tasks; archive them first');
+  const active = db.tasks.some((t) => t.repoId === req.params.id && !t.archived) ||
+    db.groomings.some((g) => g.repoId === req.params.id && !g.archived);
+  if (active) return err(res, 409, 'Repo has non-archived tasks or groomings; archive them first');
   db.repos.splice(idx, 1);
   save();
   broadcast({ type: 'repos', repos: db.repos });
@@ -440,26 +505,104 @@ app.post('/api/tasks', (req: Request, res: Response) => {
   res.json(task);
 });
 
-// ---------- briefs (idea grooming) ----------
+// ---------- groomings (idea grooming) ----------
 
-// "Brief an Idea": turn a rough one-line idea into a groomed, ready-to-run task.
-// Creates the task in the `grooming` state and kicks off a short, read-only
-// Claude session in the repo that rewrites the idea into a well-structured
-// prompt; when it finishes the task moves to `ready`. Like dispatch, the
-// grooming state is entered only here — never via PATCH /api/tasks/:id.
-app.post('/api/briefs', (req: Request, res: Response) => {
-  const brief = String(req.body.brief || '').trim();
-  if (!brief) return err(res, 400, 'brief is required');
+// "Brief an Idea": create a grooming card for a rough idea. The card has its
+// own lifecycle (draft → running → finished/failed) and never becomes a task —
+// when its read-only session finishes it spawns one or more tasks in Backlog
+// (or Ready, per its target). Pass `run: false` to keep it as a draft; by
+// default the session starts right away. Gated on the Idea Grooming plugin.
+app.post('/api/groomings', (req: Request, res: Response) => {
+  if (!pluginInstalled('grooming')) return err(res, 400, 'Install the Idea Grooming plugin first');
+  const idea = String(req.body.idea || req.body.brief || '').trim();
+  if (!idea) return err(res, 400, 'idea is required');
   const repo = getRepo(req.body.repoId);
   if (!repo) return err(res, 400, 'Unknown repo');
-  if (atCapacity()) return err(res, 409, capacityError());
+  const run = req.body.run !== false;
+  if (run && atCapacity()) return err(res, 409, capacityError());
 
   try {
-    const branchName = req.body.branchName ? String(req.body.branchName).trim() : null;
-    res.json(startGrooming(repo, brief, req.body.model, { branchName }));
+    const grooming = createGrooming(repo, idea, req.body);
+    if (run) runGrooming(grooming);
+    res.json(grooming);
   } catch (e) {
     err(res, 500, (e as Error).message);
   }
+});
+
+// Start (or re-run) a draft/failed grooming card's read-only session. Like a
+// task dispatch, `running` is entered only through the runner, never via PATCH.
+app.post('/api/groomings/:id/run', (req: Request, res: Response) => {
+  const grooming = getGrooming(req.params.id);
+  if (!grooming) return err(res, 404, 'Grooming not found');
+  if (runner.isRunning(grooming.id)) return err(res, 409, 'Grooming is already running');
+  if (grooming.status === 'finished') return err(res, 409, 'Grooming already finished — brief a new idea instead');
+  if (atCapacity()) return err(res, 409, capacityError());
+  try {
+    res.json(runGrooming(grooming));
+  } catch (e) {
+    err(res, 500, (e as Error).message);
+  }
+});
+
+app.post('/api/groomings/:id/stop', (req: Request, res: Response) => {
+  const grooming = getGrooming(req.params.id);
+  if (!grooming) return err(res, 404, 'Grooming not found');
+  if (!runner.stop(grooming.id)) return err(res, 409, 'Grooming is not running');
+  res.json({ ok: true });
+});
+
+// Edit a draft's idea/config. Finished cards are immutable history; a running
+// card belongs to its live session.
+app.patch('/api/groomings/:id', (req: Request, res: Response) => {
+  const grooming = getGrooming(req.params.id);
+  if (!grooming) return err(res, 404, 'Grooming not found');
+  if (runner.isRunning(grooming.id)) return err(res, 409, 'Grooming is running; stop it first');
+  if (grooming.status === 'finished') return err(res, 409, 'Grooming already finished');
+
+  if ('idea' in req.body) {
+    const idea = String(req.body.idea || '').trim();
+    if (!idea) return err(res, 400, 'idea cannot be empty');
+    grooming.idea = idea;
+    grooming.title = groomer.deriveTitle(idea);
+  }
+  if ('model' in req.body) grooming.model = String(req.body.model || 'default');
+  if ('target' in req.body) grooming.target = sanitizeTarget(req.body.target);
+  if ('branchName' in req.body) grooming.branchName = req.body.branchName ? String(req.body.branchName).trim() : null;
+  grooming.updatedAt = now();
+  save();
+  broadcast({ type: 'grooming', grooming });
+  res.json(grooming);
+});
+
+app.post('/api/groomings/:id/archive', (req: Request, res: Response) => {
+  const grooming = getGrooming(req.params.id);
+  if (!grooming) return err(res, 404, 'Grooming not found');
+  if (runner.isRunning(grooming.id)) return err(res, 409, 'Stop the grooming before archiving');
+  grooming.archived = true;
+  grooming.updatedAt = now();
+  save();
+  broadcast({ type: 'grooming-removed', groomingId: grooming.id });
+  res.json({ ok: true });
+});
+
+// Delete a grooming card outright (its session log goes too). Spawned tasks
+// are independent once created — deleting the card never touches them.
+app.delete('/api/groomings/:id', (req: Request, res: Response) => {
+  const idx = db.groomings.findIndex((g) => g.id === req.params.id);
+  if (idx === -1) return err(res, 404, 'Grooming not found');
+  if (runner.isRunning(req.params.id)) return err(res, 409, 'Stop the grooming before deleting');
+  db.groomings.splice(idx, 1);
+  removeLog(req.params.id);
+  save();
+  broadcast({ type: 'grooming-removed', groomingId: req.params.id });
+  res.json({ ok: true });
+});
+
+app.get('/api/groomings/:id/logs', (req: Request, res: Response) => {
+  const grooming = getGrooming(req.params.id);
+  if (!grooming) return err(res, 404, 'Grooming not found');
+  res.json({ grooming, events: readLog(grooming.id) });
 });
 
 // ---------- linear (import a Linear issue as a groomed task) ----------
@@ -473,9 +616,11 @@ app.get('/api/linear/issues', async (req: Request, res: Response) => {
   res.json({ issues: result.issues });
 });
 
-// Turn a Linear issue (by UUID or identifier like ABC-123) into a groomed task.
-// Fetches the issue server-side, composes a brief from it, and routes it through
-// the same grooming pipeline as POST /api/briefs.
+// Turn a Linear issue (by UUID or identifier like ABC-123) into a grooming
+// card that starts right away. Fetches the issue server-side, composes an idea
+// brief from it, and routes it through the same pipeline as POST /api/groomings
+// (the import is part of the Linear plugin, so it works without the Idea
+// Grooming plugin installed — its card still lives in the Grooming column).
 app.post('/api/linear/briefs', async (req: Request, res: Response) => {
   const repo = getRepo(req.body.repoId);
   if (!repo) return err(res, 400, 'Unknown repo');
@@ -486,7 +631,7 @@ app.post('/api/linear/briefs', async (req: Request, res: Response) => {
   const result = await linear.getIssue(issueId);
   if (!result.ok) return linearFail(res, result.reason);
 
-  const brief = linear.briefFromIssue(result.issue);
+  const idea = linear.briefFromIssue(result.issue);
   // Default the branch to the issue's own identifier (e.g. "abc-123") so it
   // matches whatever convention the team already uses in Linear/GitHub; an
   // explicit branchName from the caller still wins.
@@ -494,10 +639,11 @@ app.post('/api/linear/briefs', async (req: Request, res: Response) => {
     ? String(req.body.branchName).trim()
     : slugify(result.issue.identifier);
   try {
-    res.json(startGrooming(repo, brief, req.body.model, {
+    const grooming = createGrooming(repo, idea, { ...req.body, branchName }, {
       linearIssue: { identifier: result.issue.identifier, url: result.issue.url },
-      branchName,
-    }));
+    });
+    runGrooming(grooming);
+    res.json(grooming);
   } catch (e) {
     err(res, 500, (e as Error).message);
   }
@@ -553,7 +699,7 @@ app.post(
   (req: Request, res: Response) => {
     const task = getTask(req.params.id);
     if (!task) return err(res, 404, 'Task not found');
-    if (task.status === 'running' || task.status === 'grooming') {
+    if (task.status === 'running') {
       return err(res, 409, 'Task is running; stop it first');
     }
     const header = req.header('X-Filename');
@@ -580,7 +726,7 @@ app.post(
 app.delete('/api/tasks/:id/attachments/:name', (req: Request, res: Response) => {
   const task = getTask(req.params.id);
   if (!task) return err(res, 404, 'Task not found');
-  if (task.status === 'running' || task.status === 'grooming') {
+  if (task.status === 'running') {
     return err(res, 409, 'Task is running; stop it first');
   }
   const name = attachments.sanitizeName(req.params.name);

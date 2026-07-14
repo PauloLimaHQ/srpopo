@@ -383,8 +383,31 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
 .card:active { cursor: grabbing; }
 .card.dragging { opacity: .4; }
 .card.running { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-.card.grooming { border-color: var(--groom); box-shadow: 0 0 0 3px var(--groom-soft); }
 .card.failed { border-color: var(--red-soft); }
+
+/* Grooming cards never move columns — their status only recolors them in
+   place: draft (gray), running (purple), finished (green), failed (red). */
+.card.groom { cursor: pointer; }
+.card.groom-draft { border-color: var(--border); opacity: .85; }
+.card.groom-running { border-color: var(--groom); box-shadow: 0 0 0 3px var(--groom-soft); }
+.card.groom-finished { border-color: var(--green); box-shadow: 0 0 0 2px var(--green-soft); }
+.card.groom-failed { border-color: var(--red-soft); }
+.chip.badge-draft { color: var(--text-dim); font-weight: 700; letter-spacing: .5px; }
+.chip.badge-groomed { color: var(--green); border-color: var(--green-soft); font-weight: 700; display: inline-flex; align-items: center; gap: 4px; }
+.chip.groom-status-running { color: var(--groom); border-color: var(--groom-soft); }
+.chip.groom-status-finished { color: var(--green); border-color: var(--green-soft); }
+.chip.groom-status-failed { color: var(--red); border-color: var(--red-soft); }
+/* Links from a finished grooming to the tasks it spawned. */
+.groom-tasks { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.groom-task-link {
+  display: flex; align-items: center; gap: 6px; width: 100%; text-align: left;
+  background: var(--bg-raised); border: 1px solid var(--border); border-radius: 8px;
+  padding: 5px 8px; font-size: 11px; color: var(--text); cursor: pointer;
+}
+.groom-task-link:hover:not(:disabled) { border-color: var(--green); }
+.groom-task-link:disabled { opacity: .5; cursor: default; }
+.groom-task-link .groom-task-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.groom-task-link svg { flex: none; color: var(--green); }
 .card-title { font-weight: 600; font-size: 13px; margin-bottom: 7px; word-break: break-word; }
 .card-chips { display: flex; flex-wrap: wrap; gap: 5px; }
 .chip {
