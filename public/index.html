@@ -68,7 +68,7 @@
     <div class="modal-box">
       <h2><span class="i" data-icon="bot"></span> Autonomous Mode</h2>
       <p class="field-hint" id="autonomous-modal-repo"></p>
-      <p class="field-hint">Sr. Popo will drive every <strong>Ready</strong> task in this workspace end-to-end — dispatch each run (which plans, builds, tests, self-reviews, and opens a PR), then merge the PR and move the task to Done once it’s green — until the budget is spent or the queue is empty. Runs are unattended: tool-permission prompts are turned off for them, so make sure each task is configured to run without a human.</p>
+      <p class="field-hint">Sr. Popo will drive every <strong>Ready</strong> task in this workspace end-to-end — dispatch each run (which plans, builds, tests, self-reviews, and opens a PR), then merge the PR and move the task to Done once it’s green — until the budget is spent. You can start it with an empty queue: it stands by and picks up each task the moment it lands in Ready. Runs are unattended: tool-permission prompts are turned off for them, so make sure each task is configured to run without a human.</p>
       <label>Budget cap (USD)
         <input id="autonomous-budget" type="number" min="0.5" max="1000" step="0.5" value="10" />
         <span class="field-hint">New tasks stop being picked up once this total spend is reached; in-flight runs still finish.</span>

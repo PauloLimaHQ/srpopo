@@ -639,7 +639,7 @@ test('autonomous: rejects a second start while a session is active', async () =>
   }
 });
 
-test('autonomous: a session with no ready work drains to idle immediately', async () => {
+test('autonomous: a session with no ready work stands by instead of ending', async () => {
   const autonomous = require('../server/autonomous');
   const restore = withStore([mkTask('e1', 'backlog', 'repoA')], 10);
   let dispatched = 0;
@@ -647,9 +647,32 @@ test('autonomous: a session with no ready work drains to idle immediately', asyn
   try {
     const status = await autonomous.start({ repoId: 'repoA', budgetUsd: 100 });
     assert.strictEqual(dispatched, 0, 'nothing to dispatch');
-    assert.strictEqual(status.active, false, 'the session ends right away when there is no ready work');
-    assert.strictEqual(status.reason, 'drained', 'and reports why it ended');
-    assert.strictEqual(autonomous.isActive(), false, 'no session lingers');
+    assert.strictEqual(status.active, true, 'the session stays alive with an empty queue');
+    assert.strictEqual(status.reason, 'standby', 'and reports it is standing by');
+    assert.strictEqual(autonomous.isActive(), true, 'the session lingers, ready to pick up work');
+  } finally {
+    autonomous._reset();
+    autonomous._setDeps(null);
+    restore();
+  }
+});
+
+test('autonomous: a standing-by session picks up a task the moment it enters ready', async () => {
+  const autonomous = require('../server/autonomous');
+  const bus = require('../server/bus');
+  const task = mkTask('e2', 'backlog', 'repoA');
+  const restore = withStore([task], 10);
+  const dispatched: string[] = [];
+  autonomous._setDeps({ dispatch: async (t: { id: string; status: string }) => { dispatched.push(t.id); t.status = 'running'; } });
+  try {
+    await autonomous.start({ repoId: 'repoA', budgetUsd: 100 });
+    assert.deepStrictEqual(dispatched, [], 'nothing dispatched while the task is still backlog');
+    // Move it to ready and announce it exactly as the API route does.
+    task.status = 'ready';
+    bus.broadcast({ type: 'task', task });
+    await new Promise((r) => setImmediate(r)); // let the async pump run
+    assert.deepStrictEqual(dispatched, ['e2'], 'the newly-ready task is picked up');
+    assert.strictEqual(autonomous.status().active, true, 'the session is still active');
   } finally {
     autonomous._reset();
     autonomous._setDeps(null);
