@@ -271,6 +271,22 @@ function runningTasks() {
 // last-seen status so we can fire a native notification on that transition only.
 const lastStatus = new Map<string, string>(); // task/grooming id -> last status seen on the bus
 
+// Retain live notifications until macOS is done with them. Electron warns that a
+// Notification can be garbage-collected before the OS renders it if nothing holds
+// a strong reference — the `click` handler is only a self-cycle, so on macOS the
+// banner would intermittently (or never) appear. Keep each one here and release it
+// once it's shown/closed/clicked so the OS always gets to display it.
+const liveNotifications = new Set<import('electron').Notification>();
+
+function present(note: import('electron').Notification): void {
+  liveNotifications.add(note);
+  const release = () => liveNotifications.delete(note);
+  note.on('close', release);
+  note.on('click', release);
+  note.on('failed', release);
+  note.show();
+}
+
 function notificationsEnabled(): boolean {
   return !store.db.settings || store.db.settings.notifications !== false;
 }
@@ -298,7 +314,7 @@ function maybeNotify(task: import('../server/types').Task): void {
 
   const note = new Notification({ title, body, silent: false });
   note.on('click', () => openTask(task.id)); // jump straight to the task
-  note.show();
+  present(note);
 }
 
 // Same transition watch for grooming cards: notify when one finishes or fails.
@@ -321,7 +337,7 @@ function maybeNotifyGrooming(grooming: import('../server/types').Grooming): void
 
   const note = new Notification({ title, body, silent: false });
   note.on('click', () => showWindow());
-  note.show();
+  present(note);
 }
 
 // Rebuild the tray context menu from the current set of running tasks so the
