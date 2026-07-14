@@ -42,4 +42,29 @@ function framePrompt(task: Task): string {
   return framed;
 }
 
-export { framePrompt, slugify };
+// Build the stdin prompt for an autonomous *review pass* — a resume of a finished
+// task's session that critically re-reviews the branch before it's merged. The
+// engine (server/autonomous.ts) decides "needs another look" vs "clean" purely by
+// whether this run advanced HEAD, so the directive is explicit: commit real fixes,
+// but make no commit at all when the work is already correct.
+function frameReviewPrompt(task: Task): string {
+  return [
+    'You previously worked on the task below and opened a pull request for it.',
+    'Before it is merged, do one more rigorous review of the changes on this branch.',
+    '',
+    '## Original task',
+    task.prompt,
+    '',
+    '## What to do now',
+    '- Inspect the full diff of this branch against its base (e.g. `git diff`).',
+    '- Look for correctness bugs, missed requirements, edge cases, security issues,',
+    '  regressions, and anything that does not match the surrounding code style.',
+    '- If you find any real problem or worthwhile improvement, fix it now: edit the',
+    '  code, then commit and push so the pull request is updated.',
+    '- If the change is already correct and complete, make NO changes and create no',
+    '  commit — leave the branch exactly as it is.',
+    '- Finish by summarizing what you reviewed and what, if anything, you changed.',
+  ].join('\n');
+}
+
+export { framePrompt, frameReviewPrompt, slugify };
