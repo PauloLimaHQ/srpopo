@@ -32,6 +32,8 @@ const DEFAULT_SETTINGS: Settings = {
   mergeStrategy: 'merge',
   // Off by default: auto-resolving conflicts spawns a new `claude` run unattended.
   autoResolveConflicts: false,
+  // Off by default, like the other opt-in GitHub behaviors here.
+  assignPrToSelf: false,
   // Remote access is OFF by default: the server binds 127.0.0.1 only and needs
   // no token, exactly as before. The token stays empty until the first time the
   // user enables remote access (generated lazily in PATCH /api/settings).

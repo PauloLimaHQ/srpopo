@@ -16,6 +16,8 @@
  * block a Bash command. Keep each list tight — only what the instruction requires.
  */
 
+import { db } from './store';
+
 interface Addon {
   id: string;
   label: string;
@@ -85,12 +87,25 @@ function sanitize(ids: unknown): string[] {
   return ADDONS.filter((a) => ids.includes(a.id)).map((a) => a.id);
 }
 
+// The `pull_request` addon's instruction, plus a bullet to self-assign the PR
+// when Settings > "Assign to me" is on. Read from `db.settings` at call time
+// (not baked into the ADDONS literal) so toggling the setting takes effect on
+// the next dispatch without needing to touch the addon selection itself.
+function pullRequestInstruction(base: string): string {
+  if (!db.settings.assignPrToSelf) return base;
+  return `${base}\n- Assign the pull request to yourself: pass \`--assignee @me\` to \`gh pr create\`` +
+    ' (or run `gh pr edit <number> --add-assignee @me` if it already exists).';
+}
+
 // Build the block of extra instructions appended to a prompt for the given ids.
 // Returns '' when nothing is selected so the prompt is left untouched.
 function instructionsFor(ids: string[] = []): string {
   const chosen = sanitize(ids).map((i) => byId.get(i)!);
   if (!chosen.length) return '';
-  const blocks = chosen.map((a) => `## ${a.label}\n${a.instruction}`);
+  const blocks = chosen.map((a) => {
+    const instruction = a.id === 'pull_request' ? pullRequestInstruction(a.instruction) : a.instruction;
+    return `## ${a.label}\n${instruction}`;
+  });
   return '\n\n---\n\n# Additional instructions\n\n' + blocks.join('\n\n');
 }
 

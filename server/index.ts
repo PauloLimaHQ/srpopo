@@ -220,6 +220,7 @@ function publicSettings(): PublicSettings {
     installedPlugins: plugins.sanitize(db.settings.installedPlugins),
     mergeStrategy: db.settings.mergeStrategy,
     autoResolveConflicts: !!db.settings.autoResolveConflicts,
+    assignPrToSelf: !!db.settings.assignPrToSelf,
     remoteAccess: !!db.settings.remoteAccess,
     // Derived boolean only — the raw token never leaves the localhost-only
     // GET /api/remote-access endpoint.
@@ -450,6 +451,7 @@ app.patch('/api/settings', (req: Request, res: Response) => {
     db.settings.mergeStrategy = strategy;
   }
   if ('autoResolveConflicts' in req.body) db.settings.autoResolveConflicts = !!req.body.autoResolveConflicts;
+  if ('assignPrToSelf' in req.body) db.settings.assignPrToSelf = !!req.body.assignPrToSelf;
 
   // Remote access: rotate the token on request (revokes all remote sessions),
   // then apply the on/off toggle — generating a token lazily when first enabling

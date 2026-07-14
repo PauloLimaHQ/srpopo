@@ -2745,6 +2745,7 @@
     $('#setting-max-parallel').value = state.settings.maxParallelSessions || 3;
     $('#setting-merge-strategy').value = state.settings.mergeStrategy || 'merge';
     $('#setting-auto-resolve-conflicts').checked = !!state.settings.autoResolveConflicts;
+    $('#setting-assign-pr-to-self').checked = !!state.settings.assignPrToSelf;
     renderPlugins();
     renderRemoteAccess();
     showSettingsSection(typeof section === 'string' ? section : 'general');
@@ -2787,6 +2788,9 @@
   });
   $('#setting-auto-resolve-conflicts').addEventListener('change', async (e) => {
     await saveSettings({ autoResolveConflicts: e.target.checked });
+  });
+  $('#setting-assign-pr-to-self').addEventListener('change', async (e) => {
+    await saveSettings({ assignPrToSelf: e.target.checked });
   });
 
   // ---------- remote access (LAN) ----------
@@ -3199,6 +3203,7 @@
           $('#setting-max-parallel').value = state.settings.maxParallelSessions || 3;
           $('#setting-merge-strategy').value = state.settings.mergeStrategy || 'merge';
           $('#setting-auto-resolve-conflicts').checked = !!state.settings.autoResolveConflicts;
+          $('#setting-assign-pr-to-self').checked = !!state.settings.assignPrToSelf;
           updateNotifNote();
           renderPlugins();
           renderRemoteAccess();

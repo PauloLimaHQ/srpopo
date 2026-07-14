@@ -100,7 +100,10 @@ async function sweep(): Promise<void> {
 }
 
 function start(): void {
-  setInterval(() => { void sweep(); }, SWEEP_INTERVAL_MS);
+  // unref() so this background sweep never keeps the process (or a test's
+  // server instance) alive on its own — the real app has plenty else keeping
+  // it running, and tests that start/stop a server need a clean exit.
+  setInterval(() => { void sweep(); }, SWEEP_INTERVAL_MS).unref();
 }
 
 export { start, sweep, resolveConflicts, CONFLICT_PROMPT };
