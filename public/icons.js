@@ -65,6 +65,12 @@
     info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
     // terminal — open a native shell at a repo/worktree path
     terminal: '<path d="m4 17 6-6-6-6"/><path d="M12 19h8"/>',
+    // wifi — the "Remote Access (LAN)" settings section
+    wifi: '<path d="M12 20h.01"/><path d="M2 8.82a15 15 0 0 1 20 0"/><path d="M5 12.859a10 10 0 0 1 14 0"/><path d="M8.5 16.429a5 5 0 0 1 7 0"/>',
+    // copy — copy the LAN pairing URL / token to the clipboard
+    copy: '<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>',
+    // triangle-alert — the remote-access security warning
+    'triangle-alert': '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
   };
 
   // Render an icon as an inline <svg> string. `opts.spin` adds the spin class,

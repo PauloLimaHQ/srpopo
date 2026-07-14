@@ -18,6 +18,16 @@ export interface Settings {
   // Ids of plugins the user installed from the marketplace (see server/plugins.ts).
   // A plugin's features (e.g. the "From Linear" import) only surface once it's here.
   installedPlugins: string[];
+  // Opt-in "Remote Access (LAN)" mode. When true the server binds the LAN
+  // interface (0.0.0.0) instead of 127.0.0.1 only, and every non-localhost
+  // request must carry the shared token below. Off by default — invariant #1
+  // (localhost is the security boundary) only relaxes when the user opts in.
+  remoteAccess: boolean;
+  // Shared access token that gates LAN requests when remoteAccess is on. A
+  // secret like linearApiToken: it lives only in db.json, is generated lazily
+  // the first time remote access is enabled, and is never returned to the board
+  // (see PublicSettings) — only over the localhost-only GET /api/remote-access.
+  remoteAccessToken: string;
 }
 
 // The redacted, board-facing view of Settings. Omits the raw Linear token and
@@ -29,6 +39,10 @@ export interface PublicSettings {
   linearConfigured: boolean;
   maxParallelSessions: number;
   installedPlugins: string[];
+  // Whether LAN remote access is enabled, and whether a token exists — never the
+  // raw token itself (that only flows over the localhost-only GET /api/remote-access).
+  remoteAccess: boolean;
+  remoteAccessConfigured: boolean;
 }
 
 // A marketplace plugin as the UI lists it. The full catalog lives in

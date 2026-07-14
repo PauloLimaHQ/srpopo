@@ -307,6 +307,9 @@
           <button class="settings-nav-item active" data-section="general">
             <span class="i" data-icon="sliders-horizontal"></span>General
           </button>
+          <button class="settings-nav-item" data-section="remote">
+            <span class="i" data-icon="wifi"></span>Remote Access
+          </button>
           <button class="settings-nav-item" data-section="plugins">
             <span class="i" data-icon="puzzle"></span>Plugins
           </button>
@@ -349,6 +352,43 @@
             <fieldset class="addons">
               <legend>About</legend>
               <p class="addon-hint" id="setting-about-version">Sr. Popo</p>
+            </fieldset>
+          </section>
+
+          <section class="settings-section hidden" data-section="remote">
+            <h2 class="settings-section-title">Remote Access (LAN)</h2>
+            <p class="muted">Open and control this board from another device on the same
+              local network — a laptop, tablet, or phone on the same Wi-Fi. The board looks
+              and works exactly like it does here.</p>
+            <fieldset class="addons">
+              <legend>Local network access</legend>
+              <label class="check addon">
+                <input type="checkbox" id="setting-remote-access" />
+                <span class="addon-text">
+                  <span class="addon-label">Enable remote access</span>
+                  <span class="addon-hint">Binds Sr. Popo to your local network and protects it with a shared
+                    access token. Off by default; only this machine can reach it while off.</span>
+                </span>
+              </label>
+              <div class="remote-warning" id="remote-warning">
+                <span class="i" data-icon="triangle-alert"></span>
+                <span>Anyone on your network who has the link and token can control your tasks and
+                  repositories. Keep this off unless you need it, and only on networks you trust.
+                  Traffic is unencrypted (HTTP) — LAN use only, not the public internet.</span>
+              </div>
+            </fieldset>
+            <fieldset class="addons hidden" id="remote-pairing">
+              <legend>Pair a device</legend>
+              <p class="addon-hint">Open this URL from another device on the same Wi-Fi/network. The token is
+                included, so it signs in automatically.</p>
+              <div id="remote-urls" class="remote-urls"></div>
+              <p class="addon-hint hidden" id="remote-no-lan"></p>
+              <div class="remote-actions">
+                <button class="btn ghost" id="remote-regen">
+                  <span class="i" data-icon="rotate-cw"></span>Regenerate token
+                </button>
+                <span class="field-hint">Rotating the token signs out every currently-paired device.</span>
+              </div>
             </fieldset>
           </section>
 

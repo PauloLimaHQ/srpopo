@@ -23,6 +23,11 @@ const DEFAULT_SETTINGS: Settings = {
   // limits on a typical dev laptop. Configurable in Settings.
   maxParallelSessions: 3,
   installedPlugins: [],
+  // Remote access is OFF by default: the server binds 127.0.0.1 only and needs
+  // no token, exactly as before. The token stays empty until the first time the
+  // user enables remote access (generated lazily in PATCH /api/settings).
+  remoteAccess: false,
+  remoteAccessToken: '',
 };
 
 let db: Db = { repos: [], tasks: [], settings: { ...DEFAULT_SETTINGS } };
