@@ -23,6 +23,8 @@ const DEFAULT_SETTINGS: Settings = {
   // limits on a typical dev laptop. Configurable in Settings.
   maxParallelSessions: 3,
   installedPlugins: [],
+  // Traditional merge commit, matching `gh pr merge`'s own default.
+  mergeStrategy: 'merge',
 };
 
 let db: Db = { repos: [], tasks: [], settings: { ...DEFAULT_SETTINGS } };

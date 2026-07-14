@@ -10,7 +10,7 @@
     addons: [],       // catalog of optional task behaviors (from /api/addons)
     personas: [],     // catalog of expert personas (from /api/personas)
     plugins: [],      // marketplace catalog (from /api/plugins)
-    settings: { notifications: true, sounds: true, maxParallelSessions: 3, installedPlugins: [] }, // user preferences (from /api/settings)
+    settings: { notifications: true, sounds: true, maxParallelSessions: 3, installedPlugins: [], mergeStrategy: 'merge' }, // user preferences (from /api/settings)
     filters: { search: '' }, // board filters (free-text only — repo scope comes from state.view)
     view: { mode: 'super' }, // { mode: 'super' } | { mode: 'workspace', repoId }
     prByTask: new Map(), // taskId -> 'loading' | { pr, reason } from /api/tasks/:id/pr
@@ -2287,6 +2287,7 @@
     $('#setting-sounds').checked = soundsOn();
     updateNotifNote();
     $('#setting-max-parallel').value = state.settings.maxParallelSessions || 3;
+    $('#setting-merge-strategy').value = state.settings.mergeStrategy || 'merge';
     renderPlugins();
     showSettingsSection(typeof section === 'string' ? section : 'general');
     $('#modal-settings').classList.remove('hidden');
@@ -2322,6 +2323,9 @@
     e.target.value = n;
     await saveSettings({ maxParallelSessions: n });
     renderBoard();
+  });
+  $('#setting-merge-strategy').addEventListener('change', async (e) => {
+    await saveSettings({ mergeStrategy: e.target.value });
   });
 
   // ---------- repos modal ----------
@@ -2620,6 +2624,7 @@
           $('#setting-notifications').checked = notificationsOn();
           $('#setting-sounds').checked = soundsOn();
           $('#setting-max-parallel').value = state.settings.maxParallelSessions || 3;
+          $('#setting-merge-strategy').value = state.settings.mergeStrategy || 'merge';
           updateNotifNote();
           renderPlugins();
         }

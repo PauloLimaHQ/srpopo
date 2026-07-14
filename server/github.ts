@@ -11,7 +11,7 @@
 import { execFile } from 'child_process';
 import type { ExecFileException } from 'child_process';
 
-import type { PrCheck, PrCheckStatus, PrInfo, Task } from './types';
+import type { MergeStrategy, PrCheck, PrCheckStatus, PrInfo, Task } from './types';
 
 const GH_TIMEOUT_MS = 30000;
 
@@ -72,19 +72,30 @@ function parsePrList(stdout: string): PrInfo | null {
   };
 }
 
+// Maps a Settings.mergeStrategy to the `gh pr merge` flag that implements it.
+const MERGE_STRATEGY_FLAGS: Record<MergeStrategy, string> = {
+  merge: '--merge',
+  squash: '--squash',
+  rebase: '--rebase',
+};
+
 // Merge the PR associated with a task's head branch via `gh pr merge`. Looks the
 // PR up first (reusing prForTask) so the caller doesn't have to pass a number and
-// an already-merged PR is a no-op. Returns a typed, non-throwing result mirroring
-// prForTask; a failed merge carries the reason plus `gh`'s stderr for the UI.
+// an already-merged PR is a no-op. `strategy` (Settings.mergeStrategy, defaulting
+// to a traditional merge commit) selects `gh pr merge`'s --merge/--squash/--rebase
+// flag. Returns a typed, non-throwing result mirroring prForTask; a failed merge
+// carries the reason plus `gh`'s stderr for the UI.
 async function mergePrForTask(
   task: Partial<Task>,
+  strategy: MergeStrategy = 'merge',
 ): Promise<{ ok: boolean; alreadyMerged?: boolean; reason?: string; message?: string }> {
   const found = await prForTask(task);
   if (!found.pr) return { ok: false, reason: found.reason || 'no-pr' };
   if (found.pr.state === 'merged') return { ok: true, alreadyMerged: true };
 
   const cwd = (task && (task.worktreePath || task.repoPath)) || undefined;
-  const res = await gh(cwd, ['pr', 'merge', String(found.pr.number), '--merge']);
+  const flag = MERGE_STRATEGY_FLAGS[strategy] || MERGE_STRATEGY_FLAGS.merge;
+  const res = await gh(cwd, ['pr', 'merge', String(found.pr.number), flag]);
   if (res.err) return { ok: false, reason: classifyError(res), message: res.stderr.trim() || undefined };
   return { ok: true };
 }

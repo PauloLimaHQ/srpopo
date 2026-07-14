@@ -68,7 +68,7 @@ async function realDispatch(task: Task): Promise<void> {
 const defaultDeps: Deps = {
   dispatch: realDispatch,
   checkPr: (task) => github.prCheckForTask(task),
-  merge: (task) => github.mergePrForTask(task),
+  merge: (task) => github.mergePrForTask(task, db.settings.mergeStrategy),
   removeWorktree: (repoPath, wtPath) => git.removeWorktree(repoPath, wtPath),
   runningCount: () => runner.runningCount(),
 };

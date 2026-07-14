@@ -52,6 +52,7 @@ function publicSettings(): PublicSettings {
     linearConfigured: !!(db.settings.linearApiToken && db.settings.linearApiToken.trim()),
     maxParallelSessions: db.settings.maxParallelSessions,
     installedPlugins: plugins.sanitize(db.settings.installedPlugins),
+    mergeStrategy: db.settings.mergeStrategy,
   };
 }
 
@@ -193,6 +194,13 @@ app.patch('/api/settings', (req: Request, res: Response) => {
   // Marketplace: the board sends the full desired set of installed plugin ids;
   // unknown ids are dropped so only real plugins can be toggled on.
   if ('installedPlugins' in req.body) db.settings.installedPlugins = plugins.sanitize(req.body.installedPlugins);
+  if ('mergeStrategy' in req.body) {
+    const strategy = req.body.mergeStrategy;
+    if (!['merge', 'squash', 'rebase'].includes(strategy)) {
+      return err(res, 400, 'mergeStrategy must be one of merge, squash, rebase');
+    }
+    db.settings.mergeStrategy = strategy;
+  }
   save();
   const settings = publicSettings();
   broadcast({ type: 'settings', settings });
@@ -721,7 +729,7 @@ app.get('/api/tasks/:id/pr', async (req: Request, res: Response) => {
 app.post('/api/tasks/:id/pr/merge', async (req: Request, res: Response) => {
   const task = getTask(req.params.id);
   if (!task) return err(res, 404, 'Task not found');
-  const result = await github.mergePrForTask(task);
+  const result = await github.mergePrForTask(task, db.settings.mergeStrategy);
   if (!result.ok) return err(res, 502, result.message || 'Could not merge the pull request');
   res.json({ ok: true, alreadyMerged: !!result.alreadyMerged });
 });

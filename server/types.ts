@@ -5,6 +5,10 @@
  * mirrors the objects the code already builds; it does not change any behavior.
  */
 
+// How `github.mergePrForTask` finishes a task's pull request via `gh pr merge`:
+// a traditional merge commit, a single squashed commit, or a rebase-and-merge.
+export type MergeStrategy = 'merge' | 'squash' | 'rebase';
+
 export interface Settings {
   notifications: boolean;
   sounds: boolean;
@@ -18,6 +22,9 @@ export interface Settings {
   // Ids of plugins the user installed from the marketplace (see server/plugins.ts).
   // A plugin's features (e.g. the "From Linear" import) only surface once it's here.
   installedPlugins: string[];
+  // Preferred `gh pr merge` strategy, used by both the "Move to Done" merge step
+  // and the Autonomous Mode engine (see github.mergePrForTask).
+  mergeStrategy: MergeStrategy;
 }
 
 // The redacted, board-facing view of Settings. Omits the raw Linear token and
@@ -29,6 +36,7 @@ export interface PublicSettings {
   linearConfigured: boolean;
   maxParallelSessions: number;
   installedPlugins: string[];
+  mergeStrategy: MergeStrategy;
 }
 
 // A marketplace plugin as the UI lists it. The full catalog lives in
