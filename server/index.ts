@@ -22,6 +22,7 @@ import * as linear from './linear';
 import * as plugins from './plugins';
 import * as autonomous from './autonomous';
 import * as framing from './framing';
+import * as terminal from './terminal';
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -35,26 +36,6 @@ function err(res: Response, code: number, message: string): void {
   res.status(code).json({ error: message });
 }
 
-// Launches the platform's default terminal app with `cwd` as its working
-// directory. Best-effort and cross-platform; rejects if the terminal couldn't
-// be spawned. Callers must validate `cwd` before passing it here.
-function openTerminal(cwd: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    let cmd: string;
-    let args: string[];
-    if (process.platform === 'darwin') {
-      cmd = 'open';
-      args = ['-a', 'Terminal', cwd];
-    } else if (process.platform === 'win32') {
-      cmd = 'cmd';
-      args = ['/c', 'start', '""', 'cmd', '/K', `cd /d "${cwd}"`];
-    } else {
-      cmd = 'x-terminal-emulator';
-      args = [];
-    }
-    execFile(cmd, args, { cwd }, (e) => (e ? reject(e) : resolve()));
-  });
-}
 
 // The board-facing view of settings: never leak the raw Linear token, only a
 // derived boolean. This is the ONLY shape sent to the UI (GET /api/settings,
@@ -333,11 +314,12 @@ app.post('/api/repos/:id/worktrees/remove', async (req: Request, res: Response) 
   }
 });
 
-// Opens a native terminal window at the repo root or one of its live worktrees
-// so the user can drop into a shell on the checkout they're viewing. The path
-// is validated against the repo root and `git worktree list` first so this
-// can't be pointed at an arbitrary filesystem location. Best-effort and
-// cross-platform; the primary target is macOS (the Terminal app).
+// Opens an in-app shell session rooted at the repo root or one of its live
+// worktrees, so the user can drop into a terminal on the checkout they're
+// viewing without leaving Sr. Popo. The starting path is validated against the
+// repo root and `git worktree list` first so it can't be pointed at an
+// arbitrary filesystem location. Returns the new session id; the board then
+// streams it via GET /api/terminal/:id/stream.
 app.post('/api/repos/:id/terminal', async (req: Request, res: Response) => {
   const repo = db.repos.find((r) => r.id === req.params.id);
   if (!repo) return err(res, 404, 'Repo not found');
@@ -346,12 +328,49 @@ app.post('/api/repos/:id/terminal', async (req: Request, res: Response) => {
     const live = await git.listWorktrees(repo.path);
     if (!live.some((w) => w.path === target)) return err(res, 404, 'Path not found');
   }
+  const cols = Number(req.body?.cols) || 80;
+  const rows = Number(req.body?.rows) || 24;
   try {
-    await openTerminal(target);
-    res.json({ ok: true });
+    const tid = terminal.create(target, cols, rows);
+    res.json({ id: tid, cwd: target });
   } catch (e) {
     err(res, 500, (e as Error).message);
   }
+});
+
+// Live output stream for a shell session (SSE). Replays the buffered screen on
+// connect, then streams raw output as base64 `data:` events. An empty event
+// signals the shell exited.
+app.get('/api/terminal/:tid/stream', (req: Request, res: Response) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.write(': connected\n\n');
+  const off = terminal.attach(req.params.tid, (b64) => res.write(`data: ${b64}\n\n`));
+  if (!off) { res.write('event: gone\ndata: \n\n'); return res.end(); }
+  const heartbeat = setInterval(() => res.write(': ping\n\n'), 25000);
+  req.on('close', () => { clearInterval(heartbeat); off(); });
+});
+
+app.post('/api/terminal/:tid/input', (req: Request, res: Response) => {
+  const ok = terminal.write(req.params.tid, String(req.body?.data ?? ''));
+  if (!ok) return err(res, 404, 'Session not found');
+  res.json({ ok: true });
+});
+
+app.post('/api/terminal/:tid/resize', (req: Request, res: Response) => {
+  const cols = Number(req.body?.cols) || 80;
+  const rows = Number(req.body?.rows) || 24;
+  terminal.resize(req.params.tid, cols, rows);
+  res.json({ ok: true });
+});
+
+app.post('/api/terminal/:tid/close', (req: Request, res: Response) => {
+  terminal.close(req.params.tid);
+  res.json({ ok: true });
 });
 
 app.delete('/api/repos/:id', (req: Request, res: Response) => {
@@ -746,7 +765,7 @@ function start(port: string | number = process.env.PORT || 7777): Promise<{ serv
   });
 }
 
-export { app, start, runner };
+export { app, start, runner, terminal };
 
 // When run directly (`node server/index.js` / `tsx server/index.ts`), boot as a
 // standalone server.

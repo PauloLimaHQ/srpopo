@@ -543,18 +543,101 @@
     }
   });
 
-  // Opens a native terminal at a repo/worktree path. Omit `wtPath` for the repo
-  // root (the "current page" the workspace is showing).
-  async function openTerminalAt(repoId, wtPath) {
-    try {
-      await api('POST', `/api/repos/${repoId}/terminal`, wtPath ? { path: wtPath } : {});
-      toast('Opening terminal…', 'info');
-    } catch (e) {
-      toast(e.message || 'Failed to open terminal', 'error');
-    }
+  // ---- In-app terminal (embedded shell, docked at the bottom) ----
+  const termState = { xterm: null, fit: null, es: null, id: null, queue: '', sending: false };
+
+  function b64ToBytes(b64) {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
   }
 
+  // Sends typed input to the shell in order. Fast keystrokes are coalesced into
+  // one request and requests never overlap, so bytes can't arrive out of order.
+  async function flushTermInput() {
+    if (termState.sending || !termState.queue || !termState.id) return;
+    termState.sending = true;
+    const data = termState.queue;
+    termState.queue = '';
+    try { await api('POST', `/api/terminal/${termState.id}/input`, { data }); } catch (_) { /* session gone */ }
+    termState.sending = false;
+    if (termState.queue) flushTermInput();
+  }
+
+  function closeTerminal() {
+    if (termState.id) api('POST', `/api/terminal/${termState.id}/close`).catch(() => {});
+    if (termState.es) { termState.es.close(); termState.es = null; }
+    if (termState.xterm) { termState.xterm.dispose(); termState.xterm = null; }
+    termState.fit = null;
+    termState.id = null;
+    termState.queue = '';
+    $('#terminal-panel').classList.add('hidden');
+    window.removeEventListener('resize', fitTerminal);
+  }
+
+  function fitTerminal() {
+    if (!termState.fit || !termState.id) return;
+    try { termState.fit.fit(); } catch (_) { /* not mounted */ }
+    api('POST', `/api/terminal/${termState.id}/resize`, { cols: termState.xterm.cols, rows: termState.xterm.rows }).catch(() => {});
+  }
+
+  // Opens an in-app shell rooted at a repo/worktree path. Omit `wtPath` for the
+  // repo root (the "current page" the workspace is showing).
+  async function openTerminalAt(repoId, wtPath) {
+    if (typeof window.Terminal !== 'function') { toast('Terminal component failed to load', 'error'); return; }
+    closeTerminal();
+    const panel = $('#terminal-panel');
+    panel.classList.remove('hidden');
+    $('#terminal-cwd').textContent = wtPath || (state.repos.find((r) => r.id === repoId)?.path ?? '');
+
+    const term = new window.Terminal({
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+      fontSize: 13,
+      cursorBlink: true,
+      theme: { background: '#0b0e14', foreground: '#d7dce5', cursor: '#d7dce5' },
+    });
+    const fit = new window.FitAddon.FitAddon();
+    term.loadAddon(fit);
+    term.open($('#terminal-mount'));
+    fit.fit();
+    termState.xterm = term;
+    termState.fit = fit;
+
+    let session;
+    try {
+      session = await api('POST', `/api/repos/${repoId}/terminal`, {
+        path: wtPath || undefined,
+        cols: term.cols,
+        rows: term.rows,
+      });
+    } catch (e) {
+      toast(e.message || 'Failed to open terminal', 'error');
+      closeTerminal();
+      return;
+    }
+    termState.id = session.id;
+
+    term.onData((d) => { termState.queue += d; flushTermInput(); });
+    window.addEventListener('resize', fitTerminal);
+
+    const es = new EventSource(`/api/terminal/${session.id}/stream`);
+    termState.es = es;
+    es.onmessage = (ev) => {
+      if (ev.data === '') { term.write('\r\n\x1b[90m[process exited]\x1b[0m\r\n'); return; }
+      term.write(b64ToBytes(ev.data));
+    };
+    es.addEventListener('gone', () => term.write('\r\n\x1b[90m[session ended]\x1b[0m\r\n'));
+    term.focus();
+  }
+
+  $('#terminal-close').addEventListener('click', closeTerminal);
+
   $('#workspace-back').addEventListener('click', exitWorkspace);
+  $('#workspace-terminal').addEventListener('click', () => {
+    const repoId = state.view.repoId;
+    if (repoId) openTerminalAt(repoId);
+  });
   $('#workspace-info').addEventListener('click', openWorkspacePopover);
   // Autonomous Mode: the header button starts a session (opens the budget modal)
   // or stops the one running for this workspace.
@@ -570,7 +653,7 @@
     const id = e.target.closest('[data-task-link]')?.dataset.taskLink;
     if (id) { $('#modal-workspace').classList.add('hidden'); openDrawer(id); return; }
     const termPath = e.target.closest('[data-term-wt]')?.dataset.termWt;
-    if (termPath) { openTerminalAt(state.view.repoId, termPath); return; }
+    if (termPath) { $('#modal-workspace').classList.add('hidden'); openTerminalAt(state.view.repoId, termPath); return; }
     const wtPath = e.target.closest('[data-rm-wt]')?.dataset.rmWt;
     if (!wtPath) return;
     if (!confirm(`Remove worktree?\n${wtPath}\n\nThis discards any uncommitted changes in it.`)) return;

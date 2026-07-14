@@ -6,6 +6,7 @@
   <title>Sr. Popo — Claude Code Orchestrator</title>
   <link rel="icon" type="image/png" href="logo.png" />
   <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="vendor/xterm.css" />
   <script>
     // Apply the saved theme before first paint to avoid a flash of the wrong
     // one. Absence of the key means "follow the system" (no data-theme attr).
@@ -55,6 +56,7 @@
       </div>
     </div>
     <button class="btn ghost hidden" id="btn-autonomous" title="Autonomous Mode"><span class="i" data-icon="bot"></span>Autonomous</button>
+    <button class="btn ghost icon" id="workspace-terminal" title="Open a terminal here" aria-label="Open terminal"><span class="i" data-icon="terminal"></span></button>
     <button class="btn ghost icon" id="workspace-info" title="Workspace details" aria-label="Workspace details"><span class="i" data-icon="info"></span></button>
   </div>
 
@@ -448,8 +450,23 @@
   <!-- Right-click context menu on task cards -->
   <div id="context-menu" class="context-menu hidden"></div>
 
+  <!-- In-app terminal: a real shell on the workspace checkout, docked at the
+       bottom so the user never leaves Sr. Popo. -->
+  <div id="terminal-panel" class="terminal-panel hidden">
+    <div class="terminal-bar">
+      <span class="i" data-icon="terminal"></span>
+      <span id="terminal-cwd" class="terminal-cwd mono"></span>
+      <div class="terminal-bar-actions">
+        <button class="btn ghost icon" id="terminal-close" title="Close terminal" aria-label="Close terminal"><span class="i" data-icon="x"></span></button>
+      </div>
+    </div>
+    <div id="terminal-mount" class="terminal-mount"></div>
+  </div>
+
   <div id="toasts" class="toasts"></div>
 
+  <script src="vendor/xterm.js"></script>
+  <script src="vendor/xterm-addon-fit.js"></script>
   <script src="icons.js"></script>
   <script src="app.js"></script>
 </body>
