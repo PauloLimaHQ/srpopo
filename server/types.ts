@@ -476,4 +476,10 @@ export interface RepoSpecFile {
   title: string;
   updatedAt: string;
   size: number;
+  // Optional metadata parsed from a spec file's YAML frontmatter (present only
+  // when the repo adopts the frontmatter-driven convention). Kept as strings so
+  // a zero-padded number like "0084" survives round-tripping.
+  number?: string;
+  status?: string;
+  created?: string;
 }
