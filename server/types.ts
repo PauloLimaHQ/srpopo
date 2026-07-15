@@ -133,7 +133,19 @@ export type TaskStatus =
 
 // A grooming card's own lifecycle — separate from tasks. It never becomes a
 // task; it spawns them. `running` (like a task's) is set only by the runner.
-export type GroomingStatus = 'draft' | 'running' | 'finished' | 'failed';
+// `awaiting` is entered when the read-only session asks the developer to clarify
+// something before it can write a good spec: the session is paused (kept
+// resumable via sessionId) with its pending questions on the card, and answering
+// them resumes it back to `running`.
+export type GroomingStatus = 'draft' | 'running' | 'awaiting' | 'finished' | 'failed';
+
+// One clarifying question a grooming session asks back mid-session, surfaced on
+// the card so the developer can answer it (see GroomQuestion in server/groomer.ts).
+export interface GroomingQuestion {
+  question: string;
+  options: string[];
+  allowText: boolean;
+}
 
 // Where a grooming's spawned tasks land: always backlog, always ready, or let
 // the grooming session decide per task (its `ready` flag on each spec).
@@ -168,6 +180,10 @@ export interface Grooming {
   activeSubagents: number;
   lastOutcome: string | null;
   lastError: string | null;
+  // Clarifying questions the paused session is waiting on, present only while
+  // status is 'awaiting'. Cleared once the developer answers (the session
+  // resumes) or the card finishes/fails.
+  questions: GroomingQuestion[];
   // Ids of the tasks this grooming spawned when it finished.
   taskIds: string[];
   archived: boolean;
@@ -195,6 +211,10 @@ export interface Task {
   repoName: string;
   repoPath: string;
   addons: string[];
+  // When the `pull_request` add-on (server/addons.ts) is selected, whether the
+  // PR it opens at the end is created as a draft (`gh pr create --draft`)
+  // instead of ready for review. Ignored when that add-on isn't selected.
+  prDraft: boolean;
   personas: string[];
   // Files the user attached; bytes live under DATA_DIR/attachments/<id>/<name>,
   // managed only through the upload/delete routes (never the PATCH allowlist).

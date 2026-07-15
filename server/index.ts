@@ -26,6 +26,7 @@ import * as repoSpecs from './repoSpecs';
 import * as plugins from './plugins';
 import * as autonomous from './autonomous';
 import * as conflicts from './conflicts';
+import * as prRefresh from './pr-refresh';
 import * as framing from './framing';
 import * as terminal from './terminal';
 import * as usage from './usage';
@@ -315,6 +316,7 @@ function createGrooming(repo: Repo, idea: string, body: Record<string, unknown>,
     activeSubagents: 0,
     lastOutcome: null,
     lastError: null,
+    questions: [],
     taskIds: [],
     archived: false,
     createdAt: now(),
@@ -349,6 +351,7 @@ function spawnGroomedTasks(grooming: Grooming, specs: GroomSpec[]): string[] {
       repoName: grooming.repoName,
       repoPath: grooming.repoPath,
       addons: [],
+      prDraft: false,
       personas: [],
       attachments: [],
       useWorktree: true,
@@ -389,11 +392,16 @@ function spawnGroomedTasks(grooming: Grooming, specs: GroomSpec[]): string[] {
   return ids;
 }
 
-// Kick off the read-only grooming session for a card. On a launch failure the
-// card is rolled back to draft and the error rethrown for the route to report.
-function runGrooming(grooming: Grooming): Grooming {
+// Kick off (or resume) the read-only grooming session for a card. On a launch
+// failure the card is rolled back to draft and the error rethrown for the route
+// to report. `resumePrompt` continues a paused (awaiting) session with the
+// developer's answers; omit it to start the idea fresh.
+function runGrooming(grooming: Grooming, resumePrompt?: string): Grooming {
   try {
-    return runner.groom(grooming, { onSpawn: (specs) => spawnGroomedTasks(grooming, specs) });
+    return runner.groom(grooming, {
+      onSpawn: (specs) => spawnGroomedTasks(grooming, specs),
+      resumePrompt,
+    });
   } catch (e) {
     grooming.status = 'draft';
     grooming.lastOutcome = 'error';
@@ -818,6 +826,30 @@ app.post('/api/groomings/:id/run', (req: Request, res: Response) => {
   }
 });
 
+// Answer the clarifying questions a paused (awaiting) grooming asked, and resume
+// its session so it can finish. `answers` is an array of strings aligned to the
+// card's `questions`; a blank/missing entry tells the session to use its own
+// judgment for that one. Like /run this re-enters `running` through the runner.
+app.post('/api/groomings/:id/answers', (req: Request, res: Response) => {
+  const grooming = getGrooming(req.params.id);
+  if (!grooming) return err(res, 404, 'Grooming not found');
+  if (runner.isRunning(grooming.id)) return err(res, 409, 'Grooming is already running');
+  if (grooming.status !== 'awaiting' || !grooming.questions.length) {
+    return err(res, 409, 'Grooming is not waiting for answers');
+  }
+  if (!grooming.sessionId) return err(res, 409, 'Grooming session is no longer resumable — run it again');
+  if (!Array.isArray(req.body.answers)) return err(res, 400, 'answers must be an array');
+  if (atCapacity()) return err(res, 409, capacityError());
+
+  const answers = grooming.questions.map((_, i) => String(req.body.answers[i] ?? '').trim());
+  const resumePrompt = groomer.answersPrompt(grooming.questions, answers);
+  try {
+    res.json(runGrooming(grooming, resumePrompt));
+  } catch (e) {
+    err(res, 500, (e as Error).message);
+  }
+});
+
 app.post('/api/groomings/:id/stop', (req: Request, res: Response) => {
   const grooming = getGrooming(req.params.id);
   if (!grooming) return err(res, 404, 'Grooming not found');
@@ -990,6 +1022,7 @@ app.post('/api/repos/:id/specs/import', (req: Request, res: Response) => {
       repoName: repo.name,
       repoPath: repo.path,
       addons: [],
+      prDraft: false,
       personas: [],
       attachments: [],
       useWorktree,
@@ -1032,11 +1065,13 @@ app.patch('/api/tasks/:id', (req: Request, res: Response) => {
   if (!task) return err(res, 404, 'Task not found');
   if (runner.isRunning(task.id)) return err(res, 409, 'Task is running; stop it first');
 
-  const allowed = ['title', 'prompt', 'model', 'permissionMode', 'allowedTools', 'promptPermissions', 'useWorktree', 'branchName', 'baseBranch', 'status', 'addons', 'personas'] as const;
+  const allowed = ['title', 'prompt', 'model', 'permissionMode', 'allowedTools', 'promptPermissions', 'useWorktree', 'branchName', 'baseBranch', 'status', 'addons', 'prDraft', 'personas'] as const;
   for (const key of allowed) {
     if (key in req.body) {
       if (key === 'addons') {
         task.addons = addons.sanitize(req.body.addons);
+      } else if (key === 'prDraft') {
+        task.prDraft = !!req.body.prDraft;
       } else if (key === 'allowedTools') {
         task.allowedTools = runner.normalizeAllowedTools(req.body.allowedTools);
       } else if (key === 'promptPermissions') {
@@ -1251,6 +1286,30 @@ app.post('/api/tasks/:id/pr/merge', async (req: Request, res: Response) => {
   res.json({ ok: true, alreadyMerged: !!result.alreadyMerged });
 });
 
+// Merge the task's branch straight into its base branch with a plain `git
+// merge` — no PR, no `gh`. The fast local-merge counterpart to `/pr/merge`
+// for repos where waiting on a pull request isn't worth it. Requires a
+// resolved branch and a base to merge into (the task's own `baseBranch`,
+// falling back to the repo's actual current branch).
+app.post('/api/tasks/:id/merge', async (req: Request, res: Response) => {
+  const task = getTask(req.params.id);
+  if (!task) return err(res, 404, 'Task not found');
+  if (runner.isRunning(task.id)) return err(res, 409, 'Stop the task first');
+  if (!task.branch) return err(res, 400, 'Task has no branch to merge');
+  const repo = getRepo(task.repoId);
+  // repo.branch is only a snapshot from whenever the repo was registered (see
+  // GET /api/repos/:id/branch above) and can be stale, so re-read the repo's
+  // actual current branch rather than trusting the cached value.
+  const base = task.baseBranch || (repo ? await git.currentBranch(repo.path) : null);
+  if (!base) return err(res, 400, 'No base branch to merge into');
+  try {
+    await git.mergeBranch(task.repoPath, base, task.branch);
+    res.json({ ok: true, base });
+  } catch (e) {
+    err(res, 502, (e as Error).message);
+  }
+});
+
 app.get('/api/tasks/:id/worktree/status', async (req: Request, res: Response) => {
   const task = getTask(req.params.id);
   if (!task || !task.worktreePath) return err(res, 404, 'No worktree');
@@ -1331,6 +1390,10 @@ function start(port: string | number = process.env.PORT || 7777): Promise<{ serv
       // Periodic sweep for the opt-in "auto-resolve conflicts" setting (see
       // server/conflicts.ts) — checks review-column tasks' PRs on an interval.
       conflicts.start();
+      // Periodic background refresh of review-column tasks' PR status (see
+      // server/pr-refresh.ts) — always on, so a PR merged/closed outside
+      // Sr. Popo is reflected on the board without opening the task first.
+      prRefresh.start();
       resolve({ server, port: listenPort, url });
       backfillRepoNames();
     });

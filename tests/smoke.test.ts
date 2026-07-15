@@ -49,6 +49,21 @@ test('addons: pull_request instruction only self-assigns when Settings > assignP
   }
 });
 
+test('addons: instructionsFor swaps in the draft-PR wording only when prDraft is set', () => {
+  const addons = require('../server/addons');
+
+  const ready = addons.instructionsFor(['pull_request'], { prDraft: false });
+  assert.ok(ready.includes('gh pr create'), 'default instruction opens a normal PR');
+  assert.ok(!ready.includes('--draft'), 'no --draft flag when prDraft is off');
+
+  const draft = addons.instructionsFor(['pull_request'], { prDraft: true });
+  assert.ok(draft.includes('--draft'), 'draft instruction opens the PR with --draft');
+
+  // Unaffected add-ons ignore the option entirely.
+  const other = addons.instructionsFor(['code_review'], { prDraft: true });
+  assert.ok(!other.includes('--draft'), 'prDraft has no effect on other add-ons');
+});
+
 test('server modules load without throwing', () => {
   assert.doesNotThrow(() => {
     require('../server/git');
@@ -430,6 +445,58 @@ test('conflicts: sweep is a no-op when the setting is off, even with a conflicti
   } finally {
     store.db.tasks.pop();
     store.db.settings.autoResolveConflicts = prev;
+  }
+});
+
+test('pr-refresh: module exports sweep and start', () => {
+  const prRefresh = require('../server/pr-refresh');
+  assert.strictEqual(typeof prRefresh.sweep, 'function', 'sweep is exported');
+  assert.strictEqual(typeof prRefresh.start, 'function', 'start is exported');
+});
+
+test('pr-refresh: sweep ignores tasks with no branch, archived tasks, and non-review tasks', async () => {
+  const bus = require('../server/bus');
+  const prRefresh = require('../server/pr-refresh');
+  const tasks = [
+    mkTask('pr-nb', 'review', 'repoA'), // no branch resolved yet
+    mkTask('pr-ar', 'review', 'repoA', { branch: 'feature/x', archived: true }),
+    mkTask('pr-rd', 'ready', 'repoA', { branch: 'feature/y' }),
+  ];
+  const restore = withStore(tasks, 10);
+  const seen: unknown[] = [];
+  const unsubscribe = bus.subscribe((msg: unknown) => seen.push(msg));
+  try {
+    await prRefresh.sweep();
+    assert.deepStrictEqual(seen, [], 'none of these tasks are eligible, so no gh lookup or broadcast happens');
+  } finally {
+    unsubscribe();
+    restore();
+  }
+});
+
+test('pr-refresh: sweep broadcasts a pr event once per change, keyed off a nonexistent worktree so gh fails fast and deterministically', async () => {
+  const bus = require('../server/bus');
+  const prRefresh = require('../server/pr-refresh');
+  // A cwd that can't exist makes the `gh` spawn fail immediately with ENOENT
+  // regardless of whether this machine has `gh` installed/authenticated —
+  // deterministic and fast, same trick as the module's own no-branch tests.
+  const task = mkTask('pr-1', 'review', 'repoA', { branch: 'feature/x', repoPath: '/tmp/srpopo-test-does-not-exist' });
+  const restore = withStore([task], 10);
+  const seen: Array<{ type?: string; taskId?: string; result?: unknown }> = [];
+  const unsubscribe = bus.subscribe((msg: { type?: string; taskId?: string; result?: unknown }) => seen.push(msg));
+  try {
+    await prRefresh.sweep();
+    const first = seen.filter((m) => m.type === 'pr');
+    assert.strictEqual(first.length, 1, 'one pr event for the one eligible task');
+    assert.strictEqual(first[0].taskId, 'pr-1');
+    assert.deepStrictEqual(first[0].result, { pr: null, reason: 'gh-missing' });
+
+    // Sweeping again with an unchanged result should not re-broadcast.
+    await prRefresh.sweep();
+    assert.strictEqual(seen.filter((m) => m.type === 'pr').length, 1, 'an unchanged result does not re-broadcast');
+  } finally {
+    unsubscribe();
+    restore();
   }
 });
 
@@ -1102,6 +1169,55 @@ test('groomer: parseResult recovers task specs from the session output', () => {
     'a spec without any prompt is rejected');
   assert.strictEqual(groomer.parseResult(''), null);
   assert.strictEqual(groomer.parseResult(undefined), null);
+});
+
+test('groomer: metaPrompt offers the clarify path alongside the finish path', () => {
+  const groomer = require('../server/groomer');
+  const mp = groomer.metaPrompt('add a dark mode toggle');
+  assert.match(mp, /"questions"/, 'describes the clarify (questions) shape');
+  assert.match(mp, /"options"/, 'questions can carry suggested options');
+  assert.match(mp, /"allowText"/, 'questions can allow a free-text answer');
+});
+
+test('groomer: parseQuestions recovers clarifying questions, else null', () => {
+  const groomer = require('../server/groomer');
+
+  const asked = `Let me check.\n${groomer.SPEC_START}\n` +
+    '{ "questions": [' +
+    '{ "question": "Which theme should default?", "options": ["Light", "Dark"], "allowText": true },' +
+    '{ "question": "Any accessibility constraints?", "options": [] }' +
+    '] }' +
+    `\n${groomer.SPEC_END}`;
+  assert.deepStrictEqual(groomer.parseQuestions(asked), [
+    { question: 'Which theme should default?', options: ['Light', 'Dark'], allowText: true },
+    // options: [] forces allowText true so the question stays answerable.
+    { question: 'Any accessibility constraints?', options: [], allowText: true },
+  ]);
+
+  // A tasks payload is not a questions payload.
+  const tasks = `${groomer.SPEC_START}{ "tasks": [{ "title": "T", "prompt": "P" }] }${groomer.SPEC_END}`;
+  assert.strictEqual(groomer.parseQuestions(tasks), null, 'a tasks spec yields no questions');
+  // A questions entry without any question text is dropped, leaving nothing.
+  assert.strictEqual(
+    groomer.parseQuestions(`${groomer.SPEC_START}{"questions":[{"options":["a"]}]}${groomer.SPEC_END}`),
+    null,
+    'a question without text is rejected',
+  );
+  assert.strictEqual(groomer.parseQuestions('no spec at all'), null);
+  assert.strictEqual(groomer.parseQuestions(''), null);
+});
+
+test('groomer: answersPrompt pairs each question with its answer', () => {
+  const groomer = require('../server/groomer');
+  const questions = [
+    { question: 'Which theme should default?', options: ['Light', 'Dark'], allowText: true },
+    { question: 'Any accessibility constraints?', options: [], allowText: true },
+  ];
+  const prompt = groomer.answersPrompt(questions, ['Dark', '']);
+  assert.match(prompt, /Which theme should default\?/, 'restates the question');
+  assert.match(prompt, /Answer: Dark/, 'includes the given answer');
+  assert.match(prompt, /use your best judgment/, 'a blank answer defers to the session');
+  assert.ok(prompt.includes(groomer.SPEC_START) && prompt.includes(groomer.SPEC_END), 're-states the spec markers');
 });
 
 test('groomer: deriveTitle takes the first non-empty line and caps length', () => {

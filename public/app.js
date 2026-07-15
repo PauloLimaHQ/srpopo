@@ -768,7 +768,10 @@
     if (t.groomingId) chips.push(`<span class="chip grooming-chip" title="Spawned by a grooming">${icon('lightbulb')} groomed</span>`);
     if (t.resolvingConflicts) chips.push(`<span class="chip conflict-chip" title="Auto-resolving merge conflicts with main">${icon('git-branch')} Resolving Conflicts</span>`);
     if (t.useWorktree) chips.push(`<span class="chip worktree" title="${esc(t.worktreePath || 'worktree on dispatch')}">${icon('git-branch')} ${esc(t.branch || t.branchName || 'worktree')}</span>`);
-    if (t.addons && t.addons.includes('pull_request')) chips.push(`<span class="chip addon-chip" title="Opens a pull request when finished">${icon('git-pull-request')} PR</span>`);
+    if (t.addons && t.addons.includes('pull_request')) {
+      const draft = !!t.prDraft;
+      chips.push(`<span class="chip addon-chip" title="${draft ? 'Opens a draft pull request when finished' : 'Opens a pull request when finished'}">${icon('git-pull-request')} PR${draft ? ' (draft)' : ''}</span>`);
+    }
     if (t.addons && t.addons.includes('code_review')) chips.push(`<span class="chip addon-chip" title="Self code-reviews and fixes issues before finishing">${icon('search')} review</span>`);
     (t.personas || []).forEach((pid) => {
       const p = state.personas.find((x) => x.id === pid);
@@ -840,6 +843,7 @@
       `<span class="chip" title="Where spawned tasks land">${esc(GROOMING_TARGET_LABEL[g.target] || 'to backlog')}</span>`,
     ];
     if (g.status === 'draft') chips.push(`<span class="chip badge-draft">DRAFT</span>`);
+    if (g.status === 'awaiting') chips.push(`<span class="chip badge-awaiting">${icon('circle-help')} NEEDS INPUT</span>`);
     if (g.status === 'finished') chips.push(`<span class="chip badge-groomed">${icon('circle-check')} GROOMED</span>`);
     if (g.status === 'failed') chips.push(`<span class="chip badge-failed">FAILED</span>`);
     if (g.lastOutcome === 'stopped') chips.push(`<span class="chip badge-stopped">stopped</span>`);
@@ -854,6 +858,13 @@
           <span class="elapsed" data-start="${esc(g.startedAt)}">${elapsedSince(g.startedAt)}</span>
           <button class="btn icon danger card-stop" data-action="stop" title="Stop grooming" aria-label="Stop grooming">${icon('square')}</button>
         </div>`;
+    }
+
+    // An awaiting grooming nudges the user to open it and answer.
+    let awaitingRow = '';
+    if (g.status === 'awaiting') {
+      const n = (g.questions || []).length;
+      awaitingRow = `<div class="groom-awaiting-hint">${icon('circle-help')} ${n} question${n === 1 ? '' : 's'} — click to answer</div>`;
     }
 
     // A finished grooming links straight to the tasks it spawned.
@@ -873,6 +884,7 @@
       <div class="card-title">${esc(g.title)}</div>
       <div class="card-chips">${chips.join('')}</div>
       ${statusRow}
+      ${awaitingRow}
       ${taskLinks}
       ${g.status === 'failed' && g.lastError ? `<div class="card-error">${esc(g.lastError.slice(0, 140))}</div>` : ''}`;
 
@@ -932,21 +944,47 @@
       });
     }
     // An unmerged PR is only meaningful for a task that has a resolved branch.
-    // Look it up fresh (the cached value may be stale or absent) so the prompt
-    // reflects the PR's real state at the moment of the move.
+    // Always look it up fresh here — the background sweep (server/pr-refresh.ts)
+    // and the cached value from a drawer visit can both be up to a minute stale,
+    // and this is the one moment a stale "still open" would cause a needless
+    // re-merge attempt — so the prompt reflects the PR's real state right now.
     if (t.branch) {
-      let res = state.prByTask.get(t.id);
-      if (!res || res === 'loading') {
-        try {
-          res = await api('GET', `/api/tasks/${t.id}/pr`);
-          state.prByTask.set(t.id, res);
-        } catch { res = null; }
-      }
+      let res;
+      try {
+        res = await api('GET', `/api/tasks/${t.id}/pr`);
+        state.prByTask.set(t.id, res);
+      } catch { res = null; }
       if (res && res.pr && res.pr.state !== 'merged') {
         options.push({
           id: 'merge-pr',
           label: `Merge PR #${res.pr.number}`,
           hint: res.pr.title || '',
+          group: 'merge',
+        });
+      }
+    }
+    // Direct, PR-less merge — an alternative to merge-pr (same 'merge' group,
+    // so picking one clears the other — checking both would merge the branch
+    // in twice) offered only while there's still a worktree to wrap up, so a
+    // task that already finished its merge/branch story elsewhere doesn't
+    // gain a new confirmation dialog it never had before. Only shown once we
+    // actually know the target branch — a guessed default would promise a
+    // merge that never happens. Warned since it bypasses code review and CI.
+    if (t.worktreePath && t.branch) {
+      let base = t.baseBranch || state.repoBranchByRepo.get(t.repoId);
+      if (base === undefined || base === 'loading') {
+        try {
+          ({ branch: base } = await api('GET', `/api/repos/${t.repoId}/branch`));
+          state.repoBranchByRepo.set(t.repoId, base);
+        } catch { base = null; }
+      }
+      if (base) {
+        options.push({
+          id: 'merge-direct',
+          label: `Merge branch into ${base} (no PR)`,
+          hint: 'Skips code review and CI — merges locally right now',
+          warn: true,
+          group: 'merge',
         });
       }
     }
@@ -967,15 +1005,25 @@
     $('#done-modal-sub').textContent =
       `“${t.title}” — choose any wrap-up steps to run, then it moves to Done.`;
     $('#done-modal-options').innerHTML = options.map((o) =>
-      `<label class="done-option">` +
-      `<input type="checkbox" data-done-opt="${esc(o.id)}" />` +
-      `<span class="done-option-text"><span class="done-option-label">${esc(o.label)}</span>` +
+      `<label class="done-option${o.warn ? ' done-option-warn' : ''}">` +
+      `<input type="checkbox" data-done-opt="${esc(o.id)}"${o.group ? ` data-done-group="${esc(o.group)}"` : ''} />` +
+      `<span class="done-option-text"><span class="done-option-label">${o.warn ? icon('triangle-alert') : ''}${esc(o.label)}</span>` +
       (o.hint ? `<span class="done-option-hint">${esc(o.hint)}</span>` : '') +
       `</span></label>`,
     ).join('');
     $('#done-modal-confirm').disabled = false;
     $('#modal-done').classList.remove('hidden');
   }
+
+  // merge-pr and merge-direct share a 'group' — they're alternative ways to
+  // land the same branch, so checking one clears the other rather than
+  // letting both run (which would merge the branch in twice).
+  $('#done-modal-options').addEventListener('change', (e) => {
+    const el = e.target;
+    if (!el.matches('input[data-done-group]') || !el.checked) return;
+    document.querySelectorAll(`#done-modal-options input[data-done-group="${el.dataset.doneGroup}"]`)
+      .forEach((other) => { if (other !== el) other.checked = false; });
+  });
 
   $('#done-modal-cancel').addEventListener('click', () => {
     $('#modal-done').classList.add('hidden');
@@ -999,7 +1047,7 @@
 
   $('#done-modal-confirm').addEventListener('click', async () => {
     if (!doneModalCtx) return;
-    const { task, options } = doneModalCtx;
+    const { task } = doneModalCtx;
     const checked = new Set(
       [...document.querySelectorAll('#done-modal-options input[data-done-opt]:checked')]
         .map((el) => el.dataset.doneOpt),
@@ -1010,10 +1058,13 @@
 
     // Merge first: worktree removal below would take away the dir `gh` runs in.
     const steps = [];
-    if (checked.has('merge-pr') && options.some((o) => o.id === 'merge-pr')) {
+    if (checked.has('merge-pr')) {
       steps.push({ id: 'merge-pr', label: 'Merging your pull request…', state: 'pending' });
     }
-    if (checked.has('delete-worktree') && options.some((o) => o.id === 'delete-worktree')) {
+    if (checked.has('merge-direct')) {
+      steps.push({ id: 'merge-direct', label: 'Merging your branch…', state: 'pending' });
+    }
+    if (checked.has('delete-worktree')) {
       steps.push({ id: 'delete-worktree', label: 'Deleting your worktree…', state: 'pending' });
     }
     steps.push({ id: 'move', label: 'Moving task to Done…', state: 'pending' });
@@ -1029,14 +1080,20 @@
     }
 
     try {
-      if (steps.some((s) => s.id === 'merge-pr')) {
+      if (checked.has('merge-pr')) {
         await runStep('merge-pr', async () => {
           await api('POST', `/api/tasks/${task.id}/pr/merge`);
           state.prByTask.delete(task.id); // force a fresh PR status next render
         });
         toast('Pull request merged', 'info');
       }
-      if (steps.some((s) => s.id === 'delete-worktree')) {
+      if (checked.has('merge-direct')) {
+        await runStep('merge-direct', async () => {
+          await api('POST', `/api/tasks/${task.id}/merge`);
+        });
+        toast('Branch merged directly (no PR)', 'info');
+      }
+      if (checked.has('delete-worktree')) {
         await runStep('delete-worktree', async () => {
           await api('POST', `/api/tasks/${task.id}/worktree/remove`);
         });
@@ -1306,6 +1363,12 @@
       actions.push({ id: 'edit', label: 'Edit', icon: 'pencil', cls: 'ghost',
         run: () => { openBriefModal(g); } });
     }
+    // An awaiting card answers via the drawer form; the action here is the escape
+    // hatch to discard the questions and groom the idea again from scratch.
+    if (g.status === 'awaiting') {
+      actions.push({ id: 'regroom', label: 'Start over', icon: 'rotate-cw', cls: 'ghost',
+        run: () => api('POST', `/api/groomings/${g.id}/run`) });
+    }
     actions.push({ id: 'archive', label: 'Archive', cls: 'ghost',
       run: async () => {
         await api('POST', `/api/groomings/${g.id}/archive`);
@@ -1402,12 +1465,12 @@
     promptEl.onclick = null; // drop any grooming task-link handler left behind
     const blocks = [];
     if (t.brief) {
-      blocks.push(`<div class="tag">IDEA</div><div class="drawer-prompt-body">${esc(t.brief)}</div>`);
+      blocks.push(`<div class="tag">IDEA</div><div class="drawer-prompt-body md">${mdToHtml(t.brief)}</div>`);
       if (t.prompt && t.prompt !== t.brief) {
-        blocks.push(`<div class="tag">GROOMED PROMPT</div><div class="drawer-prompt-body">${esc(t.prompt)}</div>`);
+        blocks.push(`<div class="tag">GROOMED PROMPT</div><div class="drawer-prompt-body md">${mdToHtml(t.prompt)}</div>`);
       }
     } else if (t.prompt) {
-      blocks.push(`<div class="tag">ORIGINAL PROMPT</div><div class="drawer-prompt-body">${esc(t.prompt)}</div>`);
+      blocks.push(`<div class="tag">ORIGINAL PROMPT</div><div class="drawer-prompt-body md">${mdToHtml(t.prompt)}</div>`);
     }
     if (blocks.length) {
       promptEl.classList.remove('hidden');
@@ -1440,9 +1503,67 @@
   // Drawer head for a grooming card: status + idea, actions from
   // groomingCoreActions, and (once finished) links to the spawned tasks. The
   // follow-up composer stays disabled — grooming sessions are never resumed.
+  // The questions form shown in an awaiting grooming's drawer: each clarifying
+  // question with its suggested options (radios) and, when free text is allowed,
+  // an "other" text field — mirroring Claude Desktop's ask-with-choices prompt.
+  function groomQuestionsHtml(g) {
+    const rows = (g.questions || []).map((q, i) => {
+      const opts = (q.options || []).map((opt, j) => `
+        <label class="groom-opt">
+          <input type="radio" name="gq-${i}" value="${esc(opt)}"${j === 0 && !q.allowText ? ' checked' : ''}>
+          <span>${esc(opt)}</span>
+        </label>`).join('');
+      // A free-text field: an "Other" radio next to options, or a standalone
+      // input when the question is open-ended (no options).
+      const text = q.allowText
+        ? (q.options || []).length
+          ? `<label class="groom-opt groom-opt-other">
+               <input type="radio" name="gq-${i}" value="__other__">
+               <span>Other:</span>
+             </label>
+             <input type="text" class="groom-q-textinput" placeholder="Type your own answer…">`
+          : `<input type="text" class="groom-q-textinput" placeholder="Type your answer…">`
+        : '';
+      return `
+        <div class="groom-q" data-qi="${i}">
+          <div class="groom-q-text">${i + 1}. ${esc(q.question)}</div>
+          <div class="groom-q-options">${opts}${text}</div>
+        </div>`;
+    }).join('');
+    return `
+      <div class="tag">CLARIFY</div>
+      <form class="groom-questions" id="groom-answers-form">
+        ${rows}
+        <button type="submit" class="btn primary groom-answers-send">${icon('sparkles')} Answer &amp; continue</button>
+      </form>`;
+  }
+
+  // Collect one answer string per question from the form and resume the session.
+  async function submitGroomingAnswers(g) {
+    const form = $('#groom-answers-form');
+    if (!form) return;
+    const answers = (g.questions || []).map((_, i) => {
+      const box = form.querySelector(`.groom-q[data-qi="${i}"]`);
+      const checked = box ? box.querySelector('input[type=radio]:checked') : null;
+      const textEl = box ? box.querySelector('.groom-q-textinput') : null;
+      const textVal = textEl ? textEl.value.trim() : '';
+      if (checked && checked.value !== '__other__') return checked.value;
+      return textVal;
+    });
+    const btn = form.querySelector('.groom-answers-send');
+    if (btn) btn.disabled = true;
+    try {
+      await api('POST', `/api/groomings/${g.id}/answers`, { answers });
+      toast('Resuming grooming with your answers…', 'info');
+    } catch (e) {
+      toast(e.message);
+      if (btn) btn.disabled = false;
+    }
+  }
+
   function renderGroomingDrawerHead(g) {
     $('#drawer-title').textContent = g.title;
-    const statusLabel = { draft: 'draft', running: 'grooming…', finished: 'groomed', failed: 'failed' }[g.status] || g.status;
+    const statusLabel = { draft: 'draft', running: 'grooming…', awaiting: 'needs input', finished: 'groomed', failed: 'failed' }[g.status] || g.status;
     const meta = [
       `<span class="chip repo">${esc(g.repoName)}</span>`,
       `<span class="chip model">${esc(g.resolvedModel || g.model)}</span>`,
@@ -1458,7 +1579,10 @@
     $('#drawer-meta').onclick = null;
 
     const promptEl = $('#drawer-prompt');
-    const blocks = [`<div class="tag">IDEA</div><div class="drawer-prompt-body">${esc(g.idea)}</div>`];
+    const blocks = [`<div class="tag">IDEA</div><div class="drawer-prompt-body md">${mdToHtml(g.idea)}</div>`];
+    if (g.status === 'awaiting' && (g.questions || []).length) {
+      blocks.push(groomQuestionsHtml(g));
+    }
     if (g.status === 'finished' && (g.taskIds || []).length) {
       const links = g.taskIds.map((id) => {
         const t = state.tasks.get(id);
@@ -1474,6 +1598,10 @@
       const link = e.target.closest('[data-task-link]');
       if (link && !link.disabled) openDrawer(link.dataset.taskLink);
     };
+    const answersForm = promptEl.querySelector('#groom-answers-form');
+    if (answersForm) {
+      answersForm.onsubmit = (e) => { e.preventDefault(); submitGroomingAnswers(g); };
+    }
 
     const actions = groomingCoreActions(g);
     const box = $('#drawer-actions');
@@ -1491,7 +1619,9 @@
     $('#followup-send').disabled = true;
     $('#followup-input').placeholder = isGroomingLive(g)
       ? 'Grooming the idea…'
-      : 'Grooming sessions run once and are never resumed';
+      : g.status === 'awaiting'
+        ? 'Answer the questions above to continue grooming'
+        : 'Grooming sessions run once and are never resumed';
   }
 
   // ---------- GitHub PR chip ----------
@@ -1813,21 +1943,55 @@
 
   // Optional task behaviors — checkboxes derived from the /api/addons catalog.
   // These render below the worktree toggle inside the "Extra behavior" section.
-  function renderAddonOptions(selected = []) {
+  // The `pull_request` addon gets an extra sibling control (like the branch-name
+  // field under the worktree toggle) so both PR modes — ready for review or
+  // draft — are one click away instead of needing a second setting elsewhere.
+  function renderAddonOptions(selected = [], prDraft = false) {
     const chosen = new Set(selected);
-    $('#task-addon-list').innerHTML = state.addons.map((a) => `
+    $('#task-addon-list').innerHTML = state.addons.map((a) => {
+      const checked = chosen.has(a.id);
+      const prMode = a.id !== 'pull_request' ? '' : `
+        <div class="pr-mode ${checked ? '' : 'pr-mode-disabled'}" role="radiogroup" aria-label="Pull request mode">
+          <label class="pr-mode-option">
+            <input type="radio" name="task-pr-mode" value="ready" ${prDraft ? '' : 'checked'} ${checked ? '' : 'disabled'} />
+            Ready for review
+          </label>
+          <label class="pr-mode-option">
+            <input type="radio" name="task-pr-mode" value="draft" ${prDraft ? 'checked' : ''} ${checked ? '' : 'disabled'} />
+            Draft
+          </label>
+        </div>`;
+      return `
       <label class="check addon">
-        <input type="checkbox" data-addon="${esc(a.id)}" ${chosen.has(a.id) ? 'checked' : ''} />
+        <input type="checkbox" data-addon="${esc(a.id)}" ${checked ? 'checked' : ''} />
         <span class="addon-text">
           <span class="addon-label">${esc(a.label)}</span>
           ${a.hint ? `<span class="addon-hint">${esc(a.hint)}</span>` : ''}
         </span>
-      </label>`).join('');
+      </label>${prMode}`;
+    }).join('');
+    // Enable/disable the ready-vs-draft radios as the PR checkbox is toggled —
+    // the choice only means something once "Create a Pull Request" is checked.
+    const prCheckbox = document.querySelector('#task-addon-list input[data-addon="pull_request"]');
+    const prModeEl = document.querySelector('#task-addon-list .pr-mode');
+    if (prCheckbox && prModeEl) {
+      prCheckbox.addEventListener('change', () => {
+        prModeEl.classList.toggle('pr-mode-disabled', !prCheckbox.checked);
+        prModeEl.querySelectorAll('input').forEach((r) => { r.disabled = !prCheckbox.checked; });
+      });
+    }
   }
 
   function selectedAddons() {
     return [...document.querySelectorAll('#task-addons input[data-addon]:checked')]
       .map((el) => el.dataset.addon);
+  }
+
+  // Whether the "draft" radio is picked for the pull_request addon's PR mode.
+  // Meaningless (and ignored server-side) unless that addon is also selected.
+  function selectedPrDraft() {
+    const el = document.querySelector('input[name="task-pr-mode"][value="draft"]');
+    return !!(el && el.checked);
   }
 
   // The chosen base branch, but only when it differs from the repo's current
@@ -2003,6 +2167,7 @@
         promptPermissions: fields.promptPermissions,
         useWorktree: fields.useWorktree,
         addons: fields.addons,
+        prDraft: fields.prDraft,
         personas: fields.personas,
         repoId,
       }));
@@ -2103,7 +2268,7 @@
     $('#task-branch').value = task ? (task.branchName || '') : '';
     // The branch is fixed once the worktree is materialized.
     $('#task-branch').disabled = !!(task && task.worktreePath);
-    renderAddonOptions(task ? (task.addons || []) : (last.addons || []));
+    renderAddonOptions(task ? (task.addons || []) : (last.addons || []), task ? !!task.prDraft : !!last.prDraft);
     initPersonaPicker(task ? (task.personas || []) : (last.personas || []));
     $('#task-repo-field').classList.toggle('hidden', !!task);
     if (task) $('#task-repo').value = task.repoId;
@@ -2142,6 +2307,7 @@
       // current branch; otherwise keep the historical "cut from HEAD" default.
       baseBranch: selectedBaseBranch(),
       addons: selectedAddons(),
+      prDraft: selectedPrDraft(),
       personas: selectedPersonas(),
     };
     try {
@@ -2788,7 +2954,11 @@
     if (!prev || prev.status !== 'running' || g.status === 'running') return;
     if (g.lastOutcome === 'stopped') return;
     let title, body;
-    if (g.status === 'failed') {
+    if (g.status === 'awaiting') {
+      const q = (g.questions || []).length;
+      title = `Grooming needs input — ${g.title}`;
+      body = `${g.repoName} · ${q} question${q === 1 ? '' : 's'} to answer`;
+    } else if (g.status === 'failed') {
       title = `Grooming failed — ${g.title}`;
       body = g.lastError ? String(g.lastError).slice(0, 140) : g.repoName;
     } else {
@@ -2802,6 +2972,7 @@
   function maybePlayGroomingSound(prev, g) {
     if (!prev || prev.status !== 'running' || g.status === 'running') return;
     if (g.lastOutcome === 'stopped') return;
+    // 'awaiting' and a clean finish both chime; only a real failure buzzes.
     playSound(g.status === 'failed' ? 'failed' : 'finish');
   }
 
@@ -3754,6 +3925,12 @@
       } else if (msg.type === 'autonomous') {
         state.autonomous = msg.status || null;
         renderAutonomous();
+      } else if (msg.type === 'pr') {
+        // Background PR-status refresh (server/pr-refresh.ts) — keeps the
+        // cached lookup honest even if no one opened this task's drawer.
+        state.prByTask.set(msg.taskId, msg.result);
+        const t = state.tasks.get(msg.taskId);
+        if (t && state.openTaskId === msg.taskId) renderDrawerHead(t);
       }
     };
     es.onerror = () => {
