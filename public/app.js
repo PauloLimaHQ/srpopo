@@ -981,6 +981,22 @@
     $('#modal-done').classList.add('hidden');
     doneModalCtx = null;
   });
+
+  // Renders the wrap-up steps (plus the final move itself) as a progress list,
+  // one row per step, so a slow merge/worktree-removal reads as "working on it"
+  // instead of a frozen dialog. `renderDoneProgress` re-renders the whole list on
+  // every state change; call it again after mutating a step's `state`.
+  function renderDoneProgress(steps) {
+    $('#done-modal-options').classList.add('hidden');
+    const progress = $('#done-modal-progress');
+    progress.classList.remove('hidden');
+    progress.innerHTML = steps.map((s) => {
+      const cls = s.state === 'active' ? 'active' : s.state === 'done' ? 'done' : '';
+      const glyph = s.state === 'done' ? icon('check') : s.state === 'active' ? '<span class="spinner"></span>' : '';
+      return `<div class="done-progress-step ${cls}"><span class="icon-slot">${glyph}</span><span>${esc(s.label)}</span></div>`;
+    }).join('');
+  }
+
   $('#done-modal-confirm').addEventListener('click', async () => {
     if (!doneModalCtx) return;
     const { task, options } = doneModalCtx;
@@ -990,23 +1006,54 @@
     );
     const btn = $('#done-modal-confirm');
     btn.disabled = true;
+    $('#done-modal-cancel').disabled = true;
+
+    // Merge first: worktree removal below would take away the dir `gh` runs in.
+    const steps = [];
+    if (checked.has('merge-pr') && options.some((o) => o.id === 'merge-pr')) {
+      steps.push({ id: 'merge-pr', label: 'Merging your pull request…', state: 'pending' });
+    }
+    if (checked.has('delete-worktree') && options.some((o) => o.id === 'delete-worktree')) {
+      steps.push({ id: 'delete-worktree', label: 'Deleting your worktree…', state: 'pending' });
+    }
+    steps.push({ id: 'move', label: 'Moving task to Done…', state: 'pending' });
+    renderDoneProgress(steps);
+
+    async function runStep(id, fn) {
+      const step = steps.find((s) => s.id === id);
+      step.state = 'active';
+      renderDoneProgress(steps);
+      await fn();
+      step.state = 'done';
+      renderDoneProgress(steps);
+    }
+
     try {
-      // Merge first: worktree removal below would take away the dir `gh` runs in.
-      if (checked.has('merge-pr') && options.some((o) => o.id === 'merge-pr')) {
-        await api('POST', `/api/tasks/${task.id}/pr/merge`);
-        state.prByTask.delete(task.id); // force a fresh PR status next render
+      if (steps.some((s) => s.id === 'merge-pr')) {
+        await runStep('merge-pr', async () => {
+          await api('POST', `/api/tasks/${task.id}/pr/merge`);
+          state.prByTask.delete(task.id); // force a fresh PR status next render
+        });
         toast('Pull request merged', 'info');
       }
-      if (checked.has('delete-worktree') && options.some((o) => o.id === 'delete-worktree')) {
-        await api('POST', `/api/tasks/${task.id}/worktree/remove`);
+      if (steps.some((s) => s.id === 'delete-worktree')) {
+        await runStep('delete-worktree', async () => {
+          await api('POST', `/api/tasks/${task.id}/worktree/remove`);
+        });
         toast('Worktree removed', 'info');
       }
-      await api('PATCH', `/api/tasks/${task.id}`, { status: 'done' });
+      await runStep('move', async () => {
+        await api('PATCH', `/api/tasks/${task.id}`, { status: 'done' });
+      });
       $('#modal-done').classList.add('hidden');
       doneModalCtx = null;
     } catch (e) {
       toast(e.message, 'error');
+    } finally {
       btn.disabled = false;
+      $('#done-modal-cancel').disabled = false;
+      $('#done-modal-options').classList.remove('hidden');
+      $('#done-modal-progress').classList.add('hidden');
     }
   });
 

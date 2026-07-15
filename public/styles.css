@@ -854,6 +854,17 @@ a.chip.pr:hover { border-color: currentColor; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
+.done-progress { display: flex; flex-direction: column; gap: 8px; margin: 4px 0; }
+.done-progress-step {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg-card); font-size: 13px; color: var(--text-dim);
+}
+.done-progress-step .icon-slot { display: flex; align-items: center; justify-content: center; width: 12px; height: 12px; flex: none; }
+.done-progress-step.active { color: var(--text); border-color: var(--accent); }
+.done-progress-step.done { color: var(--text-dim); }
+.done-progress-step.done .icon-slot { color: var(--green); }
+
 /* attachments */
 .field-block { display: flex; flex-direction: column; gap: 5px; }
 .field-label { font-size: 12px; color: var(--text-dim); }
