@@ -42,17 +42,28 @@ function extraPathDirs(): string[] {
   ];
 }
 
-// Ask the user's login+interactive shell for its PATH. This picks up whatever
-// .zshrc/.zprofile/.bash_profile export, which is exactly what a terminal-launched
-// run would see. Guarded to Unix — Windows GUI apps inherit a usable PATH already.
+// Ask the user's login shell for its PATH. This picks up whatever .zprofile /
+// .zlogin / .bash_profile export, which is where PATH belongs and what a
+// terminal-launched run would see. Guarded to Unix — Windows GUI apps inherit a
+// usable PATH already.
+//
+// NOTE: we deliberately use a login (`-l`) but NOT interactive (`-i`) shell. An
+// interactive shell sources .zshrc, which on real setups loads frameworks like
+// oh-my-zsh plus async plugins (zsh-autosuggestions, fast-syntax-highlighting)
+// that fork background workers inheriting our stdout pipe. That pipe then never
+// reaches EOF, so execFileSync HANGS INDEFINITELY — past its own `timeout`, which
+// can't reclaim a grandchild holding the fd — and wedges app boot (this runs at
+// the very first synchronous step of electron/main.ts). A non-interactive login
+// shell returns in well under a second; PATH additions that live only in .zshrc
+// are still covered by extraPathDirs() and the direct CLAUDE_BIN probe below.
 function loginShellPath(): string | null {
   if (process.platform === 'win32') return null;
   const shellBin = process.env.SHELL || '/bin/zsh';
   const marker = '__SRPOPO_PATH__';
   try {
-    // -i -l => interactive login shell, so profile + rc files both load. A sentinel
-    // marker lets us extract PATH cleanly even if the shell prints other noise.
-    const out = execFileSync(shellBin, ['-ilc', `printf '${marker}=%s\\n' "$PATH"`], {
+    // -l => login shell, so profile files load. A sentinel marker lets us extract
+    // PATH cleanly even if the shell prints other noise.
+    const out = execFileSync(shellBin, ['-lc', `printf '${marker}=%s\\n' "$PATH"`], {
       encoding: 'utf8',
       timeout: 5000,
       stdio: ['ignore', 'pipe', 'ignore'],
