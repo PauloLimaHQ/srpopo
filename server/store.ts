@@ -69,6 +69,8 @@ if (!hadInstalledPlugins) db.settings.installedPlugins = hadLinearToken ? ['line
 // run — its child claude process died with the server. Older db.json files may
 // still carry the legacy per-task 'grooming' status; treat those the same way.
 for (const t of db.tasks) {
+  // Tasks created before the pluggable-agent backend default to Claude.
+  if (!t.agent) t.agent = 'claude';
   if (t.status === 'running' || (t.status as string) === 'grooming') {
     t.status = 'failed';
     t.lastOutcome = 'error';

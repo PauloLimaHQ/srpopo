@@ -1472,3 +1472,155 @@ test('autonomous review: the per-task round cap stops an endless fix loop and fo
     restore();
   }
 });
+
+test('runner: adapterFor selects the backend by task.agent and defaults to claude', () => {
+  const runner = require('../server/runner');
+  assert.strictEqual(runner.adapterFor('claude').id, 'claude', 'claude selects the Claude adapter');
+  assert.strictEqual(runner.adapterFor('codex').id, 'codex', 'codex selects the Codex adapter');
+  assert.strictEqual(runner.adapterFor(undefined).id, 'claude', 'an unset agent falls back to claude');
+  assert.strictEqual(runner.adapterFor('bogus').id, 'claude', 'an unknown agent falls back to claude');
+});
+
+test('tasks: createTask defaults agent to claude and accepts codex', () => {
+  const store = require('../server/store');
+  const tasks = require('../server/tasks');
+  const repo = { id: store.id(), path: '/tmp/agent-repo', name: 'o/agent', branch: null, addedAt: store.now() };
+  store.db.repos.push(repo);
+
+  const def = tasks.createTask({ repoId: repo.id, title: 'Default agent', prompt: 'do it' });
+  assert.strictEqual(def.agent, 'claude', 'agent defaults to claude');
+
+  const cdx = tasks.createTask({ repoId: repo.id, title: 'Codex agent', prompt: 'do it', agent: 'codex' });
+  assert.strictEqual(cdx.agent, 'codex', 'a codex agent is kept');
+
+  const bad = tasks.createTask({ repoId: repo.id, title: 'Bad agent', prompt: 'do it', agent: 'gpt' });
+  assert.strictEqual(bad.agent, 'claude', 'an unknown agent is sanitized to claude');
+});
+
+test('agents/codex: buildArgs streams exec --json over stdin, maps sandbox, and resumes', () => {
+  const codex = require('../server/agents/codex');
+
+  // Fresh acceptEdits run: workspace-write sandbox, no approvals, prompt on stdin (-).
+  const fresh = codex.buildArgs({ permissionMode: 'acceptEdits', model: 'gpt-5.2-codex' }, false);
+  assert.deepStrictEqual(
+    fresh,
+    ['exec', '--json', '--skip-git-repo-check', '--sandbox', 'workspace-write', '-m', 'gpt-5.2-codex', '-'],
+    'fresh run maps acceptEdits to a workspace-write sandbox and reads the prompt from stdin',
+  );
+
+  // Plan mode is read-only.
+  const plan = codex.buildArgs({ permissionMode: 'plan' }, false);
+  assert.ok(plan.includes('read-only') && !plan.includes('workspace-write'), 'plan maps to a read-only sandbox');
+  assert.strictEqual(plan[plan.length - 1], '-', 'the prompt is always the trailing stdin marker');
+
+  // Bypass is the single all-or-nothing flag, with no sandbox flag.
+  const bypass = codex.buildArgs({ permissionMode: 'bypassPermissions' }, false);
+  assert.ok(bypass.includes('--dangerously-bypass-approvals-and-sandbox'), 'bypass uses the combined danger flag');
+  assert.ok(!bypass.includes('--sandbox'), 'no sandbox flag under bypass');
+
+  // Resume is the `exec resume <id>` subcommand; it never re-passes --sandbox
+  // (the CLI rejects it — the follow-up keeps the original session's sandbox).
+  const resume = codex.buildArgs({ sessionId: 'sess-uuid', permissionMode: 'acceptEdits' }, true);
+  assert.deepStrictEqual(
+    resume,
+    ['exec', 'resume', 'sess-uuid', '--json', '--skip-git-repo-check', '-'],
+    'resume maps onto codex exec resume <id> and reads the prompt from stdin',
+  );
+
+  // No model selected → no -m flag (account default).
+  assert.ok(!codex.buildArgs({ permissionMode: 'acceptEdits' }, false).includes('-m'), 'default model omits -m');
+});
+
+test('agents/codex: groomArgs is a read-only sandbox with no approvals', () => {
+  const codex = require('../server/agents/codex');
+  const args = codex.groomArgs({ model: 'default' });
+  assert.ok(args.includes('--sandbox') && args.includes('read-only'), 'grooming runs read-only');
+  assert.strictEqual(args[args.length - 1], '-', 'the grooming prompt is read from stdin');
+});
+
+test('agents/codex: childEnv strips OPENAI_API_KEY and the nested-session markers', () => {
+  const codex = require('../server/agents/codex');
+  const prevKey = process.env.OPENAI_API_KEY;
+  const prevNested = process.env.CLAUDECODE;
+  process.env.OPENAI_API_KEY = 'sk-openai-leak';
+  process.env.CLAUDECODE = '1';
+  try {
+    const env = codex.childEnv('gpt-5.2-codex');
+    assert.ok(!('OPENAI_API_KEY' in env), 'subscription-only: the OpenAI key never reaches a codex run');
+    assert.ok(!('CLAUDECODE' in env), 'nested-session marker stripped');
+    assert.ok(!('CLAUDE_CODE_ENTRYPOINT' in env), 'nested-session entrypoint stripped');
+  } finally {
+    if (prevKey === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = prevKey;
+    if (prevNested === undefined) delete process.env.CLAUDECODE; else process.env.CLAUDECODE = prevNested;
+  }
+});
+
+test('agents/codex: parseLine normalizes the verified exec --json event schema', () => {
+  const codex = require('../server/agents/codex');
+
+  // Blank line → null (nothing to record).
+  assert.strictEqual(codex.parseLine('   '), null, 'blank lines are skipped');
+
+  // A non-JSON line is logged verbatim as a raw event, no semantics.
+  const raw = codex.parseLine('not json');
+  assert.deepStrictEqual(raw.log, { type: 'raw', text: 'not json' }, 'unparsable lines fall back to raw');
+  assert.ok(!raw.session && !raw.result, 'raw lines carry no session/result');
+
+  // thread.started → the session id (Codex thread_id), no model on the event.
+  const started = codex.parseLine('{"type":"thread.started","thread_id":"019f-uuid"}');
+  assert.deepStrictEqual(started.session, { sessionId: '019f-uuid', model: null }, 'thread_id becomes the session id');
+
+  // agent_message / command_execution items are logged only (no result).
+  const msg = codex.parseLine('{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"hello"}}');
+  assert.ok(!msg.result && msg.log.type === 'item.completed', 'item events drive no result, but are logged');
+
+  // turn.completed → a successful result; usage maps into the ledger's schema
+  // (tokens recorded, cost 0 — Codex subscription runs have no dollar figure).
+  const done = codex.parseLine('{"type":"turn.completed","usage":{"input_tokens":13005,"cached_input_tokens":9984,"output_tokens":5,"reasoning_output_tokens":0}}');
+  assert.strictEqual(done.result.isError, false, 'turn.completed is a success');
+  assert.strictEqual(done.result.costUsd, 0, 'no dollar cost on a subscription run');
+  const u = done.result.usageEvent as { usage: Record<string, number>; total_cost_usd: number };
+  assert.strictEqual(u.total_cost_usd, 0, 'the usage event carries a zero cost');
+  assert.strictEqual(u.usage.input_tokens, 13005, 'input tokens flow through');
+  assert.strictEqual(u.usage.output_tokens, 5, 'output tokens flow through');
+  assert.strictEqual(u.usage.cache_read_input_tokens, 9984, 'cached_input_tokens maps to cache_read_input_tokens');
+
+  // turn.failed → an error result with the CLI's message as the reason.
+  const failed = codex.parseLine('{"type":"turn.failed","error":{"message":"model not supported"}}');
+  assert.strictEqual(failed.result.isError, true, 'turn.failed is an error');
+  assert.strictEqual(failed.result.errorReason, 'model not supported', 'the failure reason is surfaced');
+
+  // A top-level error event is also a failure result...
+  const errored = codex.parseLine('{"type":"error","message":"boom"}');
+  assert.strictEqual(errored.result.isError, true, 'a top-level error is a failure');
+  assert.strictEqual(errored.result.errorReason, 'boom');
+
+  // ...but a non-fatal item-level error (e.g. a model-metadata note) is not.
+  const note = codex.parseLine('{"type":"item.completed","item":{"id":"item_0","type":"error","message":"metadata note"}}');
+  assert.ok(!note.result, 'a non-fatal item error does not fail the run');
+});
+
+test('agents/claude: parseLine normalizes init, subagent open/close, and result', () => {
+  const claude = require('../server/agents/claude');
+
+  const init = claude.parseLine('{"type":"system","subtype":"init","session_id":"abc","model":"claude-opus-4-8"}');
+  assert.deepStrictEqual(init.session, { sessionId: 'abc', model: 'claude-opus-4-8' }, 'init carries session + model');
+
+  // A top-level Task tool_use opens a subagent; a nested one (parent_tool_use_id) does not.
+  const open = claude.parseLine('{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Task","id":"t1"}]}}');
+  assert.deepStrictEqual(open.subagentsOpened, ['t1'], 'a top-level Task opens a subagent');
+  const nested = claude.parseLine('{"type":"assistant","parent_tool_use_id":"t1","message":{"content":[{"type":"tool_use","name":"Task","id":"t2"}]}}');
+  assert.ok(!nested.subagentsOpened, 'a nested Task does not open a top-level subagent');
+
+  // A tool_result closes it.
+  const close = claude.parseLine('{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1"}]}}');
+  assert.deepStrictEqual(close.subagentsClosed, ['t1'], 'a tool_result is a subagent-close candidate');
+
+  // The result event carries cost/turns/text/isError and passes itself through as the usage event.
+  const result = claude.parseLine('{"type":"result","is_error":false,"total_cost_usd":0.05,"num_turns":3,"duration_ms":1200,"result":"done"}');
+  assert.strictEqual(result.result.isError, false);
+  assert.strictEqual(result.result.costUsd, 0.05);
+  assert.strictEqual(result.result.numTurns, 3);
+  assert.strictEqual(result.result.text, 'done');
+  assert.strictEqual((result.result.usageEvent as { total_cost_usd: number }).total_cost_usd, 0.05, 'the raw result is the usage event');
+});

@@ -25,7 +25,11 @@ static with **no build step** (see Conventions).
 | Path | Role |
 |---|---|
 | `server/index.ts` | Express REST API + static UI host. Binds `127.0.0.1` only. |
-| `server/runner.ts` | Spawns/kills the `claude` CLI, parses its `stream-json` session feed. |
+| `server/runner.ts` | Spawns/kills an agent CLI and streams its output. Provider-agnostic: it drives an `AgentAdapter` and reacts to normalized events (see "Agent backends"). |
+| `server/agents/types.ts` | The `AgentAdapter` interface + `NormalizedEvent`/`NormalizedResult` — the seam that lets a task run on `claude` or `codex`. |
+| `server/agents/claude.ts` | `ClaudeAdapter`: the `claude` CLI backend (bin, subscription env stripping, `buildArgs`/`groomArgs`, permission-bridge wiring, `stream-json` `parseLine`). A verbatim lift of the old inline runner behavior. |
+| `server/agents/codex.ts` | `CodexAdapter`: the OpenAI Codex CLI backend (`codex exec --json`, stdin prompt, sandbox/approval mapping, `OPENAI_API_KEY` stripping, JSONL `parseLine`). |
+| `server/agents/env.ts` | Shared nested-session env scrubbing both adapters build on. |
 | `server/store.ts` | JSON persistence (`db.json`) + append-only per-task NDJSON logs. |
 | `server/tasks.ts` | Task lifecycle service (`createTask`/`dispatchTask` + capacity gate) shared by the REST API and the MCP server, so both queue/run tasks identically. |
 | `server/mcp.ts` | **Board MCP server** (see "MCP server" below). Streamable-HTTP MCP endpoint mounted on the Express app at `POST /mcp` so outside MCP clients can drive the board while Sr. Popo runs. |
@@ -87,6 +91,35 @@ Dispatch runs the prompt fresh; a follow-up with an existing `sessionId` resumes
 same session (`claude --resume`). A worktree is materialized lazily on first dispatch
 when `useWorktree` is set.
 
+## Agent backends (Claude & Codex)
+
+A task carries `task.agent` (`'claude'` — the default — or `'codex'`). `runner.ts`
+is provider-agnostic: it picks an **`AgentAdapter`** (`server/agents/*`) by
+`task.agent` and reacts only to `NormalizedEvent`s the adapter's `parseLine`
+produces. The adapter owns everything provider-specific — the binary, the
+subscription-only env stripping, `buildArgs`/`groomArgs`, and the JSONL
+normalizer. Adding a backend means adding an adapter; the runner doesn't change.
+Both backends keep Sr. Popo's ergonomics: local-only, **subscription login (never
+an API key)**, streamed to the board, no new runtime dependency.
+
+- **`ClaudeAdapter`** — `claude -p --output-format stream-json`. Strips
+  `ANTHROPIC_API_KEY`; owns the interactive permission bridge
+  (`--permission-prompt-tool`, see "Interactive permissions"). Behavior is a
+  verbatim lift of the old inline runner code, so Claude runs are unchanged.
+- **`CodexAdapter`** — `codex exec --json` (subscription auth is `codex login`).
+  Strips `OPENAI_API_KEY`. Prompt is delivered on **stdin** (trailing `-`);
+  resume maps onto `codex exec resume <sessionId>`. `permissionMode` maps onto a
+  Codex **sandbox** (`--sandbox read-only|workspace-write|danger-full-access` +
+  `--ask-for-approval never`), since Codex has no per-tool approval hook — the
+  board's Allow/Deny prompt UI is hidden for Codex tasks (safety is the sandbox).
+  Grooming always runs on Claude. Codex subscription runs report **tokens, not a
+  dollar cost**, so the usage ledger records tokens with `costUsd: 0` and the UI
+  shows "—" for cost rather than a misleading $0.
+
+The Codex JSONL schema (`thread.started` → session id, `item.completed`,
+`turn.completed`/`turn.failed`) was verified against a live `codex exec --json`
+run — see the header comment in `server/agents/codex.ts` for the captured shapes.
+
 ## Non-negotiable invariants
 
 Breaking any of these is a security or trust regression — call it out loudly if a task
@@ -94,10 +127,12 @@ would require it.
 
 1. **Bind to `127.0.0.1` only.** Never expose the server on `0.0.0.0` or a LAN address.
    There is no auth layer; localhost binding *is* the security boundary.
-2. **Never use an API key.** `runner.childEnv()` strips `ANTHROPIC_API_KEY` from every
-   spawned task so runs always use the subscription login. Keep it stripped.
+2. **Never use an API key.** Each backend's adapter strips its provider key from every
+   spawned task — `ANTHROPIC_API_KEY` for Claude, `OPENAI_API_KEY` for Codex — so runs
+   always use the subscription login (`claude` / `codex login`). Keep them stripped.
 3. **Strip nested-session env** (`CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`) so Sr. Popo can
-   itself be launched from Claude Code without confusing the child.
+   itself be launched from Claude Code without confusing the child. Shared by both
+   backends (`server/agents/env.ts`).
 4. **Data stays local and per-user.** `SRPOPO_DATA_DIR` (Electron `userData`) holds
    `db.json` + `logs/`. Don't send task content anywhere off-machine.
 5. **Renderer stays sandboxed.** `contextIsolation: true`, `nodeIntegration: false`.

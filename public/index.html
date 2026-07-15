@@ -142,8 +142,8 @@
       <label>Title
         <input id="task-title" placeholder="e.g. Add dark mode toggle" maxlength="120" />
       </label>
-      <label>Prompt for Claude
-        <textarea id="task-prompt" rows="6" placeholder="Describe the task exactly as you would tell Claude Code…"></textarea>
+      <label>Prompt
+        <textarea id="task-prompt" rows="6" placeholder="Describe the task exactly as you would tell the agent…"></textarea>
       </label>
       <div class="field-block">
         <span class="field-label">Attachments <span class="field-hint">— files the run can Read by path</span></span>
@@ -157,15 +157,26 @@
         <div id="task-attachment-list" class="attachment-list"></div>
       </div>
       <div class="grid-2">
+        <label>Agent
+          <select id="task-agent">
+            <option value="claude">Claude Code</option>
+            <option value="codex">OpenAI Codex</option>
+          </select>
+        </label>
         <label>Model
           <select id="task-model">
             <option value="default">Account default</option>
-            <option value="sonnet">Sonnet</option>
-            <option value="opus">Opus</option>
-            <option value="haiku">Haiku</option>
-            <option value="fable">Fable</option>
+            <option value="sonnet" data-agent="claude">Sonnet</option>
+            <option value="opus" data-agent="claude">Opus</option>
+            <option value="haiku" data-agent="claude">Haiku</option>
+            <option value="fable" data-agent="claude">Fable</option>
+            <option value="gpt-5.2-codex" data-agent="codex">GPT-5.2 Codex</option>
+            <option value="gpt-5.1-codex-max" data-agent="codex">GPT-5.1 Codex Max</option>
+            <option value="gpt-5.1-codex-mini" data-agent="codex">GPT-5.1 Codex Mini</option>
           </select>
         </label>
+      </div>
+      <div class="grid-2">
         <label>Permissions
           <select id="task-perm">
             <option value="acceptEdits">Accept edits (recommended)</option>
@@ -173,6 +184,7 @@
             <option value="plan">Plan only</option>
             <option value="default">Default (may block)</option>
           </select>
+          <span id="task-perm-codex-hint" class="field-hint hidden">Codex maps this to a sandbox level (read-only / workspace-write); there is no per-tool prompt.</span>
         </label>
       </div>
       <label>Allowed tools <span class="field-hint">— auto-approved in headless runs, comma-separated</span>

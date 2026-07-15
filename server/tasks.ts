@@ -15,7 +15,14 @@ import * as personas from './personas';
 import * as git from './git';
 import * as runner from './runner';
 import * as framing from './framing';
-import type { Task } from './types';
+import type { Task, TaskAgent } from './types';
+
+// Which backends a task may run against (see server/agents/*). Anything else
+// falls back to the default so a stray value can't produce an unrunnable task.
+const AGENTS: TaskAgent[] = ['claude', 'codex'];
+function sanitizeAgent(value: unknown): TaskAgent {
+  return AGENTS.includes(value as TaskAgent) ? (value as TaskAgent) : 'claude';
+}
 
 // The user-supplied fields a new task is built from. Everything is validated /
 // sanitized here, so callers can pass a raw request body straight through.
@@ -23,6 +30,7 @@ export interface CreateTaskInput {
   title?: unknown;
   prompt?: unknown;
   repoId?: unknown;
+  agent?: unknown;
   model?: unknown;
   useWorktree?: unknown;
   permissionMode?: unknown;
@@ -65,6 +73,7 @@ export function createTask(input: CreateTaskInput): Task {
     repoId: repo.id,
     repoName: repo.name,
     repoPath: repo.path,
+    agent: sanitizeAgent(input.agent),
     addons: addons.sanitize(input.addons),
     personas: personas.sanitize(input.personas),
     attachments: [],

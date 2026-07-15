@@ -131,6 +131,11 @@ export type TaskStatus =
   | 'done'
   | 'failed';
 
+// Which local CLI backend a task runs against. Both are subscription-login,
+// never-an-API-key spawned local processes (see server/agents/*). 'claude' is
+// the default and the historical behavior; 'codex' drives the OpenAI Codex CLI.
+export type TaskAgent = 'claude' | 'codex';
+
 // A grooming card's own lifecycle — separate from tasks. It never becomes a
 // task; it spawns them. `running` (like a task's) is set only by the runner.
 export type GroomingStatus = 'draft' | 'running' | 'finished' | 'failed';
@@ -194,6 +199,9 @@ export interface Task {
   repoId: string;
   repoName: string;
   repoPath: string;
+  // Which CLI backend runs this task (see TaskAgent). Defaults to 'claude';
+  // 'codex' runs the OpenAI Codex CLI instead. Selects the runner's AgentAdapter.
+  agent: TaskAgent;
   addons: string[];
   personas: string[];
   // Files the user attached; bytes live under DATA_DIR/attachments/<id>/<name>,

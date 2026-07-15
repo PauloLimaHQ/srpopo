@@ -348,6 +348,7 @@ function spawnGroomedTasks(grooming: Grooming, specs: GroomSpec[]): string[] {
       repoId: grooming.repoId,
       repoName: grooming.repoName,
       repoPath: grooming.repoPath,
+      agent: 'claude', // grooming spawns Claude tasks; the user can switch a card's agent later
       addons: [],
       personas: [],
       attachments: [],
@@ -989,6 +990,7 @@ app.post('/api/repos/:id/specs/import', (req: Request, res: Response) => {
       repoId: repo.id,
       repoName: repo.name,
       repoPath: repo.path,
+      agent: 'claude', // spec imports run on Claude by default; switchable per task after import
       addons: [],
       personas: [],
       attachments: [],
@@ -1032,10 +1034,13 @@ app.patch('/api/tasks/:id', (req: Request, res: Response) => {
   if (!task) return err(res, 404, 'Task not found');
   if (runner.isRunning(task.id)) return err(res, 409, 'Task is running; stop it first');
 
-  const allowed = ['title', 'prompt', 'model', 'permissionMode', 'allowedTools', 'promptPermissions', 'useWorktree', 'branchName', 'baseBranch', 'status', 'addons', 'personas'] as const;
+  const allowed = ['title', 'prompt', 'agent', 'model', 'permissionMode', 'allowedTools', 'promptPermissions', 'useWorktree', 'branchName', 'baseBranch', 'status', 'addons', 'personas'] as const;
   for (const key of allowed) {
     if (key in req.body) {
-      if (key === 'addons') {
+      if (key === 'agent') {
+        // Only the known backends; anything else stays whatever it was (default 'claude').
+        if (req.body.agent === 'claude' || req.body.agent === 'codex') task.agent = req.body.agent;
+      } else if (key === 'addons') {
         task.addons = addons.sanitize(req.body.addons);
       } else if (key === 'allowedTools') {
         task.allowedTools = runner.normalizeAllowedTools(req.body.allowedTools);

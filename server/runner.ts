@@ -1,74 +1,41 @@
 import { spawn } from 'child_process';
 import type { ChildProcess } from 'child_process';
 import readline from 'readline';
-import path from 'path';
 
-import { save, now, appendLog, db } from './store';
+import { save, now, appendLog } from './store';
 import { broadcast } from './bus';
 import * as groomer from './groomer';
-import * as addons from './addons';
 import * as permissions from './permissions';
 import * as usage from './usage';
-import * as repoSpecs from './repoSpecs';
+import * as claude from './agents/claude';
+import { ClaudeAdapter } from './agents/claude';
+import { CodexAdapter } from './agents/codex';
+import type { AgentAdapter, NormalizedResult } from './agents/types';
 import type { GroomSpec } from './groomer';
-import type { Grooming, LogEvent, Task } from './types';
+import type { Grooming, LogEvent, Task, TaskAgent } from './types';
 
-const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
+// The registered agent backends, keyed by Task.agent. Claude is the default and
+// the historical behavior; codex drives the OpenAI Codex CLI. Grooming always
+// runs against Claude (a Grooming has no agent field) — see groom().
+const ADAPTERS: Record<TaskAgent, AgentAdapter> = {
+  claude: ClaudeAdapter,
+  codex: CodexAdapter,
+};
 
-// Tools every dispatched task gets auto-approved. The common package managers are
-// safe, near-universal build steps (install, lint, test, build); allowing them by
-// default means a run doesn't silently finish without doing the work just because
-// `acceptEdits` would have blocked the Bash call. Add-ons layer their own tools on
-// top of these (see addons.allowedToolsFor).
-const DEFAULT_ALLOWED_TOOLS = ['Bash(npm:*)', 'Bash(pnpm:*)', 'Bash(yarn:*)'];
-
-// Interactive permission prompting (see permissions.ts + permission-mcp.js). When
-// a task opts in, we register our MCP bridge and tell the CLI to route any tool it
-// would otherwise auto-deny through it, so the user can approve from the board.
-const MCP_SERVER_NAME = 'srpopo';
-const PERMISSION_TOOL = `mcp__${MCP_SERVER_NAME}__approve`;
-// The bridge stays plain JavaScript so it runs without a TS loader when the CLI
-// spawns it as a standalone Node process (in dev under tsx and in the packaged
-// app). It sits beside this file in both source (server/) and compiled (dist/
-// server/) layouts, so a __dirname-relative path resolves in both.
-const PERMISSION_MCP_SCRIPT = path.join(__dirname, 'permission-mcp.js');
-
-// The server's own base URL, set once the port is known (see index.start). The
-// permission bridge POSTs approval requests back here.
-let baseUrl: string | null = null;
-function setBaseUrl(url: string): void { baseUrl = url; }
-function resolvedBaseUrl(): string {
-  return baseUrl || `http://127.0.0.1:${process.env.PORT || 7777}`;
+function adapterFor(agent: TaskAgent | undefined): AgentAdapter {
+  return ADAPTERS[agent as TaskAgent] || ClaudeAdapter;
 }
 
-// The `--mcp-config` JSON that registers the permission bridge for a task. The
-// bridge runs as plain Node even inside the packaged Electron binary via
-// ELECTRON_RUN_AS_NODE, and learns where to POST via SRPOPO_APPROVAL_URL.
-function permissionMcpConfig(task: Partial<Task>): string {
-  return JSON.stringify({
-    mcpServers: {
-      [MCP_SERVER_NAME]: {
-        command: process.execPath,
-        args: [PERMISSION_MCP_SCRIPT],
-        env: {
-          ELECTRON_RUN_AS_NODE: '1',
-          SRPOPO_APPROVAL_URL: `${resolvedBaseUrl()}/api/tasks/${task.id}/permission`,
-        },
-      },
-    },
-  });
-}
-
-// A live claude child, tagged so the exit handler can tell a user-requested stop
+// A live child, tagged so the exit handler can tell a user-requested stop
 // (SIGTERM we sent) from a natural exit.
 type RunningChild = ChildProcess & { wasStopped?: boolean };
 
 // taskId / groomingId -> child process (tasks and groomings share the pool, so
-// runningCount measures every live `claude` child against the parallel cap).
+// runningCount measures every live agent child against the parallel cap).
 const running = new Map<string, RunningChild>();
 
 // The session-tracking fields Task and Grooming share — everything launch()
-// needs to stream a `claude -p` child into the log + SSE bus. `status` is the
+// needs to stream an agent child into the log + SSE bus. `status` is the
 // wider string here because the two lifecycles use different unions; each
 // caller's resolveExit assigns only its own statuses.
 interface SessionRecord {
@@ -93,46 +60,11 @@ function isRunning(taskId: string): boolean {
   return running.has(taskId);
 }
 
-// Count of live `claude` child processes across both dispatched runs and
-// grooming sessions (they share the `running` map) — what the max-parallel-
-// sessions cap in index.ts measures against.
+// Count of live agent child processes across both dispatched runs and grooming
+// sessions (they share the `running` map) — what the max-parallel-sessions cap
+// in index.ts measures against.
 function runningCount(): number {
   return running.size;
-}
-
-function childEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  // Force subscription auth: never let an API key leak into task runs.
-  delete env.ANTHROPIC_API_KEY;
-  // Avoid nested-session detection when Sr. Popo itself is launched from Claude Code.
-  delete env.CLAUDECODE;
-  delete env.CLAUDE_CODE_ENTRYPOINT;
-  return env;
-}
-
-// Extra environment variables for a run whose model is a user-defined custom
-// model (Settings → Models) — e.g. `CLAUDE_CODE_USE_BEDROCK=1` and the AWS region
-// for an Amazon Bedrock model. Empty for the built-in models. Matched by the id
-// passed to `--model`; the first custom model with that id wins. ANTHROPIC_API_KEY
-// is already stripped from the stored env (server/index.ts) but is re-guarded here
-// so invariant #2 holds regardless of how the entry got into db.json.
-function modelEnv(model: string | undefined): NodeJS.ProcessEnv {
-  if (!model || model === 'default') return {};
-  const custom = (db.settings.customModels || []).find((m) => m.model === model);
-  if (!custom || !custom.env) return {};
-  const out: NodeJS.ProcessEnv = {};
-  for (const [k, v] of Object.entries(custom.env)) {
-    if (k === 'ANTHROPIC_API_KEY') continue;
-    out[k] = v;
-  }
-  return out;
-}
-
-// The full environment a run's `claude` child gets: the base childEnv() plus any
-// custom-model vars (modelEnv) on top. ANTHROPIC_API_KEY is dropped by both, so a
-// custom model can never restore it — invariant #2 holds regardless of model.
-function buildTaskEnv(model: string | undefined): NodeJS.ProcessEnv {
-  return { ...childEnv(), ...modelEnv(model) };
 }
 
 function emitTask(task: Task): void {
@@ -153,95 +85,18 @@ function record(rec: SessionRecord, event: LogEvent): void {
   broadcast({ type: 'log', taskId: rec.id, event });
 }
 
-// Normalize a free-text allow-list into a clean comma-joined string for
-// `--allowedTools`. Patterns may contain spaces (e.g. `Bash(npm run lint:*)`),
-// so we split only on commas and newlines — never spaces.
-function normalizeAllowedTools(value: unknown): string {
-  if (typeof value !== 'string') return '';
-  const list = value
-    .split(/[,\n]/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-  return list.join(',').slice(0, 2000);
-}
-
-// Merge any number of allow-list sources (comma/newline strings or arrays of
-// patterns) into one deduped, comma-joined `--allowedTools` value. Order is
-// preserved and the total is capped like normalizeAllowedTools.
-function mergeAllowedTools(...sources: unknown[]): string {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const src of sources) {
-    const list = Array.isArray(src) ? src : String(src || '').split(/[,\n]/);
-    for (const raw of list) {
-      const tool = String(raw).trim();
-      if (tool && !seen.has(tool)) {
-        seen.add(tool);
-        out.push(tool);
-      }
-    }
-  }
-  return out.join(',').slice(0, 2000);
-}
-
-// For a task imported from a repo spec whose repo declares an index command, the
-// tool that runs it (e.g. `Bash(node:*)`) so the spec-completion step can
-// regenerate the index headless — the same auto-approve treatment add-ons get.
-function specAllowedTools(task: Partial<Task>): string[] {
-  if (!task.specOrigin || !task.repoPath) return [];
-  const tool = repoSpecs.indexCommandTool(repoSpecs.readSpecConfig(task.repoPath));
-  return tool ? [tool] : [];
-}
-
-// The full set of tools auto-approved for a dispatched task: the user's own
-// allow-list, the safe package-manager defaults, whatever the selected add-ons
-// need to run (e.g. `gh` + git for "open a PR"), and — for a spec import — the
-// repo's declared index command.
-function effectiveAllowedTools(task: Partial<Task>): string {
-  return mergeAllowedTools(
-    task.allowedTools,
-    DEFAULT_ALLOWED_TOOLS,
-    addons.allowedToolsFor(task.addons),
-    specAllowedTools(task),
-  );
-}
-
-function buildArgs(task: Partial<Task>, resume: boolean): string[] {
-  const args = ['-p', '--output-format', 'stream-json', '--verbose'];
-  if (task.model && task.model !== 'default') args.push('--model', task.model);
-  if (task.permissionMode === 'bypassPermissions') args.push('--dangerously-skip-permissions');
-  else if (task.permissionMode && task.permissionMode !== 'default') args.push('--permission-mode', task.permissionMode);
-  const allow = effectiveAllowedTools(task);
-  if (allow) args.push('--allowedTools', allow);
-  // Opt-in: route otherwise-denied tools to an interactive approval prompt rather
-  // than auto-denying them. Skipped under bypassPermissions (nothing to prompt).
-  if (task.promptPermissions && task.permissionMode !== 'bypassPermissions') {
-    args.push('--permission-prompt-tool', PERMISSION_TOOL);
-    args.push('--mcp-config', permissionMcpConfig(task));
-  }
-  if (resume && task.sessionId) args.push('--resume', task.sessionId);
-  return args;
-}
-
-// Read-only args for a grooming session: it explores the repo to write better
-// prompts but must never modify it. Only the safe research tools are auto-
-// approved in this headless run, so any write tool is denied.
-function groomArgs(grooming: Pick<Grooming, 'model'>): string[] {
-  const args = ['-p', '--output-format', 'stream-json', '--verbose'];
-  if (grooming.model && grooming.model !== 'default') args.push('--model', grooming.model);
-  args.push('--allowedTools', 'Read,Grep,Glob,Bash(git log:*),Bash(git diff:*),Bash(git show:*)');
-  return args;
-}
-
 interface ExitInfo {
   code: number | null;
   signal: NodeJS.Signals | null;
   stopped: boolean;
-  sawResult: any;
+  // The terminal result of the run, normalized across backends (null if the run
+  // exited without ever emitting one — e.g. a crash or a launch failure).
+  sawResult: NormalizedResult | null;
   stderrTail: string;
 }
 
 interface LaunchOpts {
+  adapter: AgentAdapter;
   args: string[];
   workDir: string;
   prompt: string;
@@ -251,85 +106,78 @@ interface LaunchOpts {
   // narrows it to its own record type.
   emit: (rec: any) => void;
   resolveExit: (info: ExitInfo) => void;
-  // Called after the shared cost/turns/duration bookkeeping on every `result`
+  // Called after the shared cost/turns/duration bookkeeping on every result
   // event, so each lifecycle can extend the usage ledger with its own record
   // shape (dispatch -> usage.applyResult, groom -> usage.applyGroomResult)
-  // without launch() itself needing to know which one it's driving.
-  onResult?: (event: any) => void;
+  // without launch() itself needing to know which one it's driving. The event is
+  // the adapter's normalized usage payload (see NormalizedResult.usageEvent).
+  onResult?: (event: Record<string, unknown>) => void;
 }
 
 /**
- * Spawn `claude -p` for a task or grooming card and stream its NDJSON output
+ * Spawn an agent CLI for a task or grooming card and stream its NDJSON output
  * into the session log + SSE bus. Shared by dispatch (running tasks) and groom
- * (grooming cards): the caller sets the record's starting fields and provides
- * `resolveExit`, which decides the final status once the process exits (the
- * process error/cleanup path is handled here).
+ * (grooming cards): the caller picks the adapter, sets the record's starting
+ * fields, and provides `resolveExit`, which decides the final status once the
+ * process exits. The runner reacts only to the adapter's NormalizedEvents, so it
+ * stays provider-agnostic; the process error/cleanup path is handled here.
  */
-function launch<T extends SessionRecord>(rec: T, { args, workDir, prompt, promptEvent, emit, resolveExit, onResult }: LaunchOpts): T {
+function launch<T extends SessionRecord>(rec: T, { adapter, args, workDir, prompt, promptEvent, emit, resolveExit, onResult }: LaunchOpts): T {
   if (running.has(rec.id)) throw new Error('Task is already running');
 
   record(rec, promptEvent);
 
-  const child: RunningChild = spawn(CLAUDE_BIN, args, {
+  const child: RunningChild = spawn(adapter.bin, args, {
     cwd: workDir,
-    env: buildTaskEnv(rec.model),
+    env: adapter.childEnv(rec.model),
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   running.set(rec.id, child);
 
-  child.stdin?.on('error', () => {}); // claude may exit before reading stdin
+  child.stdin?.on('error', () => {}); // the child may exit before reading stdin
   child.stdin?.write(prompt);
   child.stdin?.end();
 
-  let sawResult: any = null;
+  let sawResult: NormalizedResult | null = null;
   let stderrTail = '';
   const openSubagents = new Set<string>();
 
   const rl = readline.createInterface({ input: child.stdout! });
   rl.on('line', (line) => {
-    if (!line.trim()) return;
-    let event: any;
-    try {
-      event = JSON.parse(line);
-    } catch {
-      record(rec, { type: 'raw', text: line });
-      return;
-    }
+    const norm = adapter.parseLine(line);
+    if (!norm) return;
 
     // Keep hot record fields in sync with the session stream.
-    if (event.type === 'system' && event.subtype === 'init') {
-      rec.sessionId = event.session_id || rec.sessionId;
-      rec.resolvedModel = event.model || rec.resolvedModel;
+    if (norm.session) {
+      rec.sessionId = norm.session.sessionId || rec.sessionId;
+      rec.resolvedModel = norm.session.model || rec.resolvedModel;
       emit(rec);
-    } else if (event.type === 'assistant') {
-      const blocks = (event.message && event.message.content) || [];
-      for (const b of blocks) {
-        if (b.type === 'tool_use' && b.name === 'Task' && !event.parent_tool_use_id) {
-          openSubagents.add(b.id);
+    }
+    if (norm.subagentsOpened) {
+      for (const id of norm.subagentsOpened) {
+        openSubagents.add(id);
+        rec.activeSubagents = openSubagents.size;
+        emit(rec);
+      }
+    }
+    if (norm.subagentsClosed) {
+      for (const id of norm.subagentsClosed) {
+        if (openSubagents.delete(id)) {
           rec.activeSubagents = openSubagents.size;
           emit(rec);
         }
       }
-    } else if (event.type === 'user') {
-      const blocks = (event.message && event.message.content) || [];
-      if (Array.isArray(blocks)) {
-        for (const b of blocks) {
-          if (b.type === 'tool_result' && openSubagents.delete(b.tool_use_id)) {
-            rec.activeSubagents = openSubagents.size;
-            emit(rec);
-          }
-        }
-      }
-    } else if (event.type === 'result') {
-      sawResult = event;
-      rec.costUsd = (rec.costUsd || 0) + (event.total_cost_usd || 0);
-      rec.numTurns = event.num_turns;
-      rec.durationMs = event.duration_ms;
-      if (onResult) onResult(event);
+    }
+    if (norm.result) {
+      sawResult = norm.result;
+      rec.costUsd = (rec.costUsd || 0) + (norm.result.costUsd || 0);
+      rec.numTurns = norm.result.numTurns;
+      rec.durationMs = norm.result.durationMs;
+      if (onResult) onResult(norm.result.usageEvent);
       emit(rec);
     }
 
-    record(rec, event);
+    record(rec, norm.log);
   });
 
   const rlErr = readline.createInterface({ input: child.stderr! });
@@ -342,7 +190,7 @@ function launch<T extends SessionRecord>(rec: T, { args, workDir, prompt, prompt
     running.delete(rec.id);
     rec.status = 'failed';
     rec.lastOutcome = 'error';
-    rec.lastError = `Failed to launch claude: ${err.message}`;
+    rec.lastError = `Failed to launch ${adapter.label}: ${err.message}`;
     rec.finishedAt = now();
     rec.activeSubagents = 0;
     record(rec, { type: 'proc', text: rec.lastError });
@@ -363,13 +211,14 @@ function launch<T extends SessionRecord>(rec: T, { args, workDir, prompt, prompt
 }
 
 /**
- * Dispatch a task: spawn `claude -p` in the task's working directory and
- * stream its NDJSON output into the task log + SSE bus.
- * `prompt` is the text sent on stdin; `resume` continues an existing session.
+ * Dispatch a task: spawn its agent CLI in the task's working directory and
+ * stream the NDJSON output into the task log + SSE bus. `prompt` is the text sent
+ * on stdin; `resume` continues an existing session.
  */
 function dispatch(task: Task, prompt: string, { resume = false }: { resume?: boolean } = {}): Task {
   if (running.has(task.id)) throw new Error('Task is already running');
 
+  const adapter = adapterFor(task.agent);
   task.status = 'running';
   task.startedAt = now();
   task.finishedAt = null;
@@ -380,7 +229,8 @@ function dispatch(task: Task, prompt: string, { resume = false }: { resume?: boo
   emitTask(task);
 
   return launch(task, {
-    args: buildArgs(task, resume),
+    adapter,
+    args: adapter.buildArgs(task, resume),
     workDir: task.worktreePath || task.repoPath,
     prompt,
     promptEvent: { type: 'prompt', text: prompt, resume, run: task.runCount },
@@ -392,7 +242,7 @@ function dispatch(task: Task, prompt: string, { resume = false }: { resume?: boo
         task.lastOutcome = 'stopped';
         task.lastError = 'Stopped by user';
         record(task, { type: 'proc', text: 'Run stopped by user' });
-      } else if (sawResult && !sawResult.is_error) {
+      } else if (sawResult && !sawResult.isError) {
         task.status = 'review';
         task.lastOutcome = 'success';
         record(task, { type: 'proc', text: `Run finished (exit ${code})` });
@@ -400,9 +250,9 @@ function dispatch(task: Task, prompt: string, { resume = false }: { resume?: boo
         task.status = 'failed';
         task.lastOutcome = 'error';
         task.lastError =
-          (sawResult && (sawResult.result || sawResult.subtype)) ||
+          (sawResult && sawResult.errorReason) ||
           stderrTail.trim().split('\n').pop() ||
-          `claude exited with code ${code}`;
+          `${adapter.label} exited with code ${code}`;
         record(task, { type: 'proc', text: `Run failed (exit ${code}): ${task.lastError}` });
       }
     },
@@ -410,15 +260,16 @@ function dispatch(task: Task, prompt: string, { resume = false }: { resume?: boo
 }
 
 /**
- * Run a grooming card: a short, read-only `claude -p` session in the repo that
- * thinks the rough idea through and proposes one or more task specs. The card
- * never becomes a task itself — on success `onSpawn` creates the tasks and the
- * card lands in `finished` with links to them. The `running` status (like a
- * task's) is entered only here, never via the API.
+ * Run a grooming card: a short, read-only agent session in the repo that thinks
+ * the rough idea through and proposes one or more task specs. The card never
+ * becomes a task itself — on success `onSpawn` creates the tasks and the card
+ * lands in `finished` with links to them. The `running` status (like a task's)
+ * is entered only here, never via the API. Grooming always runs against Claude.
  */
 function groom(grooming: Grooming, { onSpawn }: { onSpawn: (specs: GroomSpec[]) => string[] }): Grooming {
   if (running.has(grooming.id)) throw new Error('Grooming is already running');
 
+  const adapter = ClaudeAdapter;
   grooming.status = 'running';
   grooming.startedAt = now();
   grooming.finishedAt = null;
@@ -431,7 +282,8 @@ function groom(grooming: Grooming, { onSpawn }: { onSpawn: (specs: GroomSpec[]) 
   const prompt = groomer.metaPrompt(grooming.idea);
 
   return launch(grooming, {
-    args: groomArgs(grooming),
+    adapter,
+    args: adapter.groomArgs(grooming),
     workDir: grooming.repoPath, // grooming is read-only exploration; never a worktree
     prompt,
     promptEvent: { type: 'prompt', text: prompt, groom: true, run: grooming.runCount },
@@ -450,8 +302,8 @@ function groom(grooming: Grooming, { onSpawn }: { onSpawn: (specs: GroomSpec[]) 
         record(grooming, { type: 'proc', text: 'Grooming stopped by user' });
         return;
       }
-      const succeeded = sawResult && !sawResult.is_error;
-      const resultText = succeeded && typeof sawResult.result === 'string' ? sawResult.result : '';
+      const succeeded = sawResult && !sawResult.isError;
+      const resultText = succeeded ? sawResult.text : '';
       let specs = succeeded ? groomer.parseResult(resultText) : null;
       if (!specs && succeeded && resultText.trim()) {
         // Session finished but we couldn't parse a structured spec — keep the
@@ -471,9 +323,9 @@ function groom(grooming: Grooming, { onSpawn }: { onSpawn: (specs: GroomSpec[]) 
         grooming.status = 'failed';
         grooming.lastOutcome = 'error';
         grooming.lastError =
-          (sawResult && (sawResult.result || sawResult.subtype)) ||
+          (sawResult && sawResult.errorReason) ||
           stderrTail.trim().split('\n').pop() ||
-          `claude exited with code ${code}`;
+          `${adapter.label} exited with code ${code}`;
         record(grooming, { type: 'proc', text: `Grooming failed (exit ${code}): ${grooming.lastError}` });
       }
     },
@@ -495,6 +347,12 @@ function stopAll(): void {
   for (const [taskId] of running) stop(taskId);
 }
 
+// Set the server base URL for the Claude permission bridge (the only backend
+// that POSTs approvals back). Called once the port is known (see index.start).
+function setBaseUrl(url: string): void {
+  claude.setBaseUrl(url);
+}
+
 export {
   dispatch,
   groom,
@@ -502,14 +360,21 @@ export {
   stopAll,
   isRunning,
   runningCount,
+  adapterFor,
+  setBaseUrl,
+};
+
+// Claude-specific helpers re-exported for the REST/MCP layers and the smoke
+// suite, which expect them on `runner` (their behavior is unchanged; the
+// implementation now lives in server/agents/claude.ts).
+export const {
   buildArgs,
+  buildTaskEnv,
+  childEnv,
   normalizeAllowedTools,
   mergeAllowedTools,
   effectiveAllowedTools,
-  setBaseUrl,
-  childEnv,
-  buildTaskEnv,
   PERMISSION_TOOL,
   DEFAULT_ALLOWED_TOOLS,
   CLAUDE_BIN,
-};
+} = claude;
