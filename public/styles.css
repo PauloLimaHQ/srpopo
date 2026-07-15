@@ -516,7 +516,7 @@ a.chip.pr:hover { border-color: currentColor; }
   background: var(--prompt-bg); border: 1px solid var(--prompt-border); border-radius: 10px;
 }
 .drawer-prompt .tag { font-size: 10px; color: var(--purple); font-weight: 700; letter-spacing: 1px; margin-bottom: 4px; }
-.drawer-prompt-body { font-size: 13px; white-space: pre-wrap; word-break: break-word; }
+.drawer-prompt-body { font-size: 13px; word-break: break-word; }
 
 /* Interactive tool-permission prompts — a run is blocked waiting on the user. */
 .permission-prompts {

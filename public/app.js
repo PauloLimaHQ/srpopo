@@ -1370,12 +1370,12 @@
     promptEl.onclick = null; // drop any grooming task-link handler left behind
     const blocks = [];
     if (t.brief) {
-      blocks.push(`<div class="tag">IDEA</div><div class="drawer-prompt-body">${esc(t.brief)}</div>`);
+      blocks.push(`<div class="tag">IDEA</div><div class="drawer-prompt-body md">${mdToHtml(t.brief)}</div>`);
       if (t.prompt && t.prompt !== t.brief) {
-        blocks.push(`<div class="tag">GROOMED PROMPT</div><div class="drawer-prompt-body">${esc(t.prompt)}</div>`);
+        blocks.push(`<div class="tag">GROOMED PROMPT</div><div class="drawer-prompt-body md">${mdToHtml(t.prompt)}</div>`);
       }
     } else if (t.prompt) {
-      blocks.push(`<div class="tag">ORIGINAL PROMPT</div><div class="drawer-prompt-body">${esc(t.prompt)}</div>`);
+      blocks.push(`<div class="tag">ORIGINAL PROMPT</div><div class="drawer-prompt-body md">${mdToHtml(t.prompt)}</div>`);
     }
     if (blocks.length) {
       promptEl.classList.remove('hidden');
@@ -1484,7 +1484,7 @@
     $('#drawer-meta').onclick = null;
 
     const promptEl = $('#drawer-prompt');
-    const blocks = [`<div class="tag">IDEA</div><div class="drawer-prompt-body">${esc(g.idea)}</div>`];
+    const blocks = [`<div class="tag">IDEA</div><div class="drawer-prompt-body md">${mdToHtml(g.idea)}</div>`];
     if (g.status === 'awaiting' && (g.questions || []).length) {
       blocks.push(groomQuestionsHtml(g));
     }
