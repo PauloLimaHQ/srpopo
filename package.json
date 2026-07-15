@@ -1,6 +1,6 @@
 {
   "name": "srpopo",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Sr. Popo — local orchestrator hub for Claude Code tasks across your repos",
   "main": "dist/electron/main.js",
   "scripts": {
