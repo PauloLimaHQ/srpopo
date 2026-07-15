@@ -223,11 +223,12 @@ is gated on its own plugin, not this one.)
 
 A grooming is **not a task** — it's its own entity (`db.groomings`, `Grooming` in
 `types.ts`) with its own lifecycle and REST routes (`/api/groomings/...`): **draft**
-(gray, parked) → **running** (purple, set only by `runner.groom`) → **finished**
-(green) or **failed**. Its card never leaves the Grooming column — the first, locked
-column on the board (no drag in or out); the status only recolors the card in place.
-Finished cards link to the tasks they spawned and can be archived or deleted
-(deletion also drops the session log; spawned tasks are independent and are kept).
+(gray, parked) → **running** (purple, set only by `runner.groom`) → **awaiting**
+(amber — see below) → **finished** (green) or **failed**. Its card never leaves the
+Grooming column — the first, locked column on the board (no drag in or out); the
+status only recolors the card in place. Finished cards link to the tasks they spawned
+and can be archived or deleted (deletion also drops the session log; spawned tasks are
+independent and are kept).
 
 Running a card kicks off a **read-only** `claude -p` session in the repo (only
 research tools are auto-approved — see `groomArgs`; no worktree is ever created and
@@ -241,6 +242,20 @@ sentinels). On success `spawnGroomedTasks` (in `index.ts`) creates the tasks —
 `grooming.taskIds`; each spawned task keeps the original idea on `task.brief` and a
 back-pointer on `task.groomingId`. To change how ideas are groomed, edit
 `groomer.ts` — it is the single source of truth for that flow.
+
+**Clarification loop (`awaiting`).** Rather than always inferring, the session may
+pause and ask the developer to clarify a genuine decision (scope, product behavior, a
+fork in the approach) before writing a spec. It emits `{ questions: [{ question,
+options, allowText }] }` between the same sentinels (parsed by `groomer.parseQuestions`,
+checked before `parseResult`); each question can carry suggested `options` and/or a
+free-text answer (`allowText`), mirroring Claude Desktop's ask-with-choices prompt.
+The card lands in `awaiting` with the questions on `grooming.questions` and its
+`sessionId` **kept** (the only grooming state that keeps one), and the drawer renders a
+form. Answering `POST /api/groomings/:id/answers` builds `groomer.answersPrompt(...)`
+and **resumes** the same session (`runner.groom` with a `resumePrompt` → `claude
+--resume`), which then finishes (or, rarely, asks again). An `awaiting` card survives a
+server restart (the claude session is resumable); `POST /api/groomings/:id/run`
+re-grooms from scratch, discarding the pending questions.
 
 ## Maintaining this repo with Claude (the meta-workflow)
 
