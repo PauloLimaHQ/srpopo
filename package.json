@@ -1,6 +1,6 @@
 {
   "name": "srpopo",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Sr. Popo — local orchestrator hub for Claude Code tasks across your repos",
   "main": "dist/electron/main.js",
   "scripts": {
@@ -66,7 +66,7 @@
   },
   "build": {
     "appId": "com.pauloperego.srpopo",
-    "productName": "Sr. Popo",
+    "productName": "SrPopo",
     "copyright": "Copyright © 2026 Paulo Lima",
     "asar": true,
     "files": [
