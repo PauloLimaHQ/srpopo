@@ -147,6 +147,27 @@ async function removeWorktree(repoPath: string, wtPath: string): Promise<void> {
   await git(repoPath, ['worktree', 'remove', '--force', wtPath]);
 }
 
+// Merges `branch` straight into `baseBranch` inside `repoPath` with a plain
+// `git merge` — no PR, no `gh`. Always runs in `repoPath` (the repo's primary
+// clone), never a worktree: `branch` is checked out live in its own worktree,
+// and `baseBranch` is normally what's left checked out in `repoPath` (the
+// state `git worktree add` leaves behind), so `repoPath` is the only working
+// directory that can actually check out `baseBranch` and receive the merge —
+// same convention as the direct-run branch switch in `tasks.dispatchTask`.
+// Throws loudly on a dirty tree, like `checkoutBranch`/`createBranch`. On a
+// real merge conflict, aborts the half-finished merge before rethrowing so
+// `repoPath` is left clean on `baseBranch` rather than stuck mid-merge.
+async function mergeBranch(repoPath: string, baseBranch: string, branch: string): Promise<void> {
+  const current = await currentBranch(repoPath);
+  if (current !== baseBranch) await git(repoPath, ['checkout', baseBranch]);
+  try {
+    await git(repoPath, ['merge', '--no-edit', branch]);
+  } catch (e) {
+    await git(repoPath, ['merge', '--abort']).catch(() => {});
+    throw e;
+  }
+}
+
 async function worktreeStatus(wtPath: string): Promise<{ dirty: boolean; files: number } | null> {
   try {
     const status = await git(wtPath, ['status', '--porcelain']);
@@ -198,6 +219,7 @@ export {
   displayName,
   addWorktree,
   removeWorktree,
+  mergeBranch,
   worktreeStatus,
   listWorktrees,
   WORKTREES_DIR,

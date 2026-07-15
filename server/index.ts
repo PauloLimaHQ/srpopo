@@ -1285,6 +1285,30 @@ app.post('/api/tasks/:id/pr/merge', async (req: Request, res: Response) => {
   res.json({ ok: true, alreadyMerged: !!result.alreadyMerged });
 });
 
+// Merge the task's branch straight into its base branch with a plain `git
+// merge` — no PR, no `gh`. The fast local-merge counterpart to `/pr/merge`
+// for repos where waiting on a pull request isn't worth it. Requires a
+// resolved branch and a base to merge into (the task's own `baseBranch`,
+// falling back to the repo's actual current branch).
+app.post('/api/tasks/:id/merge', async (req: Request, res: Response) => {
+  const task = getTask(req.params.id);
+  if (!task) return err(res, 404, 'Task not found');
+  if (runner.isRunning(task.id)) return err(res, 409, 'Stop the task first');
+  if (!task.branch) return err(res, 400, 'Task has no branch to merge');
+  const repo = getRepo(task.repoId);
+  // repo.branch is only a snapshot from whenever the repo was registered (see
+  // GET /api/repos/:id/branch above) and can be stale, so re-read the repo's
+  // actual current branch rather than trusting the cached value.
+  const base = task.baseBranch || (repo ? await git.currentBranch(repo.path) : null);
+  if (!base) return err(res, 400, 'No base branch to merge into');
+  try {
+    await git.mergeBranch(task.repoPath, base, task.branch);
+    res.json({ ok: true, base });
+  } catch (e) {
+    err(res, 502, (e as Error).message);
+  }
+});
+
 app.get('/api/tasks/:id/worktree/status', async (req: Request, res: Response) => {
   const task = getTask(req.params.id);
   if (!task || !task.worktreePath) return err(res, 404, 'No worktree');
