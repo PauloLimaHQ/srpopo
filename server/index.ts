@@ -26,6 +26,7 @@ import * as repoSpecs from './repoSpecs';
 import * as plugins from './plugins';
 import * as autonomous from './autonomous';
 import * as conflicts from './conflicts';
+import * as prRefresh from './pr-refresh';
 import * as framing from './framing';
 import * as terminal from './terminal';
 import * as usage from './usage';
@@ -1389,6 +1390,10 @@ function start(port: string | number = process.env.PORT || 7777): Promise<{ serv
       // Periodic sweep for the opt-in "auto-resolve conflicts" setting (see
       // server/conflicts.ts) — checks review-column tasks' PRs on an interval.
       conflicts.start();
+      // Periodic background refresh of review-column tasks' PR status (see
+      // server/pr-refresh.ts) — always on, so a PR merged/closed outside
+      // Sr. Popo is reflected on the board without opening the task first.
+      prRefresh.start();
       resolve({ server, port: listenPort, url });
       backfillRepoNames();
     });

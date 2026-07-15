@@ -31,6 +31,7 @@ static with **no build step** (see Conventions).
 | `server/mcp.ts` | **Board MCP server** (see "MCP server" below). Streamable-HTTP MCP endpoint mounted on the Express app at `POST /mcp` so outside MCP clients can drive the board while Sr. Popo runs. |
 | `server/git.ts` | Worktree lifecycle (`git worktree add/remove`). |
 | `server/github.ts` | Read-only `gh` CLI lookup of a task's pull request. |
+| `server/pr-refresh.ts` | Background sweep that keeps review-column tasks' PR status current (broadcasts a `pr` bus event on change) so a PR merged/closed outside Sr. Popo shows up without opening the task. |
 | `server/bus.ts` | Server-Sent Events fan-out for the live board + timeline. |
 | `server/addons.ts` | Catalog of opt-in task behaviors (see "Add-ons" below). |
 | `server/personas.ts` | Catalog of expert-persona role preambles. |

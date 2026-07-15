@@ -944,16 +944,16 @@
       });
     }
     // An unmerged PR is only meaningful for a task that has a resolved branch.
-    // Look it up fresh (the cached value may be stale or absent) so the prompt
-    // reflects the PR's real state at the moment of the move.
+    // Always look it up fresh here — the background sweep (server/pr-refresh.ts)
+    // and the cached value from a drawer visit can both be up to a minute stale,
+    // and this is the one moment a stale "still open" would cause a needless
+    // re-merge attempt — so the prompt reflects the PR's real state right now.
     if (t.branch) {
-      let res = state.prByTask.get(t.id);
-      if (!res || res === 'loading') {
-        try {
-          res = await api('GET', `/api/tasks/${t.id}/pr`);
-          state.prByTask.set(t.id, res);
-        } catch { res = null; }
-      }
+      let res;
+      try {
+        res = await api('GET', `/api/tasks/${t.id}/pr`);
+        state.prByTask.set(t.id, res);
+      } catch { res = null; }
       if (res && res.pr && res.pr.state !== 'merged') {
         options.push({
           id: 'merge-pr',
@@ -3873,6 +3873,12 @@
       } else if (msg.type === 'autonomous') {
         state.autonomous = msg.status || null;
         renderAutonomous();
+      } else if (msg.type === 'pr') {
+        // Background PR-status refresh (server/pr-refresh.ts) — keeps the
+        // cached lookup honest even if no one opened this task's drawer.
+        state.prByTask.set(msg.taskId, msg.result);
+        const t = state.tasks.get(msg.taskId);
+        if (t && state.openTaskId === msg.taskId) renderDrawerHead(t);
       }
     };
     es.onerror = () => {
