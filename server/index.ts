@@ -930,7 +930,14 @@ app.get('/api/repos/:id/specs', (req: Request, res: Response) => {
   if (!pluginInstalled('repo-specs')) return err(res, 400, 'Install the Repository Specs plugin first');
   const repo = db.repos.find((r) => r.id === req.params.id);
   if (!repo) return err(res, 404, 'Repo not found');
-  res.json({ specs: repoSpecs.discoverSpecs(repo.path) });
+  const config = repoSpecs.readSpecConfig(repo.path);
+  res.json({
+    specs: repoSpecs.discoverSpecs(repo.path),
+    // The statuses the "From Specs" list defaults to showing — the repo's own
+    // declared set, else the built-in default. (The UI also always shows specs
+    // with no status.)
+    actionableStatuses: config.actionableStatuses || repoSpecs.DEFAULT_ACTIONABLE_STATUSES,
+  });
 });
 
 // Read-only preview of one spec file's content, keyed by the relative `path`

@@ -14,6 +14,7 @@
 import * as personas from './personas';
 import * as addons from './addons';
 import * as attachments from './attachments';
+import * as repoSpecs from './repoSpecs';
 import type { Task } from './types';
 
 // A URL/branch/worktree-safe slug from arbitrary text. Kept here (rather than in
@@ -28,6 +29,35 @@ function slugify(text: unknown): string {
   );
 }
 
+// A spec-completion framing block for a task imported from a repo spec file, so
+// the run closes the loop: mark the spec done, regenerate the index if the repo
+// declares a command, and ship the spec alongside the code. Returns '' for any
+// task without a spec origin. Adapts to the repo: a plain-markdown spec (no
+// frontmatter, no config) gets only a generic "update the spec file" directive,
+// while a frontmatter-driven repo gets the full status + index-regen block.
+function specCompletionBlock(task: Task): string {
+  const relPath = task.specOrigin?.path;
+  if (!relPath) return '';
+
+  const config = repoSpecs.readSpecConfig(task.repoPath);
+  const read = repoSpecs.readSpec(task.repoPath, relPath);
+  const hasFrontmatter = read.ok && Object.keys(repoSpecs.parseFrontmatter(read.content)).length > 0;
+
+  const lines = [`This task implements the spec at \`${relPath}\`. When the work is complete and correct:`];
+  if (hasFrontmatter) {
+    lines.push('- Update that spec\'s frontmatter `status:` to `implemented` (or `partial` with a `note:` if some scope is deferred).');
+  } else {
+    lines.push('- If the spec file tracks a status, update it to reflect that this work is complete.');
+  }
+  if (config.indexCommand) {
+    lines.push(`- Run \`${config.indexCommand}\` to regenerate the spec index.`);
+  }
+  lines.push(
+    `- Include the spec file${config.indexCommand ? ' (and the regenerated index)' : ''} in the same commit/PR.`,
+  );
+  return '\n\n---\n\n# Spec completion\n\n' + lines.join('\n');
+}
+
 // Build the full stdin prompt for a fresh (non-resume) dispatch of `task`.
 function framePrompt(task: Task): string {
   let framed = personas.preambleFor(task.personas) + task.prompt + addons.instructionsFor(task.addons);
@@ -39,6 +69,8 @@ function framePrompt(task: Task): string {
         paths.map((p) => `- ${p}`).join('\n');
     }
   }
+  // Close the loop on a spec import: append last so it ends the prompt.
+  framed += specCompletionBlock(task);
   return framed;
 }
 

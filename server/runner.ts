@@ -9,6 +9,7 @@ import * as groomer from './groomer';
 import * as addons from './addons';
 import * as permissions from './permissions';
 import * as usage from './usage';
+import * as repoSpecs from './repoSpecs';
 import type { GroomSpec } from './groomer';
 import type { Grooming, LogEvent, Task } from './types';
 
@@ -183,14 +184,25 @@ function mergeAllowedTools(...sources: unknown[]): string {
   return out.join(',').slice(0, 2000);
 }
 
+// For a task imported from a repo spec whose repo declares an index command, the
+// tool that runs it (e.g. `Bash(node:*)`) so the spec-completion step can
+// regenerate the index headless — the same auto-approve treatment add-ons get.
+function specAllowedTools(task: Partial<Task>): string[] {
+  if (!task.specOrigin || !task.repoPath) return [];
+  const tool = repoSpecs.indexCommandTool(repoSpecs.readSpecConfig(task.repoPath));
+  return tool ? [tool] : [];
+}
+
 // The full set of tools auto-approved for a dispatched task: the user's own
-// allow-list, the safe package-manager defaults, and whatever the selected
-// add-ons need to run (e.g. `gh` + git for "open a PR").
+// allow-list, the safe package-manager defaults, whatever the selected add-ons
+// need to run (e.g. `gh` + git for "open a PR"), and — for a spec import — the
+// repo's declared index command.
 function effectiveAllowedTools(task: Partial<Task>): string {
   return mergeAllowedTools(
     task.allowedTools,
     DEFAULT_ALLOWED_TOOLS,
     addons.allowedToolsFor(task.addons),
+    specAllowedTools(task),
   );
 }
 
