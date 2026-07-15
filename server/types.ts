@@ -211,6 +211,10 @@ export interface Task {
   repoName: string;
   repoPath: string;
   addons: string[];
+  // When the `pull_request` add-on (server/addons.ts) is selected, whether the
+  // PR it opens at the end is created as a draft (`gh pr create --draft`)
+  // instead of ready for review. Ignored when that add-on isn't selected.
+  prDraft: boolean;
   personas: string[];
   // Files the user attached; bytes live under DATA_DIR/attachments/<id>/<name>,
   // managed only through the upload/delete routes (never the PATCH allowlist).
