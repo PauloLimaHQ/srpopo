@@ -947,6 +947,32 @@
           id: 'merge-pr',
           label: `Merge PR #${res.pr.number}`,
           hint: res.pr.title || '',
+          group: 'merge',
+        });
+      }
+    }
+    // Direct, PR-less merge — an alternative to merge-pr (same 'merge' group,
+    // so picking one clears the other — checking both would merge the branch
+    // in twice) offered only while there's still a worktree to wrap up, so a
+    // task that already finished its merge/branch story elsewhere doesn't
+    // gain a new confirmation dialog it never had before. Only shown once we
+    // actually know the target branch — a guessed default would promise a
+    // merge that never happens. Warned since it bypasses code review and CI.
+    if (t.worktreePath && t.branch) {
+      let base = t.baseBranch || state.repoBranchByRepo.get(t.repoId);
+      if (base === undefined || base === 'loading') {
+        try {
+          ({ branch: base } = await api('GET', `/api/repos/${t.repoId}/branch`));
+          state.repoBranchByRepo.set(t.repoId, base);
+        } catch { base = null; }
+      }
+      if (base) {
+        options.push({
+          id: 'merge-direct',
+          label: `Merge branch into ${base} (no PR)`,
+          hint: 'Skips code review and CI — merges locally right now',
+          warn: true,
+          group: 'merge',
         });
       }
     }
@@ -967,9 +993,9 @@
     $('#done-modal-sub').textContent =
       `“${t.title}” — choose any wrap-up steps to run, then it moves to Done.`;
     $('#done-modal-options').innerHTML = options.map((o) =>
-      `<label class="done-option">` +
-      `<input type="checkbox" data-done-opt="${esc(o.id)}" />` +
-      `<span class="done-option-text"><span class="done-option-label">${esc(o.label)}</span>` +
+      `<label class="done-option${o.warn ? ' done-option-warn' : ''}">` +
+      `<input type="checkbox" data-done-opt="${esc(o.id)}"${o.group ? ` data-done-group="${esc(o.group)}"` : ''} />` +
+      `<span class="done-option-text"><span class="done-option-label">${o.warn ? icon('triangle-alert') : ''}${esc(o.label)}</span>` +
       (o.hint ? `<span class="done-option-hint">${esc(o.hint)}</span>` : '') +
       `</span></label>`,
     ).join('');
@@ -977,13 +1003,23 @@
     $('#modal-done').classList.remove('hidden');
   }
 
+  // merge-pr and merge-direct share a 'group' — they're alternative ways to
+  // land the same branch, so checking one clears the other rather than
+  // letting both run (which would merge the branch in twice).
+  $('#done-modal-options').addEventListener('change', (e) => {
+    const el = e.target;
+    if (!el.matches('input[data-done-group]') || !el.checked) return;
+    document.querySelectorAll(`#done-modal-options input[data-done-group="${el.dataset.doneGroup}"]`)
+      .forEach((other) => { if (other !== el) other.checked = false; });
+  });
+
   $('#done-modal-cancel').addEventListener('click', () => {
     $('#modal-done').classList.add('hidden');
     doneModalCtx = null;
   });
   $('#done-modal-confirm').addEventListener('click', async () => {
     if (!doneModalCtx) return;
-    const { task, options } = doneModalCtx;
+    const { task } = doneModalCtx;
     const checked = new Set(
       [...document.querySelectorAll('#done-modal-options input[data-done-opt]:checked')]
         .map((el) => el.dataset.doneOpt),
@@ -992,12 +1028,16 @@
     btn.disabled = true;
     try {
       // Merge first: worktree removal below would take away the dir `gh` runs in.
-      if (checked.has('merge-pr') && options.some((o) => o.id === 'merge-pr')) {
+      if (checked.has('merge-pr')) {
         await api('POST', `/api/tasks/${task.id}/pr/merge`);
         state.prByTask.delete(task.id); // force a fresh PR status next render
         toast('Pull request merged', 'info');
       }
-      if (checked.has('delete-worktree') && options.some((o) => o.id === 'delete-worktree')) {
+      if (checked.has('merge-direct')) {
+        await api('POST', `/api/tasks/${task.id}/merge`);
+        toast('Branch merged directly (no PR)', 'info');
+      }
+      if (checked.has('delete-worktree')) {
         await api('POST', `/api/tasks/${task.id}/worktree/remove`);
         toast('Worktree removed', 'info');
       }

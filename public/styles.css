@@ -853,6 +853,10 @@ a.chip.pr:hover { border-color: currentColor; }
   font-size: 11px; color: var(--text-dim);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.done-option-warn { border-color: var(--red-soft); }
+.done-option-warn:hover { border-color: var(--red); background: var(--red-soft); }
+.done-option-warn .done-option-label { display: flex; align-items: center; gap: 6px; color: var(--red); }
+.done-option-warn .done-option-label .icon { flex: none; width: 14px; height: 14px; }
 
 /* attachments */
 .field-block { display: flex; flex-direction: column; gap: 5px; }
