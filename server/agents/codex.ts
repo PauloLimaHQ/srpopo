@@ -70,9 +70,15 @@ function buildArgs(task: Partial<Task>, resume: boolean): string[] {
 }
 
 // Read-only args for a grooming session: research only, never a write. Mirrors
-// the Claude adapter's read-only groom posture using the Codex sandbox.
-function groomArgs(grooming: Pick<Grooming, 'model'>): string[] {
+// the Claude adapter's read-only groom posture using the Codex sandbox. `resume`
+// continues the same session after the developer answers clarifying questions.
+// (Grooming always runs on Claude today — see runner.groom — so this is here for
+// interface parity; kept consistent with buildArgs' resume handling regardless.)
+function groomArgs(grooming: Pick<Grooming, 'model' | 'sessionId'>, resume = false): string[] {
   const model: string[] = grooming.model && grooming.model !== 'default' ? ['-m', grooming.model] : [];
+  if (resume && grooming.sessionId) {
+    return ['exec', 'resume', grooming.sessionId, '--json', '--skip-git-repo-check', ...model, '-'];
+  }
   return ['exec', '--json', '--skip-git-repo-check', '--sandbox', 'read-only', ...model, '-'];
 }
 

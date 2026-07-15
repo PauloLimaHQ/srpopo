@@ -68,8 +68,9 @@ export interface AgentAdapter {
   childEnv(model: string | undefined): NodeJS.ProcessEnv;
   // CLI args for a dispatched task run (fresh, or a `resume` follow-up).
   buildArgs(task: Partial<Task>, resume: boolean): string[];
-  // CLI args for a read-only grooming session.
-  groomArgs(grooming: Pick<Grooming, 'model'>): string[];
+  // CLI args for a read-only grooming session. `resume` continues the same
+  // session after the developer answers the session's clarifying questions.
+  groomArgs(grooming: Pick<Grooming, 'model' | 'sessionId'>, resume?: boolean): string[];
   // Normalize one NDJSON line into a NormalizedEvent, or null for a blank line.
   parseLine(line: string): NormalizedEvent | null;
 }

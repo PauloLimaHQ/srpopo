@@ -80,6 +80,8 @@ for (const t of db.tasks) {
 }
 // Same for grooming cards: a card can't still be running without its child.
 for (const g of db.groomings) {
+  // Older db.json files predate the clarifying-questions field.
+  if (!Array.isArray(g.questions)) g.questions = [];
   if (g.status === 'running') {
     g.status = 'failed';
     g.lastOutcome = 'error';

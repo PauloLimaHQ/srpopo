@@ -168,11 +168,13 @@ function buildArgs(task: Partial<Task>, resume: boolean): string[] {
 
 // Read-only args for a grooming session: it explores the repo to write better
 // prompts but must never modify it. Only the safe research tools are auto-
-// approved in this headless run, so any write tool is denied.
-function groomArgs(grooming: Pick<Grooming, 'model'>): string[] {
+// approved in this headless run, so any write tool is denied. `resume` continues
+// the same session after the developer answers its clarifying questions.
+function groomArgs(grooming: Pick<Grooming, 'model' | 'sessionId'>, resume = false): string[] {
   const args = ['-p', '--output-format', 'stream-json', '--verbose'];
   if (grooming.model && grooming.model !== 'default') args.push('--model', grooming.model);
   args.push('--allowedTools', 'Read,Grep,Glob,Bash(git log:*),Bash(git diff:*),Bash(git show:*)');
+  if (resume && grooming.sessionId) args.push('--resume', grooming.sessionId);
   return args;
 }
 

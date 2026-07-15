@@ -1104,6 +1104,55 @@ test('groomer: parseResult recovers task specs from the session output', () => {
   assert.strictEqual(groomer.parseResult(undefined), null);
 });
 
+test('groomer: metaPrompt offers the clarify path alongside the finish path', () => {
+  const groomer = require('../server/groomer');
+  const mp = groomer.metaPrompt('add a dark mode toggle');
+  assert.match(mp, /"questions"/, 'describes the clarify (questions) shape');
+  assert.match(mp, /"options"/, 'questions can carry suggested options');
+  assert.match(mp, /"allowText"/, 'questions can allow a free-text answer');
+});
+
+test('groomer: parseQuestions recovers clarifying questions, else null', () => {
+  const groomer = require('../server/groomer');
+
+  const asked = `Let me check.\n${groomer.SPEC_START}\n` +
+    '{ "questions": [' +
+    '{ "question": "Which theme should default?", "options": ["Light", "Dark"], "allowText": true },' +
+    '{ "question": "Any accessibility constraints?", "options": [] }' +
+    '] }' +
+    `\n${groomer.SPEC_END}`;
+  assert.deepStrictEqual(groomer.parseQuestions(asked), [
+    { question: 'Which theme should default?', options: ['Light', 'Dark'], allowText: true },
+    // options: [] forces allowText true so the question stays answerable.
+    { question: 'Any accessibility constraints?', options: [], allowText: true },
+  ]);
+
+  // A tasks payload is not a questions payload.
+  const tasks = `${groomer.SPEC_START}{ "tasks": [{ "title": "T", "prompt": "P" }] }${groomer.SPEC_END}`;
+  assert.strictEqual(groomer.parseQuestions(tasks), null, 'a tasks spec yields no questions');
+  // A questions entry without any question text is dropped, leaving nothing.
+  assert.strictEqual(
+    groomer.parseQuestions(`${groomer.SPEC_START}{"questions":[{"options":["a"]}]}${groomer.SPEC_END}`),
+    null,
+    'a question without text is rejected',
+  );
+  assert.strictEqual(groomer.parseQuestions('no spec at all'), null);
+  assert.strictEqual(groomer.parseQuestions(''), null);
+});
+
+test('groomer: answersPrompt pairs each question with its answer', () => {
+  const groomer = require('../server/groomer');
+  const questions = [
+    { question: 'Which theme should default?', options: ['Light', 'Dark'], allowText: true },
+    { question: 'Any accessibility constraints?', options: [], allowText: true },
+  ];
+  const prompt = groomer.answersPrompt(questions, ['Dark', '']);
+  assert.match(prompt, /Which theme should default\?/, 'restates the question');
+  assert.match(prompt, /Answer: Dark/, 'includes the given answer');
+  assert.match(prompt, /use your best judgment/, 'a blank answer defers to the session');
+  assert.ok(prompt.includes(groomer.SPEC_START) && prompt.includes(groomer.SPEC_END), 're-states the spec markers');
+});
+
 test('groomer: deriveTitle takes the first non-empty line and caps length', () => {
   const groomer = require('../server/groomer');
   assert.strictEqual(groomer.deriveTitle('\n  make the tray icon animate  \nsecond line'), 'make the tray icon animate');
