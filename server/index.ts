@@ -315,6 +315,7 @@ function createGrooming(repo: Repo, idea: string, body: Record<string, unknown>,
     activeSubagents: 0,
     lastOutcome: null,
     lastError: null,
+    questions: [],
     taskIds: [],
     archived: false,
     createdAt: now(),
@@ -389,11 +390,16 @@ function spawnGroomedTasks(grooming: Grooming, specs: GroomSpec[]): string[] {
   return ids;
 }
 
-// Kick off the read-only grooming session for a card. On a launch failure the
-// card is rolled back to draft and the error rethrown for the route to report.
-function runGrooming(grooming: Grooming): Grooming {
+// Kick off (or resume) the read-only grooming session for a card. On a launch
+// failure the card is rolled back to draft and the error rethrown for the route
+// to report. `resumePrompt` continues a paused (awaiting) session with the
+// developer's answers; omit it to start the idea fresh.
+function runGrooming(grooming: Grooming, resumePrompt?: string): Grooming {
   try {
-    return runner.groom(grooming, { onSpawn: (specs) => spawnGroomedTasks(grooming, specs) });
+    return runner.groom(grooming, {
+      onSpawn: (specs) => spawnGroomedTasks(grooming, specs),
+      resumePrompt,
+    });
   } catch (e) {
     grooming.status = 'draft';
     grooming.lastOutcome = 'error';
@@ -813,6 +819,30 @@ app.post('/api/groomings/:id/run', (req: Request, res: Response) => {
   if (atCapacity()) return err(res, 409, capacityError());
   try {
     res.json(runGrooming(grooming));
+  } catch (e) {
+    err(res, 500, (e as Error).message);
+  }
+});
+
+// Answer the clarifying questions a paused (awaiting) grooming asked, and resume
+// its session so it can finish. `answers` is an array of strings aligned to the
+// card's `questions`; a blank/missing entry tells the session to use its own
+// judgment for that one. Like /run this re-enters `running` through the runner.
+app.post('/api/groomings/:id/answers', (req: Request, res: Response) => {
+  const grooming = getGrooming(req.params.id);
+  if (!grooming) return err(res, 404, 'Grooming not found');
+  if (runner.isRunning(grooming.id)) return err(res, 409, 'Grooming is already running');
+  if (grooming.status !== 'awaiting' || !grooming.questions.length) {
+    return err(res, 409, 'Grooming is not waiting for answers');
+  }
+  if (!grooming.sessionId) return err(res, 409, 'Grooming session is no longer resumable — run it again');
+  if (!Array.isArray(req.body.answers)) return err(res, 400, 'answers must be an array');
+  if (atCapacity()) return err(res, 409, capacityError());
+
+  const answers = grooming.questions.map((_, i) => String(req.body.answers[i] ?? '').trim());
+  const resumePrompt = groomer.answersPrompt(grooming.questions, answers);
+  try {
+    res.json(runGrooming(grooming, resumePrompt));
   } catch (e) {
     err(res, 500, (e as Error).message);
   }

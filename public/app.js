@@ -840,6 +840,7 @@
       `<span class="chip" title="Where spawned tasks land">${esc(GROOMING_TARGET_LABEL[g.target] || 'to backlog')}</span>`,
     ];
     if (g.status === 'draft') chips.push(`<span class="chip badge-draft">DRAFT</span>`);
+    if (g.status === 'awaiting') chips.push(`<span class="chip badge-awaiting">${icon('circle-help')} NEEDS INPUT</span>`);
     if (g.status === 'finished') chips.push(`<span class="chip badge-groomed">${icon('circle-check')} GROOMED</span>`);
     if (g.status === 'failed') chips.push(`<span class="chip badge-failed">FAILED</span>`);
     if (g.lastOutcome === 'stopped') chips.push(`<span class="chip badge-stopped">stopped</span>`);
@@ -854,6 +855,13 @@
           <span class="elapsed" data-start="${esc(g.startedAt)}">${elapsedSince(g.startedAt)}</span>
           <button class="btn icon danger card-stop" data-action="stop" title="Stop grooming" aria-label="Stop grooming">${icon('square')}</button>
         </div>`;
+    }
+
+    // An awaiting grooming nudges the user to open it and answer.
+    let awaitingRow = '';
+    if (g.status === 'awaiting') {
+      const n = (g.questions || []).length;
+      awaitingRow = `<div class="groom-awaiting-hint">${icon('circle-help')} ${n} question${n === 1 ? '' : 's'} — click to answer</div>`;
     }
 
     // A finished grooming links straight to the tasks it spawned.
@@ -873,6 +881,7 @@
       <div class="card-title">${esc(g.title)}</div>
       <div class="card-chips">${chips.join('')}</div>
       ${statusRow}
+      ${awaitingRow}
       ${taskLinks}
       ${g.status === 'failed' && g.lastError ? `<div class="card-error">${esc(g.lastError.slice(0, 140))}</div>` : ''}`;
 
@@ -1259,6 +1268,12 @@
       actions.push({ id: 'edit', label: 'Edit', icon: 'pencil', cls: 'ghost',
         run: () => { openBriefModal(g); } });
     }
+    // An awaiting card answers via the drawer form; the action here is the escape
+    // hatch to discard the questions and groom the idea again from scratch.
+    if (g.status === 'awaiting') {
+      actions.push({ id: 'regroom', label: 'Start over', icon: 'rotate-cw', cls: 'ghost',
+        run: () => api('POST', `/api/groomings/${g.id}/run`) });
+    }
     actions.push({ id: 'archive', label: 'Archive', cls: 'ghost',
       run: async () => {
         await api('POST', `/api/groomings/${g.id}/archive`);
@@ -1393,9 +1408,67 @@
   // Drawer head for a grooming card: status + idea, actions from
   // groomingCoreActions, and (once finished) links to the spawned tasks. The
   // follow-up composer stays disabled — grooming sessions are never resumed.
+  // The questions form shown in an awaiting grooming's drawer: each clarifying
+  // question with its suggested options (radios) and, when free text is allowed,
+  // an "other" text field — mirroring Claude Desktop's ask-with-choices prompt.
+  function groomQuestionsHtml(g) {
+    const rows = (g.questions || []).map((q, i) => {
+      const opts = (q.options || []).map((opt, j) => `
+        <label class="groom-opt">
+          <input type="radio" name="gq-${i}" value="${esc(opt)}"${j === 0 && !q.allowText ? ' checked' : ''}>
+          <span>${esc(opt)}</span>
+        </label>`).join('');
+      // A free-text field: an "Other" radio next to options, or a standalone
+      // input when the question is open-ended (no options).
+      const text = q.allowText
+        ? (q.options || []).length
+          ? `<label class="groom-opt groom-opt-other">
+               <input type="radio" name="gq-${i}" value="__other__">
+               <span>Other:</span>
+             </label>
+             <input type="text" class="groom-q-textinput" placeholder="Type your own answer…">`
+          : `<input type="text" class="groom-q-textinput" placeholder="Type your answer…">`
+        : '';
+      return `
+        <div class="groom-q" data-qi="${i}">
+          <div class="groom-q-text">${i + 1}. ${esc(q.question)}</div>
+          <div class="groom-q-options">${opts}${text}</div>
+        </div>`;
+    }).join('');
+    return `
+      <div class="tag">CLARIFY</div>
+      <form class="groom-questions" id="groom-answers-form">
+        ${rows}
+        <button type="submit" class="btn primary groom-answers-send">${icon('sparkles')} Answer &amp; continue</button>
+      </form>`;
+  }
+
+  // Collect one answer string per question from the form and resume the session.
+  async function submitGroomingAnswers(g) {
+    const form = $('#groom-answers-form');
+    if (!form) return;
+    const answers = (g.questions || []).map((_, i) => {
+      const box = form.querySelector(`.groom-q[data-qi="${i}"]`);
+      const checked = box ? box.querySelector('input[type=radio]:checked') : null;
+      const textEl = box ? box.querySelector('.groom-q-textinput') : null;
+      const textVal = textEl ? textEl.value.trim() : '';
+      if (checked && checked.value !== '__other__') return checked.value;
+      return textVal;
+    });
+    const btn = form.querySelector('.groom-answers-send');
+    if (btn) btn.disabled = true;
+    try {
+      await api('POST', `/api/groomings/${g.id}/answers`, { answers });
+      toast('Resuming grooming with your answers…', 'info');
+    } catch (e) {
+      toast(e.message);
+      if (btn) btn.disabled = false;
+    }
+  }
+
   function renderGroomingDrawerHead(g) {
     $('#drawer-title').textContent = g.title;
-    const statusLabel = { draft: 'draft', running: 'grooming…', finished: 'groomed', failed: 'failed' }[g.status] || g.status;
+    const statusLabel = { draft: 'draft', running: 'grooming…', awaiting: 'needs input', finished: 'groomed', failed: 'failed' }[g.status] || g.status;
     const meta = [
       `<span class="chip repo">${esc(g.repoName)}</span>`,
       `<span class="chip model">${esc(g.resolvedModel || g.model)}</span>`,
@@ -1412,6 +1485,9 @@
 
     const promptEl = $('#drawer-prompt');
     const blocks = [`<div class="tag">IDEA</div><div class="drawer-prompt-body md">${mdToHtml(g.idea)}</div>`];
+    if (g.status === 'awaiting' && (g.questions || []).length) {
+      blocks.push(groomQuestionsHtml(g));
+    }
     if (g.status === 'finished' && (g.taskIds || []).length) {
       const links = g.taskIds.map((id) => {
         const t = state.tasks.get(id);
@@ -1427,6 +1503,10 @@
       const link = e.target.closest('[data-task-link]');
       if (link && !link.disabled) openDrawer(link.dataset.taskLink);
     };
+    const answersForm = promptEl.querySelector('#groom-answers-form');
+    if (answersForm) {
+      answersForm.onsubmit = (e) => { e.preventDefault(); submitGroomingAnswers(g); };
+    }
 
     const actions = groomingCoreActions(g);
     const box = $('#drawer-actions');
@@ -1444,7 +1524,9 @@
     $('#followup-send').disabled = true;
     $('#followup-input').placeholder = isGroomingLive(g)
       ? 'Grooming the idea…'
-      : 'Grooming sessions run once and are never resumed';
+      : g.status === 'awaiting'
+        ? 'Answer the questions above to continue grooming'
+        : 'Grooming sessions run once and are never resumed';
   }
 
   // ---------- GitHub PR chip ----------
@@ -2741,7 +2823,11 @@
     if (!prev || prev.status !== 'running' || g.status === 'running') return;
     if (g.lastOutcome === 'stopped') return;
     let title, body;
-    if (g.status === 'failed') {
+    if (g.status === 'awaiting') {
+      const q = (g.questions || []).length;
+      title = `Grooming needs input — ${g.title}`;
+      body = `${g.repoName} · ${q} question${q === 1 ? '' : 's'} to answer`;
+    } else if (g.status === 'failed') {
       title = `Grooming failed — ${g.title}`;
       body = g.lastError ? String(g.lastError).slice(0, 140) : g.repoName;
     } else {
@@ -2755,6 +2841,7 @@
   function maybePlayGroomingSound(prev, g) {
     if (!prev || prev.status !== 'running' || g.status === 'running') return;
     if (g.lastOutcome === 'stopped') return;
+    // 'awaiting' and a clean finish both chime; only a real failure buzzes.
     playSound(g.status === 'failed' ? 'failed' : 'finish');
   }
 

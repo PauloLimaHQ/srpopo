@@ -225,11 +225,13 @@ function buildArgs(task: Partial<Task>, resume: boolean): string[] {
 
 // Read-only args for a grooming session: it explores the repo to write better
 // prompts but must never modify it. Only the safe research tools are auto-
-// approved in this headless run, so any write tool is denied.
-function groomArgs(grooming: Pick<Grooming, 'model'>): string[] {
+// approved in this headless run, so any write tool is denied. `resume` continues
+// the same session after the developer answers its clarifying questions.
+function groomArgs(grooming: Pick<Grooming, 'model' | 'sessionId'>, resume = false): string[] {
   const args = ['-p', '--output-format', 'stream-json', '--verbose'];
   if (grooming.model && grooming.model !== 'default') args.push('--model', grooming.model);
   args.push('--allowedTools', 'Read,Grep,Glob,Bash(git log:*),Bash(git diff:*),Bash(git show:*)');
+  if (resume && grooming.sessionId) args.push('--resume', grooming.sessionId);
   return args;
 }
 
@@ -415,35 +417,49 @@ function dispatch(task: Task, prompt: string, { resume = false }: { resume?: boo
  * never becomes a task itself — on success `onSpawn` creates the tasks and the
  * card lands in `finished` with links to them. The `running` status (like a
  * task's) is entered only here, never via the API.
+ *
+ * The session may instead ask the developer to clarify something (see groomer):
+ * when it does, the card lands in `awaiting` with the questions kept on it and
+ * its session id retained, so answering resumes the same session. Pass
+ * `resumePrompt` to feed those answers back in and continue where it paused.
  */
-function groom(grooming: Grooming, { onSpawn }: { onSpawn: (specs: GroomSpec[]) => string[] }): Grooming {
+function groom(
+  grooming: Grooming,
+  { onSpawn, resumePrompt }: { onSpawn: (specs: GroomSpec[]) => string[]; resumePrompt?: string },
+): Grooming {
   if (running.has(grooming.id)) throw new Error('Grooming is already running');
 
+  const resume = typeof resumePrompt === 'string';
   grooming.status = 'running';
   grooming.startedAt = now();
   grooming.finishedAt = null;
   grooming.lastOutcome = null;
   grooming.lastError = null;
+  // A fresh (non-resume) run starts the idea over — drop any stale questions/
+  // session from a previous awaiting/failed pass.
+  if (!resume) {
+    grooming.questions = [];
+    grooming.sessionId = null;
+  }
   grooming.runCount = (grooming.runCount || 0) + 1;
   grooming.activeSubagents = 0;
   emitGrooming(grooming);
 
-  const prompt = groomer.metaPrompt(grooming.idea);
+  const prompt = resume ? resumePrompt! : groomer.metaPrompt(grooming.idea);
 
   return launch(grooming, {
-    args: groomArgs(grooming),
+    args: groomArgs(grooming, resume),
     workDir: grooming.repoPath, // grooming is read-only exploration; never a worktree
     prompt,
-    promptEvent: { type: 'prompt', text: prompt, groom: true, run: grooming.runCount },
+    promptEvent: { type: 'prompt', text: prompt, groom: true, resume, run: grooming.runCount },
     emit: emitGrooming,
     onResult: (event) => usage.applyGroomResult(grooming, event),
     resolveExit: ({ code, signal, stopped, sawResult, stderrTail }) => {
-      // The grooming session is an internal, read-only planning session and is
-      // never resumed. Drop its session id so nothing on the card points at it.
-      grooming.sessionId = null;
-
       if (signal || stopped) {
-        // Park a stopped grooming back in draft with the rough idea intact.
+        // Park a stopped grooming back in draft with the rough idea intact. Drop
+        // the session — a fresh run starts over.
+        grooming.sessionId = null;
+        grooming.questions = [];
         grooming.status = 'draft';
         grooming.lastOutcome = 'stopped';
         grooming.lastError = 'Grooming stopped by user';
@@ -452,6 +468,28 @@ function groom(grooming: Grooming, { onSpawn }: { onSpawn: (specs: GroomSpec[]) 
       }
       const succeeded = sawResult && !sawResult.is_error;
       const resultText = succeeded && typeof sawResult.result === 'string' ? sawResult.result : '';
+
+      // First check whether the session paused to ask the developer to clarify.
+      const questions = succeeded ? groomer.parseQuestions(resultText) : null;
+      if (questions) {
+        // Keep the session id (set from the init event) so answering resumes it.
+        grooming.questions = questions;
+        grooming.status = 'awaiting';
+        grooming.lastOutcome = 'awaiting';
+        grooming.lastError = null;
+        grooming.finishedAt = null; // paused, not finished (launch set it on exit)
+        record(grooming, {
+          type: 'proc',
+          text: `Grooming needs input — asked ${questions.length} question${questions.length === 1 ? '' : 's'}`,
+        });
+        return;
+      }
+
+      // Otherwise the turn is terminal — it either produced a spec or failed.
+      // Drop the session id so nothing on a finished/failed card points at it.
+      grooming.sessionId = null;
+      grooming.questions = [];
+
       let specs = succeeded ? groomer.parseResult(resultText) : null;
       if (!specs && succeeded && resultText.trim()) {
         // Session finished but we couldn't parse a structured spec — keep the
