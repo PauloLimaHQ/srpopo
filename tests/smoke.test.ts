@@ -49,6 +49,21 @@ test('addons: pull_request instruction only self-assigns when Settings > assignP
   }
 });
 
+test('addons: instructionsFor swaps in the draft-PR wording only when prDraft is set', () => {
+  const addons = require('../server/addons');
+
+  const ready = addons.instructionsFor(['pull_request'], { prDraft: false });
+  assert.ok(ready.includes('gh pr create'), 'default instruction opens a normal PR');
+  assert.ok(!ready.includes('--draft'), 'no --draft flag when prDraft is off');
+
+  const draft = addons.instructionsFor(['pull_request'], { prDraft: true });
+  assert.ok(draft.includes('--draft'), 'draft instruction opens the PR with --draft');
+
+  // Unaffected add-ons ignore the option entirely.
+  const other = addons.instructionsFor(['code_review'], { prDraft: true });
+  assert.ok(!other.includes('--draft'), 'prDraft has no effect on other add-ons');
+});
+
 test('server modules load without throwing', () => {
   assert.doesNotThrow(() => {
     require('../server/git');
@@ -430,6 +445,58 @@ test('conflicts: sweep is a no-op when the setting is off, even with a conflicti
   } finally {
     store.db.tasks.pop();
     store.db.settings.autoResolveConflicts = prev;
+  }
+});
+
+test('pr-refresh: module exports sweep and start', () => {
+  const prRefresh = require('../server/pr-refresh');
+  assert.strictEqual(typeof prRefresh.sweep, 'function', 'sweep is exported');
+  assert.strictEqual(typeof prRefresh.start, 'function', 'start is exported');
+});
+
+test('pr-refresh: sweep ignores tasks with no branch, archived tasks, and non-review tasks', async () => {
+  const bus = require('../server/bus');
+  const prRefresh = require('../server/pr-refresh');
+  const tasks = [
+    mkTask('pr-nb', 'review', 'repoA'), // no branch resolved yet
+    mkTask('pr-ar', 'review', 'repoA', { branch: 'feature/x', archived: true }),
+    mkTask('pr-rd', 'ready', 'repoA', { branch: 'feature/y' }),
+  ];
+  const restore = withStore(tasks, 10);
+  const seen: unknown[] = [];
+  const unsubscribe = bus.subscribe((msg: unknown) => seen.push(msg));
+  try {
+    await prRefresh.sweep();
+    assert.deepStrictEqual(seen, [], 'none of these tasks are eligible, so no gh lookup or broadcast happens');
+  } finally {
+    unsubscribe();
+    restore();
+  }
+});
+
+test('pr-refresh: sweep broadcasts a pr event once per change, keyed off a nonexistent worktree so gh fails fast and deterministically', async () => {
+  const bus = require('../server/bus');
+  const prRefresh = require('../server/pr-refresh');
+  // A cwd that can't exist makes the `gh` spawn fail immediately with ENOENT
+  // regardless of whether this machine has `gh` installed/authenticated —
+  // deterministic and fast, same trick as the module's own no-branch tests.
+  const task = mkTask('pr-1', 'review', 'repoA', { branch: 'feature/x', repoPath: '/tmp/srpopo-test-does-not-exist' });
+  const restore = withStore([task], 10);
+  const seen: Array<{ type?: string; taskId?: string; result?: unknown }> = [];
+  const unsubscribe = bus.subscribe((msg: { type?: string; taskId?: string; result?: unknown }) => seen.push(msg));
+  try {
+    await prRefresh.sweep();
+    const first = seen.filter((m) => m.type === 'pr');
+    assert.strictEqual(first.length, 1, 'one pr event for the one eligible task');
+    assert.strictEqual(first[0].taskId, 'pr-1');
+    assert.deepStrictEqual(first[0].result, { pr: null, reason: 'gh-missing' });
+
+    // Sweeping again with an unchanged result should not re-broadcast.
+    await prRefresh.sweep();
+    assert.strictEqual(seen.filter((m) => m.type === 'pr').length, 1, 'an unchanged result does not re-broadcast');
+  } finally {
+    unsubscribe();
+    restore();
   }
 });
 

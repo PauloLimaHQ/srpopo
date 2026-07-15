@@ -36,6 +36,7 @@ export interface CreateTaskInput {
   permissionMode?: unknown;
   status?: unknown;
   addons?: unknown;
+  prDraft?: unknown;
   personas?: unknown;
   allowedTools?: unknown;
   branchName?: unknown;
@@ -75,6 +76,7 @@ export function createTask(input: CreateTaskInput): Task {
     repoPath: repo.path,
     agent: sanitizeAgent(input.agent),
     addons: addons.sanitize(input.addons),
+    prDraft: !!input.prDraft,
     personas: personas.sanitize(input.personas),
     attachments: [],
     useWorktree: !!input.useWorktree,

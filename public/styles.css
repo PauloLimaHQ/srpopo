@@ -661,6 +661,13 @@ a.chip.pr:hover { border-color: currentColor; }
 .addons legend { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; padding: 0 6px; }
 #task-addon-list { display: flex; flex-direction: column; gap: 10px; }
 #task-addon-list:empty { display: none; }
+/* Ready-vs-draft sub-choice nested under the "Create a Pull Request" addon —
+   pulled up close to its checkbox so it reads as that addon's own option,
+   not a separate row; dimmed and inert until the addon itself is checked. */
+.pr-mode { display: flex; gap: 16px; margin: -6px 0 0 24px; transition: opacity .15s; }
+.pr-mode-disabled { opacity: .45; pointer-events: none; }
+.pr-mode-option { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); cursor: pointer; }
+.pr-mode-option input { width: auto; margin: 0; }
 #task-personas > p.addon-hint { margin: 2px 0 0; }
 #setting-notif-note { margin: 0; }
 #setting-notif-test { align-self: flex-start; }
@@ -883,6 +890,10 @@ a.chip.pr:hover { border-color: currentColor; }
   font-size: 11px; color: var(--text-dim);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.done-option-warn { border-color: var(--red-soft); }
+.done-option-warn:hover { border-color: var(--red); background: var(--red-soft); }
+.done-option-warn .done-option-label { display: flex; align-items: center; gap: 6px; color: var(--red); }
+.done-option-warn .done-option-label .icon { flex: none; width: 14px; height: 14px; }
 
 /* attachments */
 .field-block { display: flex; flex-direction: column; gap: 5px; }

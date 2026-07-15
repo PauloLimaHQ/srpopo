@@ -26,6 +26,7 @@ import * as repoSpecs from './repoSpecs';
 import * as plugins from './plugins';
 import * as autonomous from './autonomous';
 import * as conflicts from './conflicts';
+import * as prRefresh from './pr-refresh';
 import * as framing from './framing';
 import * as terminal from './terminal';
 import * as usage from './usage';
@@ -351,6 +352,7 @@ function spawnGroomedTasks(grooming: Grooming, specs: GroomSpec[]): string[] {
       repoPath: grooming.repoPath,
       agent: 'claude', // grooming spawns Claude tasks; the user can switch a card's agent later
       addons: [],
+      prDraft: false,
       personas: [],
       attachments: [],
       useWorktree: true,
@@ -1022,6 +1024,7 @@ app.post('/api/repos/:id/specs/import', (req: Request, res: Response) => {
       repoPath: repo.path,
       agent: 'claude', // spec imports run on Claude by default; switchable per task after import
       addons: [],
+      prDraft: false,
       personas: [],
       attachments: [],
       useWorktree,
@@ -1064,7 +1067,7 @@ app.patch('/api/tasks/:id', (req: Request, res: Response) => {
   if (!task) return err(res, 404, 'Task not found');
   if (runner.isRunning(task.id)) return err(res, 409, 'Task is running; stop it first');
 
-  const allowed = ['title', 'prompt', 'agent', 'model', 'permissionMode', 'allowedTools', 'promptPermissions', 'useWorktree', 'branchName', 'baseBranch', 'status', 'addons', 'personas'] as const;
+  const allowed = ['title', 'prompt', 'agent', 'model', 'permissionMode', 'allowedTools', 'promptPermissions', 'useWorktree', 'branchName', 'baseBranch', 'status', 'addons', 'prDraft', 'personas'] as const;
   for (const key of allowed) {
     if (key in req.body) {
       if (key === 'agent') {
@@ -1072,6 +1075,8 @@ app.patch('/api/tasks/:id', (req: Request, res: Response) => {
         if (req.body.agent === 'claude' || req.body.agent === 'codex') task.agent = req.body.agent;
       } else if (key === 'addons') {
         task.addons = addons.sanitize(req.body.addons);
+      } else if (key === 'prDraft') {
+        task.prDraft = !!req.body.prDraft;
       } else if (key === 'allowedTools') {
         task.allowedTools = runner.normalizeAllowedTools(req.body.allowedTools);
       } else if (key === 'promptPermissions') {
@@ -1286,6 +1291,30 @@ app.post('/api/tasks/:id/pr/merge', async (req: Request, res: Response) => {
   res.json({ ok: true, alreadyMerged: !!result.alreadyMerged });
 });
 
+// Merge the task's branch straight into its base branch with a plain `git
+// merge` — no PR, no `gh`. The fast local-merge counterpart to `/pr/merge`
+// for repos where waiting on a pull request isn't worth it. Requires a
+// resolved branch and a base to merge into (the task's own `baseBranch`,
+// falling back to the repo's actual current branch).
+app.post('/api/tasks/:id/merge', async (req: Request, res: Response) => {
+  const task = getTask(req.params.id);
+  if (!task) return err(res, 404, 'Task not found');
+  if (runner.isRunning(task.id)) return err(res, 409, 'Stop the task first');
+  if (!task.branch) return err(res, 400, 'Task has no branch to merge');
+  const repo = getRepo(task.repoId);
+  // repo.branch is only a snapshot from whenever the repo was registered (see
+  // GET /api/repos/:id/branch above) and can be stale, so re-read the repo's
+  // actual current branch rather than trusting the cached value.
+  const base = task.baseBranch || (repo ? await git.currentBranch(repo.path) : null);
+  if (!base) return err(res, 400, 'No base branch to merge into');
+  try {
+    await git.mergeBranch(task.repoPath, base, task.branch);
+    res.json({ ok: true, base });
+  } catch (e) {
+    err(res, 502, (e as Error).message);
+  }
+});
+
 app.get('/api/tasks/:id/worktree/status', async (req: Request, res: Response) => {
   const task = getTask(req.params.id);
   if (!task || !task.worktreePath) return err(res, 404, 'No worktree');
@@ -1366,6 +1395,10 @@ function start(port: string | number = process.env.PORT || 7777): Promise<{ serv
       // Periodic sweep for the opt-in "auto-resolve conflicts" setting (see
       // server/conflicts.ts) — checks review-column tasks' PRs on an interval.
       conflicts.start();
+      // Periodic background refresh of review-column tasks' PR status (see
+      // server/pr-refresh.ts) — always on, so a PR merged/closed outside
+      // Sr. Popo is reflected on the board without opening the task first.
+      prRefresh.start();
       resolve({ server, port: listenPort, url });
       backfillRepoNames();
     });
