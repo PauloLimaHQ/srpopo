@@ -593,6 +593,89 @@ test('repoSpecs: readSpec rejects path traversal and missing files', () => {
   );
 });
 
+test('repoSpecs: parseFrontmatter reads key/value pairs and never throws', () => {
+  const repoSpecs = require('../server/repoSpecs');
+  const fm = repoSpecs.parseFrontmatter('---\nnumber: "0084"\nstatus: draft\ntitle: Add Auth\n---\n# Ignored\n');
+  assert.deepStrictEqual(fm, { number: '0084', status: 'draft', title: 'Add Auth' }, 'quotes stripped, all keys read');
+  assert.deepStrictEqual(repoSpecs.parseFrontmatter('# Just a heading\n\nBody.'), {}, 'no frontmatter yields {}');
+  assert.deepStrictEqual(repoSpecs.parseFrontmatter(''), {}, 'empty input yields {}');
+});
+
+test('repoSpecs: discoverSpecs reads frontmatter, prefers title, and sorts by number', () => {
+  const repoSpecs = require('../server/repoSpecs');
+  const repoPath = fs.mkdtempSync(path.join(os.tmpdir(), 'srpopo-specs-fm-'));
+  fs.mkdirSync(path.join(repoPath, 'specs'), { recursive: true });
+
+  fs.writeFileSync(path.join(repoPath, 'specs', '0084-add-auth.md'),
+    '---\nnumber: "0084"\nstatus: draft\ntitle: Add Authentication\n---\n# Different Heading\n\nBody.');
+  fs.writeFileSync(path.join(repoPath, 'specs', '0012-logging.md'),
+    '---\nnumber: "0012"\nstatus: implemented\n---\n# Structured Logging\n');
+
+  const found = repoSpecs.discoverSpecs(repoPath);
+  assert.deepStrictEqual(found.map((f: { number: string }) => f.number), ['0012', '0084'], 'ascending by number');
+  const auth = found.find((f: { number: string }) => f.number === '0084');
+  assert.strictEqual(auth.title, 'Add Authentication', 'frontmatter title beats the # heading');
+  assert.strictEqual(auth.status, 'draft');
+  const log = found.find((f: { number: string }) => f.number === '0012');
+  assert.strictEqual(log.title, 'Structured Logging', 'falls back to # heading when no frontmatter title');
+  assert.strictEqual(log.status, 'implemented');
+});
+
+test('repoSpecs: readSpecConfig reads specs/.spec-config.json, else {}', () => {
+  const repoSpecs = require('../server/repoSpecs');
+  const repoPath = fs.mkdtempSync(path.join(os.tmpdir(), 'srpopo-specs-cfg-'));
+  fs.mkdirSync(path.join(repoPath, 'specs'), { recursive: true });
+  fs.writeFileSync(path.join(repoPath, 'specs', '.spec-config.json'),
+    JSON.stringify({ indexCommand: 'node specs/generate-index.mjs', actionableStatuses: ['draft', 'wip'] }));
+
+  const config = repoSpecs.readSpecConfig(repoPath);
+  assert.strictEqual(config.indexCommand, 'node specs/generate-index.mjs');
+  assert.deepStrictEqual(config.actionableStatuses, ['draft', 'wip']);
+  assert.strictEqual(repoSpecs.indexCommandTool(config), 'Bash(node:*)', 'tool derives from the command binary');
+
+  const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'srpopo-specs-cfg-bare-'));
+  assert.deepStrictEqual(repoSpecs.readSpecConfig(bare), {}, 'no config file yields {}');
+  assert.strictEqual(repoSpecs.indexCommandTool({}), null, 'no command yields no tool');
+});
+
+test('framing: framePrompt appends a spec-completion block only for spec imports', () => {
+  const framing = require('../server/framing');
+
+  // Plain-markdown repo: generic "update the spec file" directive, no index step.
+  const plainRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'srpopo-frame-plain-'));
+  fs.mkdirSync(path.join(plainRepo, 'specs'), { recursive: true });
+  fs.writeFileSync(path.join(plainRepo, 'specs', 'idea.md'), '# Idea\n\nDo it.');
+  const plainTask = { id: 'a', prompt: 'Body', personas: [], addons: [], attachments: [],
+    repoPath: plainRepo, specOrigin: { path: 'specs/idea.md' } };
+  const plainFramed = framing.framePrompt(plainTask);
+  assert.ok(plainFramed.includes('# Spec completion'), 'has the completion header');
+  assert.ok(plainFramed.includes('specs/idea.md'), 'names the spec path');
+  assert.ok(plainFramed.includes('If the spec file tracks a status'), 'generic update directive');
+  assert.ok(!plainFramed.includes('regenerate the spec index'), 'no index step without config');
+
+  // Frontmatter-driven repo with a declared index command: full block.
+  const fwRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'srpopo-frame-fw-'));
+  fs.mkdirSync(path.join(fwRepo, 'specs'), { recursive: true });
+  fs.writeFileSync(path.join(fwRepo, 'specs', '0084-auth.md'), '---\nnumber: "0084"\nstatus: draft\n---\n# Auth\n');
+  fs.writeFileSync(path.join(fwRepo, 'specs', '.spec-config.json'),
+    JSON.stringify({ indexCommand: 'node specs/generate-index.mjs' }));
+  const fwTask = { id: 'b', prompt: 'Body', personas: [], addons: [], attachments: [],
+    repoPath: fwRepo, specOrigin: { path: 'specs/0084-auth.md' } };
+  const fwFramed = framing.framePrompt(fwTask);
+  assert.ok(fwFramed.trimEnd().endsWith('same commit/PR.'), 'the completion block ends the prompt');
+  assert.ok(fwFramed.includes('`status:` to `implemented`'), 'frontmatter status directive');
+  assert.ok(fwFramed.includes('node specs/generate-index.mjs'), 'names the repo index command');
+
+  // No spec origin: prompt is untouched.
+  const plain = framing.framePrompt({ id: 'c', prompt: 'Body', personas: [], addons: [], attachments: [] });
+  assert.ok(!plain.includes('# Spec completion'), 'ordinary tasks get no completion block');
+
+  // The runner auto-approves the declared index command's tool for a spec import.
+  const runner = require('../server/runner');
+  assert.ok(runner.effectiveAllowedTools(fwTask).split(',').includes('Bash(node:*)'), 'index tool auto-approved');
+  assert.ok(!runner.effectiveAllowedTools(plainTask).includes('Bash(node:*)'), 'no index tool without config');
+});
+
 test('runner: allowedTools normalizes and maps to --allowedTools', () => {
   const runner = require('../server/runner');
 

@@ -1025,6 +1025,7 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--a
 .specs-list-head { display: flex; align-items: center; gap: 8px; }
 .specs-list-head input[type="text"] { flex: 1; }
 .specs-select-all { flex: none; white-space: nowrap; }
+.specs-show-all { flex: none; white-space: nowrap; }
 .specs-file-list {
   display: flex; flex-direction: column; gap: 2px;
   height: 260px; overflow-y: auto;
@@ -1048,11 +1049,24 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--a
 .spec-row input[type="checkbox"] { margin-top: 2px; flex: none; }
 .spec-row-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .spec-row-title { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.spec-row-num { font-family: var(--mono); color: var(--text-dim); font-size: 11px; }
 .spec-row-meta {
-  font-size: 11px; color: var(--text-dim); display: flex; gap: 6px;
+  font-size: 11px; color: var(--text-dim); display: flex; align-items: center; gap: 6px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.spec-row-path { font-family: var(--mono); }
+.spec-row-path { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; }
+/* Frontmatter status chip on a spec row. Neutral by default; known lifecycle
+   states recolor via a per-status modifier so actionable vs retired reads fast. */
+.spec-status {
+  flex: none; font-size: 9.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .4px;
+  padding: 1px 6px; border-radius: 999px; border: 1px solid var(--border);
+  color: var(--text-dim); background: var(--bg-hover);
+}
+.spec-status-draft { color: var(--text-dim); }
+.spec-status-in-progress { color: var(--accent); border-color: var(--accent); }
+.spec-status-partial { color: var(--blue); border-color: var(--blue); }
+.spec-status-implemented { color: var(--green); border-color: var(--green); }
+.spec-status-superseded, .spec-status-reserved { color: var(--text-dim); opacity: .8; }
 .specs-preview-head { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); }
 .specs-preview-body {
   flex: 1; height: 260px; overflow-y: auto;

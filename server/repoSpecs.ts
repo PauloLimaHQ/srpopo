@@ -43,6 +43,73 @@ function walk(dir: string, depth: number, out: string[]): void {
   }
 }
 
+// Parse optional YAML frontmatter from the top of a spec file. Deliberately tiny
+// and dependency-free — it mirrors the platform's own generate-index.mjs parser:
+// a leading `---\n…\n---` block, `key: value` lines, surrounding quotes stripped.
+// Never throws: a file with no frontmatter (or a malformed block) just yields {}.
+function parseFrontmatter(content: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  const match = String(content || '').match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!match) return out;
+  for (const line of match[1].split(/\r?\n/)) {
+    const m = line.match(/^(\w+):\s*(.*)$/);
+    if (!m) continue;
+    const value = m[2].trim().replace(/^["'](.*)["']$/, '$1');
+    out[m[1]] = value;
+  }
+  return out;
+}
+
+// A repo's committed spec-framework config, read from specs/.spec-config.json (or
+// the .specs/ equivalent). Lets a repo declare how its index is regenerated and
+// which statuses count as actionable, instead of hardcoding either. Absent or
+// malformed config just yields {} — the caller falls back to built-in defaults.
+interface SpecConfig {
+  indexCommand?: string;
+  actionableStatuses?: string[];
+}
+
+// The default actionable statuses when a repo declares none: freshly-authored or
+// in-flight work. (Specs with no status at all are always treated as actionable —
+// that's handled by the UI, not this list.)
+const DEFAULT_ACTIONABLE_STATUSES = ['draft', 'in-progress', 'partial'];
+
+function readSpecConfig(repoPath: string): SpecConfig {
+  for (const root of SPEC_ROOTS) {
+    let raw: string;
+    try {
+      raw = fs.readFileSync(path.join(repoPath, root, '.spec-config.json'), 'utf8');
+    } catch {
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(raw);
+      const config: SpecConfig = {};
+      if (typeof parsed.indexCommand === 'string' && parsed.indexCommand.trim()) {
+        config.indexCommand = parsed.indexCommand.trim();
+      }
+      if (Array.isArray(parsed.actionableStatuses)) {
+        config.actionableStatuses = parsed.actionableStatuses
+          .filter((s: unknown) => typeof s === 'string' && s.trim())
+          .map((s: string) => s.trim());
+      }
+      return config;
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+// The auto-approvable `--allowedTools` pattern for a repo's index command, so a
+// spec-import run can regenerate the index headless (e.g. "node specs/gen.mjs" ->
+// "Bash(node:*)"). Returns null when no index command is configured.
+function indexCommandTool(config: SpecConfig): string | null {
+  if (!config.indexCommand) return null;
+  const bin = config.indexCommand.split(/\s+/)[0];
+  return bin ? `Bash(${bin}:*)` : null;
+}
+
 // Title-case a kebab/snake-case filename stem: "my-cool-idea" -> "My Cool Idea".
 function titleFromFilename(fileName: string): string {
   const stem = fileName.replace(SPEC_EXT_RE, '');
@@ -57,11 +124,26 @@ function titleFromContent(content: string): string | null {
   return match ? match[1].trim() : null;
 }
 
-// Derive a readable title for a spec file: its own first heading, else its
-// filename converted from kebab/snake case. `relOrAbsPath` only needs its
-// basename, so either a relative or absolute path works.
+// Derive a readable title for a spec file, in order of preference: its
+// frontmatter `title:`, then its own first `# Heading`, then its filename
+// converted from kebab/snake case. `relOrAbsPath` only needs its basename, so
+// either a relative or absolute path works.
 function deriveTitle(relOrAbsPath: string, content: string): string {
-  return titleFromContent(content) || titleFromFilename(path.basename(relOrAbsPath));
+  return (
+    parseFrontmatter(content).title ||
+    titleFromContent(content) ||
+    titleFromFilename(path.basename(relOrAbsPath))
+  );
+}
+
+// A spec's sequence number: its frontmatter `number:` if present, else a leading
+// numeric filename prefix (e.g. "0084-add-auth.md" -> "0084"). Undefined when the
+// file has neither, so plain-markdown repos keep their mtime sort.
+function deriveNumber(fileName: string, frontmatter: Record<string, string>): string | undefined {
+  const fromFm = frontmatter.number?.trim();
+  if (fromFm) return fromFm;
+  const match = fileName.match(/^(\d+)/);
+  return match ? match[1] : undefined;
 }
 
 // All markdown spec files under <repoPath>/specs/ and <repoPath>/.specs/,
@@ -81,14 +163,31 @@ function discoverSpecs(repoPath: string): RepoSpecFile[] {
     } catch {
       continue;
     }
-    out.push({
+    const frontmatter = parseFrontmatter(content);
+    const entry: RepoSpecFile = {
       path: path.relative(repoPath, abs).split(path.sep).join('/'),
       title: deriveTitle(abs, content),
       updatedAt: stat.mtime.toISOString(),
       size: stat.size,
-    });
+    };
+    const number = deriveNumber(path.basename(abs), frontmatter);
+    if (number) entry.number = number;
+    if (frontmatter.status) entry.status = frontmatter.status;
+    if (frontmatter.created) entry.created = frontmatter.created;
+    out.push(entry);
   }
-  out.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  // Frontmatter-driven repos read best ordered by spec number; plain-markdown
+  // repos (no numbers anywhere) keep the most-recently-modified-first sort.
+  if (out.some((s) => s.number)) {
+    out.sort((a, b) => {
+      const na = a.number ? parseInt(a.number, 10) : Infinity;
+      const nb = b.number ? parseInt(b.number, 10) : Infinity;
+      if (na !== nb) return na - nb;
+      return a.path.localeCompare(b.path);
+    });
+  } else {
+    out.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
   return out;
 }
 
@@ -119,4 +218,14 @@ function readSpec(repoPath: string, relPath: string): ReadResult {
   }
 }
 
-export { discoverSpecs, readSpec, deriveTitle, SPEC_ROOTS };
+export {
+  discoverSpecs,
+  readSpec,
+  deriveTitle,
+  parseFrontmatter,
+  readSpecConfig,
+  indexCommandTool,
+  DEFAULT_ACTIONABLE_STATUSES,
+  SPEC_ROOTS,
+};
+export type { SpecConfig };

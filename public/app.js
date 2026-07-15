@@ -2384,6 +2384,18 @@
   let specsFiles = []; // last GET /api/repos/:id/specs result for the current repo
   let specsSelected = new Set(); // checked paths, staged for import
   let specsPreviewCache = new Map(); // "repoId:path" -> file content
+  // The statuses the list defaults to showing (repo-declared, else built-in);
+  // `specsShowAll` reveals the retired/shipped ones behind the "Show all" toggle.
+  let specsActionableStatuses = ['draft', 'in-progress', 'partial'];
+  let specsShowAll = false;
+
+  // A spec is actionable when its status is in the actionable set, or when it has
+  // no status at all (plain-markdown specs are always shown).
+  const specIsActionable = (f) => !f.status || specsActionableStatuses.includes(f.status);
+  // Any status present at all means this is a frontmatter-driven repo, so the
+  // status chips and the "Show all" toggle are worth surfacing.
+  const specsHaveStatus = () => specsFiles.some((f) => f.status);
+  const statusSlug = (status) => String(status).toLowerCase().replace(/[^a-z0-9]+/g, '-');
 
   // Coarse "N time-unit(s) ago" label for a spec's mtime — good enough for a
   // browse list; no need for anything fancier here.
@@ -2418,8 +2430,11 @@
 
   function filteredSpecFiles() {
     const q = specsFilterQuery();
-    if (!q) return specsFiles;
-    return specsFiles.filter((f) => f.title.toLowerCase().includes(q) || f.path.toLowerCase().includes(q));
+    return specsFiles.filter((f) => {
+      if (!specsShowAll && !specIsActionable(f)) return false;
+      if (!q) return true;
+      return f.title.toLowerCase().includes(q) || f.path.toLowerCase().includes(q);
+    });
   }
 
   function updateSpecsSelectAllState() {
@@ -2432,7 +2447,16 @@
     master.indeterminate = !allChecked && someChecked;
   }
 
+  // The "Show all" toggle only makes sense for a frontmatter-driven repo (one
+  // with statuses); a plain-markdown repo hides it and behaves exactly as before.
+  function updateSpecsShowAllToggle() {
+    const toggle = $('#specs-show-all-field');
+    if (!toggle) return;
+    toggle.classList.toggle('hidden', !specsHaveStatus());
+  }
+
   function renderSpecsList() {
+    updateSpecsShowAllToggle();
     const list = $('#specs-list');
     if (!specsFiles.length) {
       list.innerHTML = '<div class="specs-empty">No specs found under specs/ or .specs/ in this repo.</div>';
@@ -2441,7 +2465,10 @@
     }
     const files = filteredSpecFiles();
     if (!files.length) {
-      list.innerHTML = '<div class="specs-empty">No specs match your filter.</div>';
+      const msg = specsFilterQuery()
+        ? 'No specs match your filter.'
+        : 'No actionable specs. Turn on “Show all” to see implemented, superseded and reserved specs.';
+      list.innerHTML = `<div class="specs-empty">${esc(msg)}</div>`;
       updateSpecsSelectAllState();
       return;
     }
@@ -2454,14 +2481,20 @@
     let html = '';
     for (const [root, items] of groups) {
       html += `<div class="specs-group-label">${esc(root)}/</div>`;
-      html += items.map((f) => `
+      html += items.map((f) => {
+        const num = f.number ? `<span class="spec-row-num">${esc(f.number)}</span> ` : '';
+        const chip = f.status
+          ? `<span class="spec-status spec-status-${esc(statusSlug(f.status))}">${esc(f.status)}</span>`
+          : '';
+        return `
         <div class="spec-row${specsSelected.has(f.path) ? ' picked' : ''}" data-path="${esc(f.path)}">
           <input type="checkbox" class="spec-row-check" ${specsSelected.has(f.path) ? 'checked' : ''} />
           <div class="spec-row-body">
-            <span class="spec-row-title">${esc(f.title)}</span>
-            <span class="spec-row-meta"><span class="spec-row-path">${esc(f.path)}</span> · ${esc(relativeTime(f.updatedAt))}</span>
+            <span class="spec-row-title">${num}${esc(f.title)}</span>
+            <span class="spec-row-meta">${chip}<span class="spec-row-path">${esc(f.path)}</span> · ${esc(relativeTime(f.updatedAt))}</span>
           </div>
-        </div>`).join('');
+        </div>`;
+      }).join('');
     }
     list.innerHTML = html;
     updateSpecsSelectAllState();
@@ -2502,8 +2535,9 @@
     if (!repoId) { specsFiles = []; renderSpecsList(); return; }
     list.innerHTML = '<div class="muted specs-loading">Loading specs…</div>';
     try {
-      const { specs } = await api('GET', `/api/repos/${repoId}/specs`);
+      const { specs, actionableStatuses } = await api('GET', `/api/repos/${repoId}/specs`);
       specsFiles = specs || [];
+      if (Array.isArray(actionableStatuses) && actionableStatuses.length) specsActionableStatuses = actionableStatuses;
     } catch (e) {
       specsFiles = [];
       list.innerHTML = `<div class="muted">${esc(e.message)}</div>`;
@@ -2522,6 +2556,8 @@
     else if (last.repoId && state.repos.some((r) => r.id === last.repoId)) $('#specs-repo').value = last.repoId;
     specsSelected = new Set();
     specsPreviewCache = new Map();
+    specsShowAll = false;
+    if ($('#specs-show-all')) $('#specs-show-all').checked = false;
     resetSpecsPreview();
     $('#modal-specs').classList.remove('hidden');
     loadSpecsList();
@@ -2559,6 +2595,10 @@
     loadSpecsList();
   });
   $('#specs-filter').addEventListener('input', renderSpecsList);
+  $('#specs-show-all').addEventListener('change', () => {
+    specsShowAll = $('#specs-show-all').checked;
+    renderSpecsList();
+  });
   $('#specs-select-all').addEventListener('change', () => {
     const checked = $('#specs-select-all').checked;
     for (const f of filteredSpecFiles()) {
