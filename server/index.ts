@@ -349,6 +349,7 @@ function spawnGroomedTasks(grooming: Grooming, specs: GroomSpec[]): string[] {
       repoName: grooming.repoName,
       repoPath: grooming.repoPath,
       addons: [],
+      prDraft: false,
       personas: [],
       attachments: [],
       useWorktree: true,
@@ -990,6 +991,7 @@ app.post('/api/repos/:id/specs/import', (req: Request, res: Response) => {
       repoName: repo.name,
       repoPath: repo.path,
       addons: [],
+      prDraft: false,
       personas: [],
       attachments: [],
       useWorktree,
@@ -1032,11 +1034,13 @@ app.patch('/api/tasks/:id', (req: Request, res: Response) => {
   if (!task) return err(res, 404, 'Task not found');
   if (runner.isRunning(task.id)) return err(res, 409, 'Task is running; stop it first');
 
-  const allowed = ['title', 'prompt', 'model', 'permissionMode', 'allowedTools', 'promptPermissions', 'useWorktree', 'branchName', 'baseBranch', 'status', 'addons', 'personas'] as const;
+  const allowed = ['title', 'prompt', 'model', 'permissionMode', 'allowedTools', 'promptPermissions', 'useWorktree', 'branchName', 'baseBranch', 'status', 'addons', 'prDraft', 'personas'] as const;
   for (const key of allowed) {
     if (key in req.body) {
       if (key === 'addons') {
         task.addons = addons.sanitize(req.body.addons);
+      } else if (key === 'prDraft') {
+        task.prDraft = !!req.body.prDraft;
       } else if (key === 'allowedTools') {
         task.allowedTools = runner.normalizeAllowedTools(req.body.allowedTools);
       } else if (key === 'promptPermissions') {

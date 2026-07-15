@@ -768,7 +768,10 @@
     if (t.groomingId) chips.push(`<span class="chip grooming-chip" title="Spawned by a grooming">${icon('lightbulb')} groomed</span>`);
     if (t.resolvingConflicts) chips.push(`<span class="chip conflict-chip" title="Auto-resolving merge conflicts with main">${icon('git-branch')} Resolving Conflicts</span>`);
     if (t.useWorktree) chips.push(`<span class="chip worktree" title="${esc(t.worktreePath || 'worktree on dispatch')}">${icon('git-branch')} ${esc(t.branch || t.branchName || 'worktree')}</span>`);
-    if (t.addons && t.addons.includes('pull_request')) chips.push(`<span class="chip addon-chip" title="Opens a pull request when finished">${icon('git-pull-request')} PR</span>`);
+    if (t.addons && t.addons.includes('pull_request')) {
+      const draft = !!t.prDraft;
+      chips.push(`<span class="chip addon-chip" title="${draft ? 'Opens a draft pull request when finished' : 'Opens a pull request when finished'}">${icon('git-pull-request')} PR${draft ? ' (draft)' : ''}</span>`);
+    }
     if (t.addons && t.addons.includes('code_review')) chips.push(`<span class="chip addon-chip" title="Self code-reviews and fixes issues before finishing">${icon('search')} review</span>`);
     (t.personas || []).forEach((pid) => {
       const p = state.personas.find((x) => x.id === pid);
@@ -1766,21 +1769,55 @@
 
   // Optional task behaviors — checkboxes derived from the /api/addons catalog.
   // These render below the worktree toggle inside the "Extra behavior" section.
-  function renderAddonOptions(selected = []) {
+  // The `pull_request` addon gets an extra sibling control (like the branch-name
+  // field under the worktree toggle) so both PR modes — ready for review or
+  // draft — are one click away instead of needing a second setting elsewhere.
+  function renderAddonOptions(selected = [], prDraft = false) {
     const chosen = new Set(selected);
-    $('#task-addon-list').innerHTML = state.addons.map((a) => `
+    $('#task-addon-list').innerHTML = state.addons.map((a) => {
+      const checked = chosen.has(a.id);
+      const prMode = a.id !== 'pull_request' ? '' : `
+        <div class="pr-mode ${checked ? '' : 'pr-mode-disabled'}" role="radiogroup" aria-label="Pull request mode">
+          <label class="pr-mode-option">
+            <input type="radio" name="task-pr-mode" value="ready" ${prDraft ? '' : 'checked'} ${checked ? '' : 'disabled'} />
+            Ready for review
+          </label>
+          <label class="pr-mode-option">
+            <input type="radio" name="task-pr-mode" value="draft" ${prDraft ? 'checked' : ''} ${checked ? '' : 'disabled'} />
+            Draft
+          </label>
+        </div>`;
+      return `
       <label class="check addon">
-        <input type="checkbox" data-addon="${esc(a.id)}" ${chosen.has(a.id) ? 'checked' : ''} />
+        <input type="checkbox" data-addon="${esc(a.id)}" ${checked ? 'checked' : ''} />
         <span class="addon-text">
           <span class="addon-label">${esc(a.label)}</span>
           ${a.hint ? `<span class="addon-hint">${esc(a.hint)}</span>` : ''}
         </span>
-      </label>`).join('');
+      </label>${prMode}`;
+    }).join('');
+    // Enable/disable the ready-vs-draft radios as the PR checkbox is toggled —
+    // the choice only means something once "Create a Pull Request" is checked.
+    const prCheckbox = document.querySelector('#task-addon-list input[data-addon="pull_request"]');
+    const prModeEl = document.querySelector('#task-addon-list .pr-mode');
+    if (prCheckbox && prModeEl) {
+      prCheckbox.addEventListener('change', () => {
+        prModeEl.classList.toggle('pr-mode-disabled', !prCheckbox.checked);
+        prModeEl.querySelectorAll('input').forEach((r) => { r.disabled = !prCheckbox.checked; });
+      });
+    }
   }
 
   function selectedAddons() {
     return [...document.querySelectorAll('#task-addons input[data-addon]:checked')]
       .map((el) => el.dataset.addon);
+  }
+
+  // Whether the "draft" radio is picked for the pull_request addon's PR mode.
+  // Meaningless (and ignored server-side) unless that addon is also selected.
+  function selectedPrDraft() {
+    const el = document.querySelector('input[name="task-pr-mode"][value="draft"]');
+    return !!(el && el.checked);
   }
 
   // The chosen base branch, but only when it differs from the repo's current
@@ -1956,6 +1993,7 @@
         promptPermissions: fields.promptPermissions,
         useWorktree: fields.useWorktree,
         addons: fields.addons,
+        prDraft: fields.prDraft,
         personas: fields.personas,
         repoId,
       }));
@@ -2056,7 +2094,7 @@
     $('#task-branch').value = task ? (task.branchName || '') : '';
     // The branch is fixed once the worktree is materialized.
     $('#task-branch').disabled = !!(task && task.worktreePath);
-    renderAddonOptions(task ? (task.addons || []) : (last.addons || []));
+    renderAddonOptions(task ? (task.addons || []) : (last.addons || []), task ? !!task.prDraft : !!last.prDraft);
     initPersonaPicker(task ? (task.personas || []) : (last.personas || []));
     $('#task-repo-field').classList.toggle('hidden', !!task);
     if (task) $('#task-repo').value = task.repoId;
@@ -2095,6 +2133,7 @@
       // current branch; otherwise keep the historical "cut from HEAD" default.
       baseBranch: selectedBaseBranch(),
       addons: selectedAddons(),
+      prDraft: selectedPrDraft(),
       personas: selectedPersonas(),
     };
     try {

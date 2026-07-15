@@ -49,6 +49,21 @@ test('addons: pull_request instruction only self-assigns when Settings > assignP
   }
 });
 
+test('addons: instructionsFor swaps in the draft-PR wording only when prDraft is set', () => {
+  const addons = require('../server/addons');
+
+  const ready = addons.instructionsFor(['pull_request'], { prDraft: false });
+  assert.ok(ready.includes('gh pr create'), 'default instruction opens a normal PR');
+  assert.ok(!ready.includes('--draft'), 'no --draft flag when prDraft is off');
+
+  const draft = addons.instructionsFor(['pull_request'], { prDraft: true });
+  assert.ok(draft.includes('--draft'), 'draft instruction opens the PR with --draft');
+
+  // Unaffected add-ons ignore the option entirely.
+  const other = addons.instructionsFor(['code_review'], { prDraft: true });
+  assert.ok(!other.includes('--draft'), 'prDraft has no effect on other add-ons');
+});
+
 test('server modules load without throwing', () => {
   assert.doesNotThrow(() => {
     require('../server/git');

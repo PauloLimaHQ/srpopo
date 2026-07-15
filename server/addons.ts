@@ -23,6 +23,10 @@ interface Addon {
   label: string;
   hint: string;
   instruction: string;
+  // Alternate instruction used instead of `instruction` when the caller asks
+  // for the draft variant (currently only `pull_request` sets this — see
+  // `instructionsFor`'s `prDraft` option).
+  draftInstruction?: string;
   allow?: string[];
 }
 
@@ -37,6 +41,15 @@ const ADDONS: Addon[] = [
       '- Push the branch to the remote.',
       '- Open a pull request with the `gh` CLI (`gh pr create`) using a descriptive',
       '  title and a body that summarizes what changed and why.',
+      '- Report the pull request URL at the end of your response.',
+    ].join('\n'),
+    draftInstruction: [
+      'When you have finished the task, commit your changes and open a pull request:',
+      '- Stage and commit all changes with a clear, conventional commit message.',
+      '- Push the branch to the remote.',
+      '- Open the pull request as a **draft** (`gh pr create --draft`) using a',
+      '  descriptive title and a body that summarizes what changed and why — it is',
+      '  not ready for review yet, so leave it in draft rather than marking it ready.',
       '- Report the pull request URL at the end of your response.',
     ].join('\n'),
     // Opening a PR needs git commit/push and the `gh` CLI auto-approved.
@@ -98,13 +111,15 @@ function pullRequestInstruction(base: string): string {
 }
 
 // Build the block of extra instructions appended to a prompt for the given ids.
+// `prDraft` swaps the `pull_request` add-on to its draft-PR wording when set.
 // Returns '' when nothing is selected so the prompt is left untouched.
-function instructionsFor(ids: string[] = []): string {
+function instructionsFor(ids: string[] = [], opts: { prDraft?: boolean } = {}): string {
   const chosen = sanitize(ids).map((i) => byId.get(i)!);
   if (!chosen.length) return '';
   const blocks = chosen.map((a) => {
-    const instruction = a.id === 'pull_request' ? pullRequestInstruction(a.instruction) : a.instruction;
-    return `## ${a.label}\n${instruction}`;
+    if (a.id !== 'pull_request') return `## ${a.label}\n${a.instruction}`;
+    const base = opts.prDraft && a.draftInstruction ? a.draftInstruction : a.instruction;
+    return `## ${a.label}\n${pullRequestInstruction(base)}`;
   });
   return '\n\n---\n\n# Additional instructions\n\n' + blocks.join('\n\n');
 }

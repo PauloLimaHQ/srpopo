@@ -95,6 +95,7 @@ const TOOL_DEFS = [
         promptPermissions: { type: 'boolean', description: 'Ask before running unapproved tools (default true).' },
         allowedTools: { type: 'string', description: 'Comma/newline list of auto-approved tool patterns.' },
         addons: { type: 'array', items: { type: 'string' }, description: 'Add-on ids (see the board).' },
+        prDraft: { type: 'boolean', description: 'When the "pull_request" addon is selected, open the PR as a draft instead of ready for review.' },
         personas: { type: 'array', items: { type: 'string' }, description: 'Persona ids (see the board).' },
       },
       required: ['repoId', 'title', 'prompt'],

@@ -60,7 +60,8 @@ function specCompletionBlock(task: Task): string {
 
 // Build the full stdin prompt for a fresh (non-resume) dispatch of `task`.
 function framePrompt(task: Task): string {
-  let framed = personas.preambleFor(task.personas) + task.prompt + addons.instructionsFor(task.addons);
+  let framed = personas.preambleFor(task.personas) + task.prompt +
+    addons.instructionsFor(task.addons, { prDraft: task.prDraft });
   // List any attached files by absolute path so the session can Read them.
   if (task.attachments?.length) {
     const paths = attachments.listPaths(task.id, task.attachments.map((a) => a.name));
