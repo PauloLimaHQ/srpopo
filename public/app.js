@@ -948,6 +948,7 @@
     // and the cached value from a drawer visit can both be up to a minute stale,
     // and this is the one moment a stale "still open" would cause a needless
     // re-merge attempt — so the prompt reflects the PR's real state right now.
+    let hasOpenPr = false;
     if (t.branch) {
       let res;
       try {
@@ -955,6 +956,7 @@
         state.prByTask.set(t.id, res);
       } catch { res = null; }
       if (res && res.pr && res.pr.state !== 'merged') {
+        hasOpenPr = res.pr.state === 'open';
         options.push({
           id: 'merge-pr',
           label: `Merge PR #${res.pr.number}`,
@@ -963,14 +965,18 @@
         });
       }
     }
-    // Direct, PR-less merge — an alternative to merge-pr (same 'merge' group,
-    // so picking one clears the other — checking both would merge the branch
-    // in twice) offered only while there's still a worktree to wrap up, so a
-    // task that already finished its merge/branch story elsewhere doesn't
-    // gain a new confirmation dialog it never had before. Only shown once we
-    // actually know the target branch — a guessed default would promise a
-    // merge that never happens. Warned since it bypasses code review and CI.
-    if (t.worktreePath && t.branch) {
+    // Direct, PR-less merge — the fallback when no *open* PR was identified
+    // for the task: while a PR is open, landing the branch is the PR's job
+    // (merge it or close it there), so offering a local merge alongside would
+    // just invite bypassing the review that's already underway. A closed
+    // (abandoned) PR doesn't suppress it — a local merge is then the only way
+    // left to land the branch. Offered only while there's still a worktree to
+    // wrap up, so a task that already finished its merge/branch story
+    // elsewhere doesn't gain a new confirmation dialog it never had before.
+    // Only shown once we actually know the target branch — a guessed default
+    // would promise a merge that never happens. Warned since it bypasses code
+    // review and CI.
+    if (!hasOpenPr && t.worktreePath && t.branch) {
       let base = t.baseBranch || state.repoBranchByRepo.get(t.repoId);
       if (base === undefined || base === 'loading') {
         try {
@@ -1017,7 +1023,9 @@
 
   // merge-pr and merge-direct share a 'group' — they're alternative ways to
   // land the same branch, so checking one clears the other rather than
-  // letting both run (which would merge the branch in twice).
+  // letting both run (which would merge the branch in twice). They still
+  // co-appear for a closed-but-unmerged PR; while a PR is open moveToDone
+  // suppresses merge-direct entirely.
   $('#done-modal-options').addEventListener('change', (e) => {
     const el = e.target;
     if (!el.matches('input[data-done-group]') || !el.checked) return;
