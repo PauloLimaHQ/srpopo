@@ -1589,6 +1589,26 @@ test('autonomous review: the per-task round cap stops an endless fix loop and fo
   }
 });
 
+test('index: GET /api/health probes every agent backend, not just Claude', async () => {
+  const index = require('../server/index');
+  const prevClaude = process.env.CLAUDE_BIN;
+  const prevCodex = process.env.CODEX_BIN;
+  const { server, port } = await index.start(0);
+  try {
+    const body = await (await fetch(`http://127.0.0.1:${port}/api/health`)).json();
+    // Both backends are reported (null when a CLI isn't installed on this machine).
+    assert.ok('claude' in body, 'the claude backend is reported');
+    assert.ok('codex' in body, 'the codex backend is reported');
+    // ok means "at least one backend is available" — a Codex-only install is healthy.
+    assert.strictEqual(body.ok, !!(body.claude || body.codex), 'ok is true iff some agent CLI answered');
+    if (!body.ok) assert.match(body.error, /No agent CLI found/, 'the error names no agent, not just claude');
+  } finally {
+    await new Promise<void>((r) => server.close(() => r()));
+    if (prevClaude === undefined) delete process.env.CLAUDE_BIN; else process.env.CLAUDE_BIN = prevClaude;
+    if (prevCodex === undefined) delete process.env.CODEX_BIN; else process.env.CODEX_BIN = prevCodex;
+  }
+});
+
 test('runner: adapterFor selects the backend by task.agent and defaults to claude', () => {
   const runner = require('../server/runner');
   assert.strictEqual(runner.adapterFor('claude').id, 'claude', 'claude selects the Claude adapter');

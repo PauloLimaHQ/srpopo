@@ -436,7 +436,7 @@ app.whenReady().then(async () => {
     applicationVersion: app.getVersion(),
     version: app.getVersion(),
     copyright: 'Copyright © 2026 Paulo Lima',
-    credits: 'Local orchestrator hub for Claude Code — runs entirely on your machine, on your Claude subscription login.',
+    credits: 'Local orchestrator hub for coding agents (Claude Code · OpenAI Codex) — runs entirely on your machine, on your subscription login.',
     iconPath: path.join(appRoot(), 'build', 'icon.png'),
   });
   buildAppMenu();

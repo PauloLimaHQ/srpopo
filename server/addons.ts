@@ -7,7 +7,8 @@
  *
  * To add a new behavior later, just append an entry below — nothing else needs
  * to change. `instruction` is prompt text appended to the task prompt when the
- * add-on is selected; keep it a clear, standalone directive to Claude.
+ * add-on is selected; keep it a clear, standalone directive to the agent (it runs on
+ * whichever backend the task selected, so don't assume Claude-specific behavior).
  *
  * `allow` is an optional list of `--allowedTools` patterns the behavior needs to
  * actually run headless. Selecting the add-on auto-approves exactly these tools

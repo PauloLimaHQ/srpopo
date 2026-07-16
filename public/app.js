@@ -2040,7 +2040,7 @@
     const box = $('#task-persona-chips');
     const ids = selectedPersonas();
     if (!ids.length) {
-      box.innerHTML = '<span class="persona-empty">No persona — Claude works as itself.</span>';
+      box.innerHTML = '<span class="persona-empty">No persona — the agent works as itself.</span>';
       return;
     }
     box.innerHTML = ids.map((id) => {
@@ -4066,12 +4066,17 @@
     try {
       const h = await api('GET', '/api/health');
       const chip = $('#health');
-      chip.textContent = h.ok ? `● ${h.claude}` : '● claude CLI not found';
+      // Either backend is enough to run a task, so list whichever are installed.
+      const agents = [h.claude, h.codex].filter(Boolean);
+      chip.textContent = h.ok ? `● ${agents.join(' · ')}` : '● no agent CLI found';
+      chip.title = h.ok
+        ? `Agent CLIs found:\n${agents.join('\n')}`
+        : 'No agent CLI found — install Claude Code and/or OpenAI Codex';
       chip.classList.add(h.ok ? 'ok' : 'bad');
       const about = $('#setting-about-version');
       if (about && h.version) {
         about.textContent = `Sr. Popo v${h.version} · Node ${h.node}` +
-          (h.ok ? ` · ${h.claude}` : '');
+          (agents.length ? ` · ${agents.join(' · ')}` : '');
       }
     } catch { /* server down; toast already shown */ }
 

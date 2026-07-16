@@ -8,6 +8,7 @@ import * as groomer from './groomer';
 import * as permissions from './permissions';
 import * as usage from './usage';
 import * as claude from './agents/claude';
+import * as codex from './agents/codex';
 import { ClaudeAdapter } from './agents/claude';
 import { CodexAdapter } from './agents/codex';
 import type { AgentAdapter, NormalizedResult } from './agents/types';
@@ -414,3 +415,6 @@ export const {
   DEFAULT_ALLOWED_TOOLS,
   CLAUDE_BIN,
 } = claude;
+
+// The Codex binary, for the health probe (GET /api/health checks every backend).
+export const { CODEX_BIN } = codex;

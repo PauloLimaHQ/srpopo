@@ -4,14 +4,15 @@ Guidance for Claude Code (and any AI agent) working in this repository.
 
 ## What Sr. Popo is
 
-Sr. Popo is a **local orchestrator hub for Claude Code tasks**. You queue prompts
+Sr. Popo is a **local orchestrator hub for coding-agent tasks**. You queue prompts
 against your own git repositories on a Kanban board, dispatch them, and watch each
-`claude` CLI session stream live — tool calls, subagents, cost, and the final diff —
-from one place. It runs entirely on the user's machine and drives their existing
-Claude **subscription** login (never an API key).
+agent session stream live — tool calls, subagents, cost, and the final diff — from one
+place. Each task picks its backend: **Claude Code** (the default) or **OpenAI Codex**
+(see "Agent backends"). It runs entirely on the user's machine and drives their
+existing **subscription** login (never an API key).
 
-The whole point is to let a developer run **many Claude Code sessions in parallel**
-and review the results calmly, instead of babysitting one terminal at a time.
+The whole point is to let a developer run **many agent sessions in parallel** and
+review the results calmly, instead of babysitting one terminal at a time.
 
 Ship changes that keep it: **local-first, dependency-light, and obviously safe.**
 

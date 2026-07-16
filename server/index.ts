@@ -416,15 +416,30 @@ function runGrooming(grooming: Grooming, resumePrompt?: string): Grooming {
 
 // ---------- health ----------
 
-app.get('/api/health', (req: Request, res: Response) => {
-  execFile(runner.CLAUDE_BIN, ['--version'], { timeout: 10000 }, (e, stdout) => {
-    res.json({
-      ok: !e,
-      claude: e ? null : stdout.trim(),
-      error: e ? `claude CLI not found (${runner.CLAUDE_BIN})` : null,
-      node: process.version,
-      version: appVersion,
-    });
+// Probe one agent CLI for its version; resolves to null when it isn't installed
+// (or doesn't answer), so a missing backend is a fact rather than an error.
+function probeAgentBin(bin: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile(bin, ['--version'], { timeout: 10000 }, (e, stdout) => resolve(e ? null : stdout.trim()));
+  });
+}
+
+// Health reports every agent backend, not just Claude: either CLI is enough to
+// run a task, so `ok` means "at least one backend is available" — a Codex-only
+// install is healthy.
+app.get('/api/health', async (req: Request, res: Response) => {
+  const [claudeVersion, codexVersion] = await Promise.all([
+    probeAgentBin(runner.CLAUDE_BIN),
+    probeAgentBin(runner.CODEX_BIN),
+  ]);
+  const ok = !!(claudeVersion || codexVersion);
+  res.json({
+    ok,
+    claude: claudeVersion,
+    codex: codexVersion,
+    error: ok ? null : `No agent CLI found (${runner.CLAUDE_BIN}, ${runner.CODEX_BIN})`,
+    node: process.version,
+    version: appVersion,
   });
 });
 
