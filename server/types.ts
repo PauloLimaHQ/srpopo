@@ -497,17 +497,17 @@ export interface LinearIssue {
   comments: LinearIssueComment[];
 }
 
-// One markdown spec file discovered by repoSpecs.discoverSpecs, under a repo's
-// specs/ or .specs/ directory.
+// One markdown spec file discovered by repoSpecs.discoverSpecs, sitting
+// directly in a repo's specs/ or .specs/ directory.
 export interface RepoSpecFile {
   path: string;
   title: string;
   updatedAt: string;
   size: number;
-  // Optional metadata parsed from a spec file's YAML frontmatter (present only
-  // when the repo adopts the frontmatter-driven convention). Kept as strings so
-  // a zero-padded number like "0084" survives round-tripping.
-  number?: string;
-  status?: string;
-  created?: string;
+  // Metadata from the file's YAML frontmatter. Always present: discovery only
+  // lists files that carry all of it (repoSpecs.REQUIRED_FRONTMATTER). Kept as
+  // strings so a zero-padded number like "0084" survives round-tripping.
+  number: string;
+  status: string;
+  created: string;
 }

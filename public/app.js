@@ -2723,12 +2723,12 @@
   let specsActionableStatuses = ['draft', 'in-progress', 'partial'];
   let specsShowAll = false;
 
-  // A spec is actionable when its status is in the actionable set, or when it has
-  // no status at all (plain-markdown specs are always shown).
-  const specIsActionable = (f) => !f.status || specsActionableStatuses.includes(f.status);
-  // Any status present at all means this is a frontmatter-driven repo, so the
-  // status chips and the "Show all" toggle are worth surfacing.
-  const specsHaveStatus = () => specsFiles.some((f) => f.status);
+  // A spec is actionable when its status is in the actionable set. Every listed
+  // spec carries a status — discovery only lists files with full frontmatter.
+  const specIsActionable = (f) => specsActionableStatuses.includes(f.status);
+  // The status chips and the "Show all" toggle only mean something once the repo
+  // actually has specs to show.
+  const specsHaveStatus = () => specsFiles.length > 0;
   const statusSlug = (status) => String(status).toLowerCase().replace(/[^a-z0-9]+/g, '-');
 
   // Coarse "N time-unit(s) ago" label for a spec's mtime — good enough for a

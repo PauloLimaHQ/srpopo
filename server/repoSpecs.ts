@@ -1,8 +1,10 @@
 /*
  * Repository Specs — discover and read the markdown spec files a repo already
- * has committed under a top-level specs/ or .specs/ directory, so one or more
- * can be imported straight onto the board as a task (see server/plugins.ts's
- * repo-specs entry). Small, self-contained, and non-throwing in the same mold
+ * has committed directly in a top-level specs/ or .specs/ directory, so one or
+ * more can be imported straight onto the board as a task (see server/plugins.ts's
+ * repo-specs entry). Discovery is deliberately strict — spec-root files only, and
+ * only those carrying the full frontmatter — so the picker lists dispatchable
+ * specs and nothing else. Small, self-contained, and non-throwing in the same mold
  * as linear.ts: a missing or unreadable directory just yields no results
  * rather than an error, and every export resolves rather than throws.
  */
@@ -12,20 +14,18 @@ import type { RepoSpecFile } from './types';
 
 // Both roots are scanned; either or both may be absent.
 const SPEC_ROOTS = ['specs', '.specs'];
-// Bounds the recursive walk so a pathological tree (or a symlink loop) can't
-// hang discovery — a spec dir with per-idea subfolders (`.specs/<slug>/spec.md`)
-// only needs a couple of levels.
-const MAX_DEPTH = 4;
 const SPEC_EXT_RE = /\.(md|markdown)$/i;
-// Skips node_modules and any dot-directory (.git, .github, …) while walking
-// *into* subdirectories — the spec root itself (.specs) is exempt since we're
-// handed its path directly, not discovering it by name.
-const SKIP_DIR_RE = /^(node_modules|\..*)$/;
+// The frontmatter every listed spec must carry. A spec root also holds prose a
+// spec framework needs but the board can't dispatch — a generated README index,
+// an adr/ or research/ subfolder, scratch notes — so discovery only surfaces
+// files that declare themselves a spec by carrying all four fields.
+const REQUIRED_FRONTMATTER = ['number', 'title', 'status', 'created'];
 
-// Recursively collect markdown files under `dir` (bounded by MAX_DEPTH) into
-// `out`. Never throws — a missing/unreadable directory just contributes nothing.
-function walk(dir: string, depth: number, out: string[]): void {
-  if (depth > MAX_DEPTH) return;
+// The markdown files sitting directly in `dir`. Subdirectories are not
+// descended into: a spec is a file in the spec root, and everything nested
+// below it is supporting material. Never throws — a missing/unreadable
+// directory just contributes nothing.
+function listSpecFiles(dir: string, out: string[]): void {
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -33,13 +33,7 @@ function walk(dir: string, depth: number, out: string[]): void {
     return;
   }
   for (const entry of entries) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      if (SKIP_DIR_RE.test(entry.name)) continue;
-      walk(full, depth + 1, out);
-    } else if (entry.isFile() && SPEC_EXT_RE.test(entry.name)) {
-      out.push(full);
-    }
+    if (entry.isFile() && SPEC_EXT_RE.test(entry.name)) out.push(path.join(dir, entry.name));
   }
 }
 
@@ -136,22 +130,14 @@ function deriveTitle(relOrAbsPath: string, content: string): string {
   );
 }
 
-// A spec's sequence number: its frontmatter `number:` if present, else a leading
-// numeric filename prefix (e.g. "0084-add-auth.md" -> "0084"). Undefined when the
-// file has neither, so plain-markdown repos keep their mtime sort.
-function deriveNumber(fileName: string, frontmatter: Record<string, string>): string | undefined {
-  const fromFm = frontmatter.number?.trim();
-  if (fromFm) return fromFm;
-  const match = fileName.match(/^(\d+)/);
-  return match ? match[1] : undefined;
-}
-
-// All markdown spec files under <repoPath>/specs/ and <repoPath>/.specs/,
-// sorted most-recently-modified first. Never throws — an absent or unreadable
-// root just contributes no entries for that root.
+// The markdown spec files sitting directly in <repoPath>/specs/ and
+// <repoPath>/.specs/, sorted ascending by spec number. Only files carrying the
+// full REQUIRED_FRONTMATTER are returned — anything else in the root is prose
+// the board has no way to dispatch, so it never reaches the picker. Never
+// throws — an absent or unreadable root just contributes no entries.
 function discoverSpecs(repoPath: string): RepoSpecFile[] {
   const files: string[] = [];
-  for (const root of SPEC_ROOTS) walk(path.join(repoPath, root), 0, files);
+  for (const root of SPEC_ROOTS) listSpecFiles(path.join(repoPath, root), files);
 
   const out: RepoSpecFile[] = [];
   for (const abs of files) {
@@ -164,30 +150,26 @@ function discoverSpecs(repoPath: string): RepoSpecFile[] {
       continue;
     }
     const frontmatter = parseFrontmatter(content);
-    const entry: RepoSpecFile = {
+    if (REQUIRED_FRONTMATTER.some((field) => !frontmatter[field])) continue;
+    out.push({
       path: path.relative(repoPath, abs).split(path.sep).join('/'),
       title: deriveTitle(abs, content),
+      number: frontmatter.number,
+      status: frontmatter.status,
+      created: frontmatter.created,
       updatedAt: stat.mtime.toISOString(),
       size: stat.size,
-    };
-    const number = deriveNumber(path.basename(abs), frontmatter);
-    if (number) entry.number = number;
-    if (frontmatter.status) entry.status = frontmatter.status;
-    if (frontmatter.created) entry.created = frontmatter.created;
-    out.push(entry);
-  }
-  // Frontmatter-driven repos read best ordered by spec number; plain-markdown
-  // repos (no numbers anywhere) keep the most-recently-modified-first sort.
-  if (out.some((s) => s.number)) {
-    out.sort((a, b) => {
-      const na = a.number ? parseInt(a.number, 10) : Infinity;
-      const nb = b.number ? parseInt(b.number, 10) : Infinity;
-      if (na !== nb) return na - nb;
-      return a.path.localeCompare(b.path);
     });
-  } else {
-    out.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
+  // A non-numeric `number:` sorts last rather than poisoning the comparison.
+  out.sort((a, b) => {
+    const na = parseInt(a.number, 10);
+    const nb = parseInt(b.number, 10);
+    const sa = Number.isNaN(na) ? Infinity : na;
+    const sb = Number.isNaN(nb) ? Infinity : nb;
+    if (sa !== sb) return sa - sb;
+    return a.path.localeCompare(b.path);
+  });
   return out;
 }
 

@@ -588,41 +588,41 @@ test('linear: parseIssue reads both the issue and issues.nodes shapes; briefFrom
   assert.match(brief, /Repro here/, 'comment body is included');
 });
 
-test('repoSpecs: discoverSpecs finds .md files under specs/ and .specs/, ignores everything else', () => {
+// A spec-root file with the full required frontmatter, which is the only shape
+// discoverSpecs lists.
+const specFile = (number: string, title: string) =>
+  `---\nnumber: "${number}"\ntitle: "${title}"\nstatus: draft\ncreated: 2026-06-06\n---\n\n# ${title}\n\nBody.\n`;
+
+test('repoSpecs: discoverSpecs lists spec-root .md files with full frontmatter, and nothing else', () => {
   const repoSpecs = require('../server/repoSpecs');
   const repoPath = fs.mkdtempSync(path.join(os.tmpdir(), 'srpopo-specs-'));
 
   fs.mkdirSync(path.join(repoPath, 'specs'), { recursive: true });
-  fs.writeFileSync(path.join(repoPath, 'specs', 'add-dark-mode.md'), '# Add Dark Mode\n\nBody.');
-
-  fs.mkdirSync(path.join(repoPath, '.specs', 'nested'), { recursive: true });
-  fs.writeFileSync(path.join(repoPath, '.specs', 'nested', 'spec.md'), 'No heading here, just body.');
+  fs.writeFileSync(path.join(repoPath, 'specs', '0001-add-dark-mode.md'), specFile('0001', 'Add Dark Mode'));
+  fs.mkdirSync(path.join(repoPath, '.specs'), { recursive: true });
+  fs.writeFileSync(path.join(repoPath, '.specs', '0002-local-idea.md'), specFile('0002', 'Local Idea'));
 
   // Ignored: not a markdown extension.
   fs.writeFileSync(path.join(repoPath, 'specs', 'notes.txt'), 'not a spec');
-
-  // Ignored: lives under node_modules, which is skipped while walking.
-  fs.mkdirSync(path.join(repoPath, 'node_modules', 'specs'), { recursive: true });
-  fs.writeFileSync(path.join(repoPath, 'node_modules', 'specs', 'sneaky.md'), '# Sneaky');
-
-  // Backdate the first file so sort order (most-recent first) is deterministic.
-  const old = new Date(Date.now() - 60_000);
-  fs.utimesSync(path.join(repoPath, 'specs', 'add-dark-mode.md'), old, old);
+  // Ignored: no frontmatter at all — a generated index, not a dispatchable spec.
+  fs.writeFileSync(path.join(repoPath, 'specs', 'README.md'), '# Specs\n\n- 0001 Add Dark Mode\n');
+  // Ignored: frontmatter, but missing the required `created:`.
+  fs.writeFileSync(path.join(repoPath, 'specs', '0003-partial.md'),
+    '---\nnumber: "0003"\ntitle: "Partial"\nstatus: draft\n---\n# Partial\n');
+  // Ignored: a conforming spec, but nested in a subfolder rather than the root.
+  fs.mkdirSync(path.join(repoPath, 'specs', 'research'), { recursive: true });
+  fs.writeFileSync(path.join(repoPath, 'specs', 'research', '0004-nested.md'), specFile('0004', 'Nested'));
 
   const found = repoSpecs.discoverSpecs(repoPath);
   assert.deepStrictEqual(
-    found.map((f: { path: string }) => f.path).sort(),
-    ['.specs/nested/spec.md', 'specs/add-dark-mode.md'].sort(),
-    'only the two real .md files are found, nothing from node_modules or the .txt file',
+    found.map((f: { path: string }) => f.path),
+    ['specs/0001-add-dark-mode.md', '.specs/0002-local-idea.md'],
+    'only the two conforming spec-root files, ascending by number',
   );
-
-  const dm = found.find((f: { path: string }) => f.path === 'specs/add-dark-mode.md');
-  assert.strictEqual(dm.title, 'Add Dark Mode', 'title comes from the first # heading');
-  const nested = found.find((f: { path: string }) => f.path === '.specs/nested/spec.md');
-  assert.strictEqual(nested.title, 'Spec', 'falls back to a title-cased filename when there is no heading');
-
-  // Most-recently-modified first.
-  assert.strictEqual(found[0].path, '.specs/nested/spec.md', 'the freshly-written file sorts first');
+  assert.deepStrictEqual(
+    found.map((f: { title: string }) => f.title),
+    ['Add Dark Mode', 'Local Idea'],
+  );
 
   // An absent specs dir (repo with neither root) yields [].
   const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'srpopo-specs-bare-'));
@@ -722,17 +722,18 @@ test('repoSpecs: discoverSpecs reads frontmatter, prefers title, and sorts by nu
   fs.mkdirSync(path.join(repoPath, 'specs'), { recursive: true });
 
   fs.writeFileSync(path.join(repoPath, 'specs', '0084-add-auth.md'),
-    '---\nnumber: "0084"\nstatus: draft\ntitle: Add Authentication\n---\n# Different Heading\n\nBody.');
+    '---\nnumber: "0084"\nstatus: draft\ntitle: Add Authentication\ncreated: 2026-06-06\n---\n# Different Heading\n\nBody.');
   fs.writeFileSync(path.join(repoPath, 'specs', '0012-logging.md'),
-    '---\nnumber: "0012"\nstatus: implemented\n---\n# Structured Logging\n');
+    '---\nnumber: "0012"\nstatus: implemented\ntitle: Structured Logging\ncreated: 2026-05-01\n---\n# Different Heading\n');
 
   const found = repoSpecs.discoverSpecs(repoPath);
   assert.deepStrictEqual(found.map((f: { number: string }) => f.number), ['0012', '0084'], 'ascending by number');
   const auth = found.find((f: { number: string }) => f.number === '0084');
   assert.strictEqual(auth.title, 'Add Authentication', 'frontmatter title beats the # heading');
   assert.strictEqual(auth.status, 'draft');
+  assert.strictEqual(auth.created, '2026-06-06');
   const log = found.find((f: { number: string }) => f.number === '0012');
-  assert.strictEqual(log.title, 'Structured Logging', 'falls back to # heading when no frontmatter title');
+  assert.strictEqual(log.title, 'Structured Logging');
   assert.strictEqual(log.status, 'implemented');
 });
 
