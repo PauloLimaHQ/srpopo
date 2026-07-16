@@ -958,6 +958,7 @@
     // and the cached value from a drawer visit can both be up to a minute stale,
     // and this is the one moment a stale "still open" would cause a needless
     // re-merge attempt — so the prompt reflects the PR's real state right now.
+    let hasOpenPr = false;
     if (t.branch) {
       let res;
       try {
@@ -965,6 +966,7 @@
         state.prByTask.set(t.id, res);
       } catch { res = null; }
       if (res && res.pr && res.pr.state !== 'merged') {
+        hasOpenPr = res.pr.state === 'open';
         options.push({
           id: 'merge-pr',
           label: `Merge PR #${res.pr.number}`,
@@ -973,14 +975,18 @@
         });
       }
     }
-    // Direct, PR-less merge — an alternative to merge-pr (same 'merge' group,
-    // so picking one clears the other — checking both would merge the branch
-    // in twice) offered only while there's still a worktree to wrap up, so a
-    // task that already finished its merge/branch story elsewhere doesn't
-    // gain a new confirmation dialog it never had before. Only shown once we
-    // actually know the target branch — a guessed default would promise a
-    // merge that never happens. Warned since it bypasses code review and CI.
-    if (t.worktreePath && t.branch) {
+    // Direct, PR-less merge — the fallback when no *open* PR was identified
+    // for the task: while a PR is open, landing the branch is the PR's job
+    // (merge it or close it there), so offering a local merge alongside would
+    // just invite bypassing the review that's already underway. A closed
+    // (abandoned) PR doesn't suppress it — a local merge is then the only way
+    // left to land the branch. Offered only while there's still a worktree to
+    // wrap up, so a task that already finished its merge/branch story
+    // elsewhere doesn't gain a new confirmation dialog it never had before.
+    // Only shown once we actually know the target branch — a guessed default
+    // would promise a merge that never happens. Warned since it bypasses code
+    // review and CI.
+    if (!hasOpenPr && t.worktreePath && t.branch) {
       let base = t.baseBranch || state.repoBranchByRepo.get(t.repoId);
       if (base === undefined || base === 'loading') {
         try {
@@ -1027,7 +1033,9 @@
 
   // merge-pr and merge-direct share a 'group' — they're alternative ways to
   // land the same branch, so checking one clears the other rather than
-  // letting both run (which would merge the branch in twice).
+  // letting both run (which would merge the branch in twice). They still
+  // co-appear for a closed-but-unmerged PR; while a PR is open moveToDone
+  // suppresses merge-direct entirely.
   $('#done-modal-options').addEventListener('change', (e) => {
     const el = e.target;
     if (!el.matches('input[data-done-group]') || !el.checked) return;
@@ -1039,6 +1047,22 @@
     $('#modal-done').classList.add('hidden');
     doneModalCtx = null;
   });
+
+  // Renders the wrap-up steps (plus the final move itself) as a progress list,
+  // one row per step, so a slow merge/worktree-removal reads as "working on it"
+  // instead of a frozen dialog. `renderDoneProgress` re-renders the whole list on
+  // every state change; call it again after mutating a step's `state`.
+  function renderDoneProgress(steps) {
+    $('#done-modal-options').classList.add('hidden');
+    const progress = $('#done-modal-progress');
+    progress.classList.remove('hidden');
+    progress.innerHTML = steps.map((s) => {
+      const cls = s.state === 'active' ? 'active' : s.state === 'done' ? 'done' : '';
+      const glyph = s.state === 'done' ? icon('check') : s.state === 'active' ? '<span class="spinner"></span>' : '';
+      return `<div class="done-progress-step ${cls}"><span class="icon-slot">${glyph}</span><span>${esc(s.label)}</span></div>`;
+    }).join('');
+  }
+
   $('#done-modal-confirm').addEventListener('click', async () => {
     if (!doneModalCtx) return;
     const { task } = doneModalCtx;
@@ -1048,27 +1072,63 @@
     );
     const btn = $('#done-modal-confirm');
     btn.disabled = true;
+    $('#done-modal-cancel').disabled = true;
+
+    // Merge first: worktree removal below would take away the dir `gh` runs in.
+    const steps = [];
+    if (checked.has('merge-pr')) {
+      steps.push({ id: 'merge-pr', label: 'Merging your pull request…', state: 'pending' });
+    }
+    if (checked.has('merge-direct')) {
+      steps.push({ id: 'merge-direct', label: 'Merging your branch…', state: 'pending' });
+    }
+    if (checked.has('delete-worktree')) {
+      steps.push({ id: 'delete-worktree', label: 'Deleting your worktree…', state: 'pending' });
+    }
+    steps.push({ id: 'move', label: 'Moving task to Done…', state: 'pending' });
+    renderDoneProgress(steps);
+
+    async function runStep(id, fn) {
+      const step = steps.find((s) => s.id === id);
+      step.state = 'active';
+      renderDoneProgress(steps);
+      await fn();
+      step.state = 'done';
+      renderDoneProgress(steps);
+    }
+
     try {
-      // Merge first: worktree removal below would take away the dir `gh` runs in.
       if (checked.has('merge-pr')) {
-        await api('POST', `/api/tasks/${task.id}/pr/merge`);
-        state.prByTask.delete(task.id); // force a fresh PR status next render
+        await runStep('merge-pr', async () => {
+          await api('POST', `/api/tasks/${task.id}/pr/merge`);
+          state.prByTask.delete(task.id); // force a fresh PR status next render
+        });
         toast('Pull request merged', 'info');
       }
       if (checked.has('merge-direct')) {
-        await api('POST', `/api/tasks/${task.id}/merge`);
+        await runStep('merge-direct', async () => {
+          await api('POST', `/api/tasks/${task.id}/merge`);
+        });
         toast('Branch merged directly (no PR)', 'info');
       }
       if (checked.has('delete-worktree')) {
-        await api('POST', `/api/tasks/${task.id}/worktree/remove`);
+        await runStep('delete-worktree', async () => {
+          await api('POST', `/api/tasks/${task.id}/worktree/remove`);
+        });
         toast('Worktree removed', 'info');
       }
-      await api('PATCH', `/api/tasks/${task.id}`, { status: 'done' });
+      await runStep('move', async () => {
+        await api('PATCH', `/api/tasks/${task.id}`, { status: 'done' });
+      });
       $('#modal-done').classList.add('hidden');
       doneModalCtx = null;
     } catch (e) {
       toast(e.message, 'error');
+    } finally {
       btn.disabled = false;
+      $('#done-modal-cancel').disabled = false;
+      $('#done-modal-options').classList.remove('hidden');
+      $('#done-modal-progress').classList.add('hidden');
     }
   });
 
