@@ -31,6 +31,16 @@ let tray: Tray | null = null;
 let httpUrl = '';
 let isQuitting = false;
 let updateReadyVersion: string | null = null; // set once electron-updater has a downloaded update waiting
+let updateDownloadingVersion: string | null = null; // set while a new version is downloading in the background
+
+// Restart into an already-downloaded update. `isQuitting` MUST be set first:
+// quitAndInstall closes every window, and mainWindow's 'close' handler cancels
+// the close (hide-to-tray) unless we're quitting — which silently swallows the
+// whole restart.
+function installUpdate(): void {
+  isQuitting = true;
+  autoUpdater.quitAndInstall();
+}
 
 // Single-instance: focus the existing window instead of spawning a second app.
 if (!app.requestSingleInstanceLock()) {
@@ -334,8 +344,11 @@ function refreshTray(): void {
   if (updateReadyVersion) {
     items.push({
       label: `Restart to Update (v${updateReadyVersion})`,
-      click: () => autoUpdater.quitAndInstall(),
+      click: () => installUpdate(),
     });
+    items.push({ type: 'separator' });
+  } else if (updateDownloadingVersion) {
+    items.push({ label: `Downloading update (v${updateDownloadingVersion})…`, enabled: false });
     items.push({ type: 'separator' });
   }
   if (running.length) {
@@ -456,13 +469,25 @@ app.whenReady().then(async () => {
   // Auto-update: only against a real packaged build — dev has no update feed
   // and would just throw/log noise every time `npm start` runs.
   if (app.isPackaged) {
+    // A check that finds a new version starts downloading it right away
+    // (autoDownload defaults to on), which takes a while and used to be
+    // completely invisible. Tell the board so it can say so once.
+    autoUpdater.on('update-available', (info) => {
+      if (updateReadyVersion || updateDownloadingVersion === info.version) return;
+      updateDownloadingVersion = info.version;
+      if (mainWindow) mainWindow.webContents.send('srpopo:update-downloading', info.version);
+      refreshTray();
+    });
     autoUpdater.on('update-downloaded', (info) => {
       updateReadyVersion = info.version;
+      updateDownloadingVersion = null;
       if (mainWindow) mainWindow.webContents.send('srpopo:update-ready', info.version);
       refreshTray();
     });
     autoUpdater.on('error', (err) => {
       console.error('[autoUpdater]', err);
+      updateDownloadingVersion = null; // a failed download isn't still in flight
+      refreshTray();
     });
 
     autoUpdater.checkForUpdates().catch((err) => console.error('[autoUpdater]', err));
@@ -492,7 +517,14 @@ ipcMain.handle('srpopo:get-url', () => httpUrl);
 
 // The renderer's "Relaunch to update" banner button — restarts into the
 // already-downloaded update. Only ever reachable once update-downloaded fired.
-ipcMain.handle('srpopo:restart-to-update', () => autoUpdater.quitAndInstall());
+ipcMain.handle('srpopo:restart-to-update', () => installUpdate());
+
+// Update events fire whenever the check lands, which may be before the board
+// has loaded (or after a reload dropped the banner). Let it ask for the state.
+ipcMain.handle('srpopo:update-status', () => ({
+  ready: updateReadyVersion,
+  downloading: updateDownloadingVersion,
+}));
 
 // Open the native folder picker so the user can select a repo instead of
 // typing an absolute path. Returns the chosen path, or null if cancelled.

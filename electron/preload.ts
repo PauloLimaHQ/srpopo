@@ -13,13 +13,21 @@ contextBridge.exposeInMainWorld('srpopo', {
     ipcRenderer.on('srpopo:menu-action', listener);
     return () => ipcRenderer.removeListener('srpopo:menu-action', listener);
   },
-  // Auto-update: main process notifies once a new version has finished
-  // downloading in the background; the renderer shows a "relaunch" banner.
+  // Auto-update: main process notifies when a new version starts downloading in
+  // the background, and again once it's ready; the renderer says so, then shows
+  // a "relaunch" banner.
+  onUpdateDownloading: (callback: (version: string) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, version: string) => callback(version);
+    ipcRenderer.on('srpopo:update-downloading', listener);
+    return () => ipcRenderer.removeListener('srpopo:update-downloading', listener);
+  },
   onUpdateReady: (callback: (version: string) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, version: string) => callback(version);
     ipcRenderer.on('srpopo:update-ready', listener);
     return () => ipcRenderer.removeListener('srpopo:update-ready', listener);
   },
+  // Whatever the main process knew before this window finished loading.
+  getUpdateStatus: () => ipcRenderer.invoke('srpopo:update-status'),
   restartToUpdate: () => ipcRenderer.invoke('srpopo:restart-to-update'),
 });
 
