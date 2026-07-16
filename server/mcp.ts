@@ -3,7 +3,7 @@
  * Sr. Popo is running. Unlike the per-task permission bridge (permission-mcp.js,
  * a stdio process the CLI spawns), this one is mounted straight onto the running
  * Express app at `POST /mcp` using MCP's Streamable HTTP transport, so an outside
- * Claude Code session (or any MCP client) can list, create, dispatch, and stop
+ * agent session (or any MCP client) can list, create, dispatch, and stop
  * tasks over localhost:
  *
  *   claude mcp add --transport http srpopo http://127.0.0.1:7777/mcp
@@ -32,10 +32,11 @@ import type { Repo, Task } from './types';
 const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_INFO = { name: 'srpopo', version: '1.0.0' };
 const INSTRUCTIONS =
-  'Sr. Popo orchestrates Claude Code tasks on a local Kanban board. Use list_repos ' +
+  'Sr. Popo orchestrates coding-agent tasks on a local Kanban board. Use list_repos ' +
   'to find a registered repo id, then list_tasks/get_task to inspect work, ' +
-  'create_task to queue a prompt, and dispatch_task to run it. Dispatching spawns a ' +
-  'real `claude` session on the user\'s machine — confirm intent before starting runs.';
+  'create_task to queue a prompt, and dispatch_task to run it. Each task runs on its ' +
+  'own agent backend (claude or codex). Dispatching spawns a real agent session on ' +
+  'the user\'s machine — confirm intent before starting runs.';
 
 // One MCP tool: its advertised schema plus the id of the arguments it reads.
 const TOOL_DEFS = [
@@ -85,10 +86,11 @@ const TOOL_DEFS = [
       properties: {
         repoId: { type: 'string', description: 'Target repo id (see list_repos).' },
         title: { type: 'string', description: 'Short task title.' },
-        prompt: { type: 'string', description: 'The prompt Claude will run.' },
-        model: { type: 'string', description: 'default / sonnet / opus / haiku / fable, or a custom model id configured in Settings.' },
+        prompt: { type: 'string', description: 'The prompt the agent will run.' },
+        agent: { type: 'string', description: 'Which backend runs the task: "claude" (default) or "codex".' },
+        model: { type: 'string', description: 'A model for the chosen agent, or "default" for its account default. Claude: sonnet / opus / haiku / fable, or a custom model id configured in Settings. Codex: e.g. gpt-5.6-sol.' },
         useWorktree: { type: 'boolean', description: 'Run isolated on a srpopo/<slug> worktree branch.' },
-        permissionMode: { type: 'string', description: 'acceptEdits (default), bypassPermissions, plan, or default.' },
+        permissionMode: { type: 'string', description: 'acceptEdits (default), bypassPermissions, plan, or default. On codex these map to a sandbox level rather than per-tool prompts.' },
         status: { type: 'string', description: '"ready" to stage for dispatch, otherwise backlog.' },
         branchName: { type: 'string', description: 'Override the auto-generated worktree branch name.' },
         baseBranch: { type: 'string', description: 'Branch to base the task on (worktree start point, or checked out for a direct run). Defaults to the repo\'s current HEAD.' },
@@ -105,7 +107,7 @@ const TOOL_DEFS = [
   {
     name: 'dispatch_task',
     description:
-      'Run a task: spawn its `claude` session (materializing a worktree first if the ' +
+      'Run a task: spawn its agent session (materializing a worktree first if the ' +
       'task uses one). With a message, resumes the task\'s existing session as a ' +
       'follow-up; otherwise runs its prompt fresh.',
     inputSchema: {
@@ -120,7 +122,7 @@ const TOOL_DEFS = [
   },
   {
     name: 'stop_task',
-    description: 'Stop a running task\'s `claude` session.',
+    description: 'Stop a running task\'s agent session.',
     inputSchema: {
       type: 'object',
       properties: { taskId: { type: 'string', description: 'The task id.' } },

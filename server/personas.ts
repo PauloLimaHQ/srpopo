@@ -6,7 +6,7 @@
  *   - a role preamble PREPENDED to the prompt at dispatch time.
  *
  * Personas differ from add-ons (see addons.ts) in where the text lands: a persona
- * frames *who* Claude is before it reads the task, so its instruction is injected
+ * frames *who* the agent is before it reads the task, so its instruction is injected
  * at the very beginning of the prompt. Add-ons frame *what to do at the end*, so
  * they are appended. To add a persona later, just append an entry below — nothing
  * else needs to change. Keep `instruction` a clear, standalone role directive.

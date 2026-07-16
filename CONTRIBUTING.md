@@ -5,9 +5,9 @@ that keep it **simple, dependency-light, and obviously safe** are the most welco
 
 ## Ground rules
 
-- Sr. Popo runs entirely on the user's machine and drives their Claude **subscription**
-  login — never an API key. Don't add anything that phones home or ships task content
-  off-device.
+- Sr. Popo runs entirely on the user's machine and drives their agent **subscription**
+  login (Claude Code / OpenAI Codex) — never an API key. Don't add anything that phones
+  home or ships task content off-device.
 - The server binds to `127.0.0.1` only. There is no auth layer; that binding is the
   security boundary. Don't loosen it.
 - The Node-side code (`server/`, `electron/`, `tests/`) is TypeScript, compiled with
@@ -22,8 +22,9 @@ change must preserve.
 
 ## Getting started
 
-Requirements: Node.js 18+, the [Claude Code CLI](https://claude.com/claude-code) on your
-PATH and logged in, and git.
+Requirements: Node.js 18+, git, and at least one agent CLI on your PATH and logged in —
+the [Claude Code CLI](https://claude.com/claude-code) (the default backend) and/or the
+[OpenAI Codex CLI](https://developers.openai.com/codex/cli).
 
 ```bash
 npm install

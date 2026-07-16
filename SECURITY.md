@@ -1,15 +1,17 @@
 # Security Policy
 
-Sr. Popo runs entirely on your own machine, spawns the `claude` CLI, and can create git
-worktrees and (via add-ons) push branches and open pull requests. Because it drives real
-tooling with your credentials, its security properties matter.
+Sr. Popo runs entirely on your own machine, spawns a local agent CLI (`claude` or
+`codex`), and can create git worktrees and (via add-ons) push branches and open pull
+requests. Because it drives real tooling with your credentials, its security properties
+matter.
 
 ## Design guarantees
 
 - **Localhost only.** The embedded server binds to `127.0.0.1`. It is never exposed on a
   LAN or public interface, and there is no remote access surface.
-- **No API key usage.** Every spawned task has `ANTHROPIC_API_KEY` stripped from its
-  environment, so runs always use your interactive Claude subscription login.
+- **No API key usage.** Every spawned task has its provider's key stripped from the
+  environment — `ANTHROPIC_API_KEY` for Claude Code, `OPENAI_API_KEY` for Codex — so
+  runs always use your interactive subscription login.
 - **Local data only.** Repos, tasks, and full session logs live under your per-user data
   directory (`~/Library/Application Support/Sr. Popo/data` on macOS). Nothing is sent
   off your machine by Sr. Popo itself.
@@ -17,9 +19,10 @@ tooling with your credentials, its security properties matter.
   `nodeIntegration` off; it talks to the server over local HTTP through a minimal
   preload bridge.
 
-Note that tasks you dispatch run Claude Code with the permissions you choose (including
-`bypassPermissions`), which can modify files, run commands, and push branches. Treat the
-prompts and permission modes you use with the same care as running `claude` yourself.
+Note that tasks you dispatch run a coding agent with the permissions you choose
+(including `bypassPermissions`, and Codex's `danger-full-access` sandbox), which can
+modify files, run commands, and push branches. Treat the prompts and permission modes
+you use with the same care as running `claude` / `codex` yourself.
 
 ## Supported versions
 

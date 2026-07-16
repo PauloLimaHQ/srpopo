@@ -1,7 +1,7 @@
 {
   "name": "srpopo",
   "version": "0.5.0",
-  "description": "Sr. Popo — local orchestrator hub for Claude Code tasks across your repos",
+  "description": "Sr. Popo — local orchestrator hub for coding-agent tasks across your repos",
   "main": "dist/electron/main.js",
   "scripts": {
     "start": "npm run build && electron .",
@@ -20,6 +20,9 @@
     "claude-code",
     "claude",
     "anthropic",
+    "codex",
+    "openai-codex",
+    "openai",
     "ai-agents",
     "agent-orchestration",
     "coding-agent",
