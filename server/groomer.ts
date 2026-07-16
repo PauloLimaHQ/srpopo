@@ -56,7 +56,7 @@ function metaPrompt(idea: unknown): string {
     'specified well enough to hand to a coding agent.',
     '',
     'Your job: think the idea through and turn it into one or more clear, self-contained task prompts',
-    'that other Claude Code agents could each execute end-to-end without further clarification.',
+    'that other coding agents could each execute end-to-end without further clarification.',
     '',
     'Do this:',
     '1. Explore the repository as needed to ground the work in reality — read the relevant files,',

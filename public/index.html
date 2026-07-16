@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Sr. Popo — Claude Code Orchestrator</title>
+  <title>Sr. Popo — Coding Agent Orchestrator</title>
   <link rel="icon" type="image/png" href="logo.png" />
   <link rel="stylesheet" href="styles.css" />
   <link rel="stylesheet" href="vendor/xterm.css" />
@@ -24,11 +24,11 @@
       <img class="brand-icon" src="logo.png" alt="Sr. Popo" width="36" height="36" />
       <div>
         <h1>Sr. Popo</h1>
-        <span class="tagline">your local Claude Code orchestrator</span>
+        <span class="tagline">your local coding-agent orchestrator</span>
       </div>
     </div>
     <div class="topbar-actions">
-      <span id="health" class="health-chip" title="Claude CLI status">checking…</span>
+      <span id="health" class="health-chip" title="Agent CLI status">checking…</span>
       <button class="btn ghost" id="btn-palette" title="Search & commands"><span class="i" data-icon="command"></span></button>
       <button class="btn ghost" id="btn-theme" title="Theme: System" aria-label="Toggle theme"></button>
       <button class="btn ghost" id="btn-settings" title="Settings" aria-label="Settings"><span class="i" data-icon="settings"></span></button>
@@ -142,8 +142,8 @@
       <label>Title
         <input id="task-title" placeholder="e.g. Add dark mode toggle" maxlength="120" />
       </label>
-      <label>Prompt for Claude
-        <textarea id="task-prompt" rows="6" placeholder="Describe the task exactly as you would tell Claude Code…"></textarea>
+      <label>Prompt
+        <textarea id="task-prompt" rows="6" placeholder="Describe the task exactly as you would tell the agent…"></textarea>
       </label>
       <div class="field-block">
         <span class="field-label">Attachments <span class="field-hint">— files the run can Read by path</span></span>
@@ -157,15 +157,26 @@
         <div id="task-attachment-list" class="attachment-list"></div>
       </div>
       <div class="grid-2">
+        <label>Agent
+          <select id="task-agent">
+            <option value="claude">Claude Code</option>
+            <option value="codex">OpenAI Codex</option>
+          </select>
+        </label>
         <label>Model
           <select id="task-model">
             <option value="default">Account default</option>
-            <option value="sonnet">Sonnet</option>
-            <option value="opus">Opus</option>
-            <option value="haiku">Haiku</option>
-            <option value="fable">Fable</option>
+            <option value="sonnet" data-agent="claude">Sonnet</option>
+            <option value="opus" data-agent="claude">Opus</option>
+            <option value="haiku" data-agent="claude">Haiku</option>
+            <option value="fable" data-agent="claude">Fable</option>
+            <option value="gpt-5.6-sol" data-agent="codex">GPT-5.6 Sol</option>
+            <option value="gpt-5.6-terra" data-agent="codex">GPT-5.6 Terra</option>
+            <option value="gpt-5.6-luna" data-agent="codex">GPT-5.6 Luna</option>
           </select>
         </label>
+      </div>
+      <div class="grid-2">
         <label>Permissions
           <select id="task-perm">
             <option value="acceptEdits">Accept edits (recommended)</option>
@@ -173,6 +184,7 @@
             <option value="plan">Plan only</option>
             <option value="default">Default (may block)</option>
           </select>
+          <span id="task-perm-codex-hint" class="field-hint hidden">Codex maps this to a sandbox level (read-only / workspace-write); there is no per-tool prompt.</span>
         </label>
       </div>
       <label>Allowed tools <span class="field-hint">— auto-approved in headless runs, comma-separated</span>
@@ -197,7 +209,7 @@
                  aria-multiselectable="true" aria-label="Personas"></div>
           </div>
         </div>
-        <p class="addon-hint">Give Claude one or more expert hats — injected at the start of the prompt.</p>
+        <p class="addon-hint">Give the agent one or more expert hats — injected at the start of the prompt.</p>
       </fieldset>
       <fieldset id="task-addons" class="addons">
         <legend>Extra behavior</legend>
@@ -433,7 +445,7 @@
               <label>Max parallel sessions <span class="field-hint">— dispatched runs + grooming sessions combined</span>
                 <input id="setting-max-parallel" type="number" min="1" max="20" step="1" />
               </label>
-              <p class="addon-hint">Caps how many <code>claude</code> sessions run at once so they don't starve each other of CPU. 3 is a good default on a typical laptop.</p>
+              <p class="addon-hint">Caps how many agent sessions run at once so they don't starve each other of CPU. 3 is a good default on a typical laptop.</p>
             </fieldset>
             <fieldset class="addons">
               <legend>Pull requests</legend>
@@ -511,7 +523,8 @@
             <h2 class="settings-section-title">Usage</h2>
             <p class="muted">Local spend tracking, computed from every session's own cost/token
               report — the same figures the <code>claude</code> CLI shows you, not a subscription
-              bill (Sr. Popo never uses an API key). Nothing leaves your machine.</p>
+              bill (Sr. Popo never uses an API key). Codex sessions report tokens only, with no
+              dollar figure, so they show a cost of &mdash;. Nothing leaves your machine.</p>
             <div class="usage-toolbar">
               <div class="usage-period" role="group" aria-label="Period">
                 <button class="usage-period-btn" data-period="7d">7 days</button>
@@ -627,7 +640,7 @@
     <div class="modal-box">
       <h2>Continue session</h2>
       <p class="muted" id="followup-modal-sub"></p>
-      <textarea id="followup-modal-input" rows="4" placeholder="What should Claude do next in this session?"></textarea>
+      <textarea id="followup-modal-input" rows="4" placeholder="What should the agent do next in this session?"></textarea>
       <div class="modal-actions">
         <button class="btn ghost" id="followup-modal-cancel">Cancel</button>
         <button class="btn primary" id="followup-modal-send">Run <span class="i" data-icon="play"></span></button>

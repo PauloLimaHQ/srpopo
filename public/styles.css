@@ -465,6 +465,8 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
 .chip.addon-chip { color: var(--purple); border-color: var(--purple-soft); }
 .chip.persona-chip { color: var(--accent); border-color: var(--accent-soft); }
 .chip.grooming-chip { color: var(--groom); border-color: var(--groom-soft); }
+/* The agent backend badge (shown for Codex; Claude is the unlabelled default). */
+.chip.agent-chip { color: var(--text-bright); border-color: var(--border-strong); font-weight: 600; }
 .chip.conflict-chip { color: var(--conflict); border-color: var(--conflict-soft); font-weight: 600; }
 /* GitHub PR chip in the drawer head — a link plus a status dot. */
 a.chip.pr { text-decoration: none; display: inline-flex; align-items: center; gap: 5px; }

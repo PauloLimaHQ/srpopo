@@ -49,11 +49,11 @@ body:
     validations:
       required: true
   - type: input
-    id: claude
+    id: agent-cli
     attributes:
-      label: Claude CLI version
-      description: Output of `claude --version`
-      placeholder: 1.x.x
+      label: Agent CLI version
+      description: Output of `claude --version` and/or `codex --version` — whichever backend the task used
+      placeholder: claude 2.x.x / codex 0.x.x
   - type: textarea
     id: logs
     attributes:

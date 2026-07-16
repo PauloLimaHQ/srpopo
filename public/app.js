@@ -127,6 +127,13 @@
     return '';
   };
 
+  // Input + output tokens accumulated across a task's runs (task.modelUsage is
+  // keyed by model; both Claude and Codex populate it — see server/usage.ts).
+  const totalTokens = (t) =>
+    Object.values(t.modelUsage || {}).reduce((n, m) => n + (m.inputTokens || 0) + (m.outputTokens || 0), 0);
+  // Compact token count, e.g. 12345 -> "12.3k".
+  const fmtTokens = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+
   // Small, dependency-free markdown → HTML for Claude's own chat text (headings,
   // lists, code fences/spans, bold/italic, links). Always escapes the source first
   // and only ever re-introduces tags we generate ourselves — the markdown source
@@ -763,8 +770,11 @@
     const modelName = t.model === 'default' ? (t.resolvedModel || 'default') : t.model;
     const chips = [
       `<span class="chip repo">${esc(t.repoName)}</span>`,
-      `<span class="chip model${modelClass(modelName)}">${esc(modelName)}</span>`,
     ];
+    // Show the backend only for the non-default agent, so Claude cards read the
+    // same as before; Codex gets an explicit badge (no emoji — icons.js glyph).
+    if (t.agent === 'codex') chips.push(`<span class="chip agent-chip" title="Runs on the OpenAI Codex CLI">${icon('cpu')} Codex</span>`);
+    chips.push(`<span class="chip model${modelClass(modelName)}">${esc(modelName)}</span>`);
     if (t.groomingId) chips.push(`<span class="chip grooming-chip" title="Spawned by a grooming">${icon('lightbulb')} groomed</span>`);
     if (t.resolvingConflicts) chips.push(`<span class="chip conflict-chip" title="Auto-resolving merge conflicts with main">${icon('git-branch')} Resolving Conflicts</span>`);
     if (t.useWorktree) chips.push(`<span class="chip worktree" title="${esc(t.worktreePath || 'worktree on dispatch')}">${icon('git-branch')} ${esc(t.branch || t.branchName || 'worktree')}</span>`);
@@ -1197,7 +1207,8 @@
     // The AUTO MODE toggle only makes sense when the run asks before each tool,
     // i.e. its permission mode is "Accept edits" — 'bypassPermissions' never
     // prompts, and 'plan'/'default' aren't the accept-edits flow we auto-approve.
-    const canAuto = live && task.permissionMode === 'acceptEdits';
+    // Codex has no per-tool approval hook (it's sandbox-governed), so never here.
+    const canAuto = live && task.permissionMode === 'acceptEdits' && task.agent !== 'codex';
     // The box carries that toggle plus the pending prompts. Nothing to show for a
     // task that can't auto-approve and has no prompts.
     if (!canAuto && !list.length) {
@@ -1273,8 +1284,9 @@
     const el = document.activeElement;
     if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
     const task = state.tasks.get(state.openTaskId);
-    // Only the "Accept edits" flow exposes AUTO MODE — match renderPermissionPrompts.
-    if (!task || !isLive(task) || task.permissionMode !== 'acceptEdits') return;
+    // Only the "Accept edits" flow exposes AUTO MODE — match renderPermissionPrompts
+    // (Codex is sandbox-governed and never prompts, so it has no AUTO MODE).
+    if (!task || !isLive(task) || task.permissionMode !== 'acceptEdits' || task.agent === 'codex') return;
     e.preventDefault();
     toggleAutoApprove(state.openTaskId, !isAutoApprove(state.openTaskId));
   });
@@ -1437,12 +1449,16 @@
 
   function renderDrawerHead(t) {
     $('#drawer-title').textContent = t.title;
+    const codex = t.agent === 'codex';
     const meta = [
       `<span class="chip repo">${esc(t.repoName)}</span>`,
-      `<span class="chip model${modelClass(t.resolvedModel || t.model)}">${esc(t.resolvedModel || t.model)}</span>`,
-      `<span class="chip">${esc(t.permissionMode)}</span>`,
     ];
-    if (t.promptPermissions) meta.push(`<span class="chip" title="Asks you to approve otherwise-denied tools">${icon('shield')} asks</span>`);
+    if (codex) meta.push(`<span class="chip agent-chip" title="Runs on the OpenAI Codex CLI">${icon('cpu')} Codex</span>`);
+    meta.push(`<span class="chip model${modelClass(t.resolvedModel || t.model)}">${esc(t.resolvedModel || t.model)}</span>`);
+    meta.push(`<span class="chip">${esc(t.permissionMode)}</span>`);
+    // Claude asks before unapproved tools; Codex is governed by its sandbox, so
+    // the "asks" chip only makes sense for Claude (no per-tool prompt on Codex).
+    if (t.promptPermissions && !codex) meta.push(`<span class="chip" title="Asks you to approve otherwise-denied tools">${icon('shield')} asks</span>`);
     if (t.linearIssue && t.linearIssue.identifier) {
       meta.push(`<a class="chip linear-chip" href="${esc(t.linearIssue.url)}" target="_blank" rel="noopener" title="Open in Linear">${icon('linear')} ${esc(t.linearIssue.identifier)}</a>`);
     }
@@ -1457,7 +1473,15 @@
       meta.push(repoBranchChipHtml(t));
     }
     if (t.sessionId) meta.push(`<span class="chip" title="session id">${esc(t.sessionId.slice(0, 8))}…</span>`);
-    if (t.costUsd > 0) meta.push(`<span class="chip cost">$${t.costUsd.toFixed(2)} total</span>`);
+    if (codex) {
+      // Codex subscription runs report tokens, not a dollar cost — show "—" for
+      // cost (never a misleading $0) plus the token total the ledger recorded.
+      const tok = totalTokens(t);
+      meta.push(`<span class="chip cost" title="Codex subscription runs report tokens, not a dollar cost">— cost</span>`);
+      if (tok > 0) meta.push(`<span class="chip" title="input + output tokens across all runs">${fmtTokens(tok)} tok</span>`);
+    } else if (t.costUsd > 0) {
+      meta.push(`<span class="chip cost">$${t.costUsd.toFixed(2)} total</span>`);
+    }
     if (t.numTurns != null) meta.push(`<span class="chip">${t.numTurns} turns</span>`);
     if (t.branch) meta.push(prChipHtml(t)); // GitHub PR for this branch, if any
     const metaEl = $('#drawer-meta');
@@ -1787,6 +1811,45 @@
       addHtml($('#timeline'), `<div class="ev-meta perm-log ${allowed ? 'ok' : 'no'}">${icon(auto ? 'zap' : 'shield')} ${verb} ${esc(ev.toolName || 'tool')}${esc(why)}</div>`);
     } else if (type === 'raw') {
       addHtml($('#timeline'), `<div class="ev-stderr">${esc(ev.text)}</div>`);
+    } else if (type === 'thread.started') {
+      // Codex session start (see server/agents/codex.ts for the JSONL schema).
+      addHtml(containerFor(ev), `<div class="ev-meta">${icon('zap')} codex session · ${esc((ev.thread_id || '').slice(0, 8))}</div>`);
+    } else if (type === 'item.completed') {
+      appendCodexItem(ev.item);
+    } else if (type === 'turn.completed') {
+      const u = ev.usage || {};
+      addHtml($('#timeline'), `
+        <div class="ev-result">
+          ${icon('circle-check')} <span class="md">Turn complete</span>
+          <div class="stats">${u.input_tokens || 0} in · ${u.output_tokens || 0} out · ${u.cached_input_tokens || 0} cached</div>
+        </div>`);
+    } else if (type === 'turn.failed' || type === 'error') {
+      const msg = (ev.error && ev.error.message) || ev.message || 'error';
+      addHtml($('#timeline'), `
+        <div class="ev-result error">${icon('circle-x')} <span class="md">${esc(String(msg).slice(0, 600))}</span></div>`);
+    }
+  }
+
+  // Render one Codex `item.completed` payload. Codex reports discrete items
+  // (assistant message, shell command, reasoning, a non-fatal error note) rather
+  // than Claude's block stream; we surface the ones worth showing in the timeline.
+  function appendCodexItem(item) {
+    if (!item) return;
+    if (item.type === 'agent_message') {
+      if (item.text) addHtml($('#timeline'), `<div class="ev-text md">${mdToHtml(item.text)}</div>`);
+    } else if (item.type === 'reasoning') {
+      if (item.text) addHtml($('#timeline'), `<details class="ev-thinking"><summary>${icon('brain')} thinking</summary><pre>${esc(item.text)}</pre></details>`);
+    } else if (item.type === 'command_execution') {
+      const ok = item.exit_code === 0;
+      addHtml($('#timeline'), `
+        <details class="ev-tool"><summary>
+          <span class="tool-name">exec</span>
+          <span class="tool-summary">${esc(String(item.command || '').slice(0, 120))}</span>
+          <span class="tool-state">${ok ? icon('circle-check') : icon('circle-x')}</span>
+        </summary>
+        <div class="tool-detail"><pre>${esc(String(item.aggregated_output || '').slice(0, 4000))}</pre></div></details>`);
+    } else if (item.type === 'error') {
+      addHtml($('#timeline'), `<div class="ev-stderr">${esc(item.message || '')}</div>`);
     }
   }
 
@@ -2037,7 +2100,7 @@
     const box = $('#task-persona-chips');
     const ids = selectedPersonas();
     if (!ids.length) {
-      box.innerHTML = '<span class="persona-empty">No persona — Claude works as itself.</span>';
+      box.innerHTML = '<span class="persona-empty">No persona — the agent works as itself.</span>';
       return;
     }
     box.innerHTML = ids.map((id) => {
@@ -2169,6 +2232,7 @@
   function saveLastUsed(fields, repoId) {
     try {
       localStorage.setItem(LAST_USED_KEY, JSON.stringify({
+        agent: fields.agent,
         model: fields.model,
         permissionMode: fields.permissionMode,
         allowedTools: fields.allowedTools,
@@ -2264,7 +2328,12 @@
     refreshRepoSelect();
     $('#task-title').value = task ? task.title : '';
     $('#task-prompt').value = task ? task.prompt : '';
+    $('#task-agent').value = task ? (task.agent || 'claude') : (last.agent || 'claude');
     $('#task-model').value = task ? (task.model || 'default') : (last.model || 'default');
+    // Show only the selected agent's models; drops the selection back to "default"
+    // if the restored model belongs to the other agent. Also toggles the Codex
+    // permissions hint.
+    syncAgentModels();
     $('#task-perm').value = task ? (task.permissionMode || 'acceptEdits') : (last.permissionMode || 'acceptEdits');
     $('#task-allowed-tools').value = task ? (task.allowedTools || '') : (last.allowedTools || '');
     $('#task-prompt-permissions').checked = task
@@ -2305,6 +2374,7 @@
     const fields = {
       title,
       prompt,
+      agent: $('#task-agent').value,
       model: $('#task-model').value,
       permissionMode: $('#task-perm').value,
       allowedTools: $('#task-allowed-tools').value,
@@ -2336,6 +2406,27 @@
       if (run) await api('POST', `/api/tasks/${task.id}/dispatch`);
     } catch (e) { toast(e.message); }
   }
+
+  // Show only the chosen agent's models in the New-Task model picker and toggle
+  // the Codex permissions hint. Options tagged data-agent (or data-custom, which
+  // are Claude/Bedrock models) are shown only for their agent; the untagged
+  // "Account default" is always available. Resets to default if the current
+  // selection belongs to the other agent.
+  function syncAgentModels() {
+    const agent = $('#task-agent').value;
+    const sel = $('#task-model');
+    for (const opt of sel.options) {
+      const a = opt.dataset.agent || (opt.dataset.custom ? 'claude' : null);
+      opt.hidden = a ? a !== agent : false;
+    }
+    if (sel.selectedOptions[0] && sel.selectedOptions[0].hidden) sel.value = 'default';
+    // Codex has no per-tool approval prompt — its permission mode maps to a
+    // sandbox level. Surface that in the form so the choice isn't misleading.
+    const codex = agent === 'codex';
+    $('#task-perm-codex-hint').classList.toggle('hidden', !codex);
+    $('#task-prompt-permissions').closest('.addon').classList.toggle('hidden', codex);
+  }
+  $('#task-agent').addEventListener('change', syncAgentModels);
 
   $('#btn-new-task').addEventListener('click', () => openTaskModal());
   $('#task-cancel').addEventListener('click', () => $('#modal-task').classList.add('hidden'));
@@ -4035,12 +4126,18 @@
     try {
       const h = await api('GET', '/api/health');
       const chip = $('#health');
-      chip.textContent = h.ok ? `● ${h.claude}` : '● claude CLI not found';
+      // Either backend is enough to run a task; the header only shows the
+      // status dot — CLI versions live in Settings → About instead.
+      const agents = [h.claude, h.codex].filter(Boolean);
+      chip.textContent = h.ok ? '●' : '● no agent CLI found';
+      chip.title = h.ok
+        ? `Agent CLIs found:\n${agents.join('\n')}`
+        : 'No agent CLI found — install Claude Code and/or OpenAI Codex';
       chip.classList.add(h.ok ? 'ok' : 'bad');
       const about = $('#setting-about-version');
       if (about && h.version) {
         about.textContent = `Sr. Popo v${h.version} · Node ${h.node}` +
-          (h.ok ? ` · ${h.claude}` : '');
+          (agents.length ? ` · ${agents.join(' · ')}` : '');
       }
     } catch { /* server down; toast already shown */ }
 
