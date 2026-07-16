@@ -88,7 +88,7 @@ const TOOL_DEFS = [
         title: { type: 'string', description: 'Short task title.' },
         prompt: { type: 'string', description: 'The prompt the agent will run.' },
         agent: { type: 'string', description: 'Which backend runs the task: "claude" (default) or "codex".' },
-        model: { type: 'string', description: 'A model for the chosen agent, or "default" for its account default. Claude: sonnet / opus / haiku / fable, or a custom model id configured in Settings. Codex: e.g. gpt-5.2-codex.' },
+        model: { type: 'string', description: 'A model for the chosen agent, or "default" for its account default. Claude: sonnet / opus / haiku / fable, or a custom model id configured in Settings. Codex: e.g. gpt-5.6-sol.' },
         useWorktree: { type: 'boolean', description: 'Run isolated on a srpopo/<slug> worktree branch.' },
         permissionMode: { type: 'string', description: 'acceptEdits (default), bypassPermissions, plan, or default. On codex these map to a sandbox level rather than per-tool prompts.' },
         status: { type: 'string', description: '"ready" to stage for dispatch, otherwise backlog.' },

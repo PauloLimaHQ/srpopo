@@ -1637,10 +1637,10 @@ test('agents/codex: buildArgs streams exec --json over stdin, maps sandbox, and 
   const codex = require('../server/agents/codex');
 
   // Fresh acceptEdits run: workspace-write sandbox, no approvals, prompt on stdin (-).
-  const fresh = codex.buildArgs({ permissionMode: 'acceptEdits', model: 'gpt-5.2-codex' }, false);
+  const fresh = codex.buildArgs({ permissionMode: 'acceptEdits', model: 'gpt-5.6-sol' }, false);
   assert.deepStrictEqual(
     fresh,
-    ['exec', '--json', '--skip-git-repo-check', '--sandbox', 'workspace-write', '-m', 'gpt-5.2-codex', '-'],
+    ['exec', '--json', '--skip-git-repo-check', '--sandbox', 'workspace-write', '-m', 'gpt-5.6-sol', '-'],
     'fresh run maps acceptEdits to a workspace-write sandbox and reads the prompt from stdin',
   );
 
@@ -1681,7 +1681,7 @@ test('agents/codex: childEnv strips OPENAI_API_KEY and the nested-session marker
   process.env.OPENAI_API_KEY = 'sk-openai-leak';
   process.env.CLAUDECODE = '1';
   try {
-    const env = codex.childEnv('gpt-5.2-codex');
+    const env = codex.childEnv('gpt-5.6-sol');
     assert.ok(!('OPENAI_API_KEY' in env), 'subscription-only: the OpenAI key never reaches a codex run');
     assert.ok(!('CLAUDECODE' in env), 'nested-session marker stripped');
     assert.ok(!('CLAUDE_CODE_ENTRYPOINT' in env), 'nested-session entrypoint stripped');

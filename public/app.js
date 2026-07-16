@@ -4126,9 +4126,10 @@
     try {
       const h = await api('GET', '/api/health');
       const chip = $('#health');
-      // Either backend is enough to run a task, so list whichever are installed.
+      // Either backend is enough to run a task; the header only shows the
+      // status dot — CLI versions live in Settings → About instead.
       const agents = [h.claude, h.codex].filter(Boolean);
-      chip.textContent = h.ok ? `● ${agents.join(' · ')}` : '● no agent CLI found';
+      chip.textContent = h.ok ? '●' : '● no agent CLI found';
       chip.title = h.ok
         ? `Agent CLIs found:\n${agents.join('\n')}`
         : 'No agent CLI found — install Claude Code and/or OpenAI Codex';
