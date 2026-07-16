@@ -103,16 +103,38 @@
   // Persistent "update ready" banner (Electron only) — unlike toast() above it
   // does not auto-dismiss; it stays until the user relaunches.
   function showUpdateBanner(version) {
+    $('#update-downloading')?.remove(); // the download it announced is done
     if ($('#update-banner')) return;
     const el = document.createElement('div');
     el.id = 'update-banner';
     el.className = 'toast info update-banner';
     el.innerHTML =
       `${icon('rotate-cw')}` +
-      `<span>A new version of Sr. Popo is ready${version ? ` (v${esc(version)})` : ''} — Relaunch to update.</span>` +
-      `<button class="btn primary" id="update-banner-btn">Relaunch</button>`;
+      `<span>Sr. Popo${version ? ` v${esc(version)}` : ''} is downloaded and ready — relaunch to update.</span>` +
+      `<button class="btn primary" id="update-banner-btn">Relaunch to update</button>`;
     $('#toasts').appendChild(el);
     $('#update-banner-btn').addEventListener('click', () => window.srpopo.restartToUpdate());
+  }
+
+  // Downloading an update takes a while and used to be silent. Say so once per
+  // version — the flag is remembered so a board reload (or a re-check four hours
+  // later) doesn't nag about the same download again.
+  function showUpdateDownloading(version) {
+    const key = `srpopo:update-downloading-seen:${version || 'unknown'}`;
+    if ($('#update-banner') || $('#update-downloading')) return;
+    try {
+      if (localStorage.getItem(key)) return;
+      localStorage.setItem(key, '1');
+    } catch (_) { /* private mode: just show it */ }
+    const el = document.createElement('div');
+    el.id = 'update-downloading';
+    el.className = 'toast info update-banner';
+    el.innerHTML =
+      `${icon('download')}` +
+      `<span>Downloading Sr. Popo${version ? ` v${esc(version)}` : ''} in the background — once it finishes you'll be able to relaunch to update.</span>` +
+      `<button class="btn ghost" id="update-downloading-dismiss">Got it</button>`;
+    $('#toasts').appendChild(el);
+    $('#update-downloading-dismiss').addEventListener('click', () => el.remove());
   }
 
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
@@ -3934,11 +3956,18 @@
   }
 
   // ---------- auto-update (Electron) ----------
-  // The main process downloads updates in the background (electron-updater)
-  // and tells us here once one is ready — never auto-restart without the user
-  // clicking Relaunch.
+  // The main process downloads updates in the background (electron-updater) and
+  // tells us when the download starts and when it's ready — never auto-restart
+  // without the user clicking Relaunch.
   if (isElectron && window.srpopo.onUpdateReady) {
     window.srpopo.onUpdateReady((version) => showUpdateBanner(version));
+    window.srpopo.onUpdateDownloading?.((version) => showUpdateDownloading(version));
+    // The check may have landed before this window loaded — ask for the state.
+    window.srpopo.getUpdateStatus?.().then((s) => {
+      if (!s) return;
+      if (s.ready) showUpdateBanner(s.ready);
+      else if (s.downloading) showUpdateDownloading(s.downloading);
+    }).catch(() => { /* older shell without the handler */ });
   }
 
   // ---------- drawer close ----------
