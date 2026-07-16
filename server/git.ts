@@ -41,6 +41,21 @@ async function headSha(repoPath: string): Promise<string | null> {
   }
 }
 
+// Whether `relPath` is tracked by git in `repoPath`. Decides whether a spec
+// import can point a task at the file by path: `git worktree add` only checks out
+// tracked files, so a git-ignored spec (a common pattern for scratch spec dirs)
+// simply won't exist in the run's worktree. False on any error, which keeps the
+// caller on the safe path (inline the content) rather than referencing a file
+// that may not be there.
+async function isTracked(repoPath: string, relPath: string): Promise<boolean> {
+  try {
+    await git(repoPath, ['ls-files', '--error-unmatch', '--', relPath]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // Extracts the "org/repo" slug from a git remote URL, e.g.
 // "git@github.com:anplabs/platform.git" or "https://github.com/anplabs/platform"
 // both become "anplabs/platform". Returns null for URLs that don't fit the
@@ -216,6 +231,7 @@ export {
   createBranch,
   checkoutBranch,
   headSha,
+  isTracked,
   displayName,
   addWorktree,
   removeWorktree,

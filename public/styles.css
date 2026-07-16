@@ -1020,6 +1020,10 @@ input, textarea, select {
   padding: 9px 11px; font-size: 13px; font-family: inherit; width: 100%;
 }
 textarea { font-family: var(--mono); font-size: 12px; }
+/* Checkboxes and radios aren't text fields: keep them at their intrinsic size
+   rather than inheriting the field padding/width above. Left stretched, one in a
+   flex row squeezes its siblings to zero width. */
+input[type="checkbox"], input[type="radio"] { width: auto; padding: 0; }
 input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); }
 
 .repo-list { list-style: none; display: flex; flex-direction: column; gap: 6px; }
@@ -1098,7 +1102,7 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--a
 .spec-row:hover { background: var(--bg-hover); }
 .spec-row.previewing { border-color: var(--accent); }
 .spec-row.picked { background: var(--accent-soft); }
-.spec-row input[type="checkbox"] { margin-top: 2px; flex: none; }
+.spec-row input[type="checkbox"] { margin-top: 3px; flex: none; }
 .spec-row-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .spec-row-title { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .spec-row-num { font-family: var(--mono); color: var(--text-dim); font-size: 11px; }

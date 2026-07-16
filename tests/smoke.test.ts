@@ -660,6 +660,54 @@ test('repoSpecs: readSpec rejects path traversal and missing files', () => {
   );
 });
 
+test('repoSpecs: referencePrompt points at the spec instead of pasting it', () => {
+  const repoSpecs = require('../server/repoSpecs');
+  const prompt = repoSpecs.referencePrompt('specs/0084-add-auth.md');
+  assert.match(prompt, /Read the spec at `specs\/0084-add-auth\.md` and implement it\./);
+  assert.ok(!prompt.includes('@specs/'), 'no CLI-specific @-mention: the backend is switchable to Codex');
+  assert.ok(prompt.length < 1000, 'stays a short instruction rather than a copy of the spec');
+});
+
+test('repoSpecs: inlinePrompt carries the text for a spec the run cannot open', () => {
+  const repoSpecs = require('../server/repoSpecs');
+  const prompt = repoSpecs.inlinePrompt('.specs/active/idea.md', '# Idea\n\nDo the thing.');
+  assert.ok(prompt.includes('# Idea\n\nDo the thing.'), 'the spec body travels in the prompt');
+  assert.match(prompt, /`\.specs\/active\/idea\.md`/, 'still names the path it came from');
+  assert.match(prompt, /not\n?checked into git/, 'explains why the text is inlined');
+});
+
+// The tracked check is what decides reference-vs-inline at import, and getting it
+// backwards points a run at a file that isn't in its worktree — so exercise it
+// against a real git repo rather than a stub.
+test('git: isTracked distinguishes committed specs from git-ignored ones', async () => {
+  const git = require('../server/git');
+  const { execFileSync } = require('child_process');
+  const repoPath = fs.mkdtempSync(path.join(os.tmpdir(), 'srpopo-tracked-'));
+  const run = (...args: string[]) => execFileSync('git', ['-C', repoPath, ...args], { stdio: 'pipe' });
+  run('init', '-q');
+  run('config', 'user.email', 'test@example.com');
+  run('config', 'user.name', 'Test');
+
+  fs.mkdirSync(path.join(repoPath, 'specs'), { recursive: true });
+  fs.writeFileSync(path.join(repoPath, 'specs', 'tracked.md'), '# Tracked');
+  fs.mkdirSync(path.join(repoPath, '.specs'), { recursive: true });
+  fs.writeFileSync(path.join(repoPath, '.specs', 'ignored.md'), '# Ignored');
+  fs.writeFileSync(path.join(repoPath, '.gitignore'), '.specs/\n');
+  run('add', 'specs/tracked.md', '.gitignore');
+  run('commit', '-qm', 'add spec');
+
+  assert.strictEqual(await git.isTracked(repoPath, 'specs/tracked.md'), true);
+  assert.strictEqual(
+    await git.isTracked(repoPath, '.specs/ignored.md'), false,
+    'a git-ignored spec is absent from a worktree, so it must not be referenced by path',
+  );
+  assert.strictEqual(await git.isTracked(repoPath, 'specs/nope.md'), false, 'a missing path is not tracked');
+  assert.strictEqual(
+    await git.isTracked(os.tmpdir(), 'specs/tracked.md'), false,
+    'a non-repo answers false rather than throwing',
+  );
+});
+
 test('repoSpecs: parseFrontmatter reads key/value pairs and never throws', () => {
   const repoSpecs = require('../server/repoSpecs');
   const fm = repoSpecs.parseFrontmatter('---\nnumber: "0084"\nstatus: draft\ntitle: Add Auth\n---\n# Ignored\n');

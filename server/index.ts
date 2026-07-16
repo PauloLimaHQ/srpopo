@@ -1008,13 +1008,20 @@ app.get('/api/repos/:id/specs/preview', (req: Request, res: Response) => {
   res.json({ content: result.content });
 });
 
-// Import one or more spec files straight onto the board as tasks — a file's
-// content becomes its task's prompt as-is (no grooming pass in between, unlike
-// the Linear import: a spec file already reads like a self-contained
-// instruction). Paths that fail to read are skipped rather than failing the
-// whole request, so the UI can report "N imported, M skipped". Doesn't spawn a
-// `claude` process, so (unlike dispatch/groom) there's no capacity check here.
-app.post('/api/repos/:id/specs/import', (req: Request, res: Response) => {
+// Import one or more spec files straight onto the board as tasks (no grooming
+// pass in between, unlike the Linear import: a spec file already reads like a
+// self-contained instruction). Paths that fail to read are skipped rather than
+// failing the whole request, so the UI can report "N imported, M skipped".
+// Doesn't spawn a `claude` process, so (unlike dispatch/groom) there's no
+// capacity check here.
+//
+// The spec already lives in the repo, so the task's prompt points the run at the
+// file rather than pasting its text in — the run reads it fresh at dispatch (and
+// re-reads while working) instead of implementing a copy frozen at import time.
+// That only holds when the file is in the run's working directory, so a spec that
+// git doesn't track falls back to inlining: `git worktree add` checks out tracked
+// files only, and a git-ignored spec dir would leave the run pointed at nothing.
+app.post('/api/repos/:id/specs/import', async (req: Request, res: Response) => {
   if (!pluginInstalled('repo-specs')) return err(res, 400, 'Install the Repository Specs plugin first');
   const repo = db.repos.find((r) => r.id === req.params.id);
   if (!repo) return err(res, 404, 'Repo not found');
@@ -1029,10 +1036,15 @@ app.post('/api/repos/:id/specs/import', (req: Request, res: Response) => {
   for (const relPath of paths) {
     const result = repoSpecs.readSpec(repo.path, relPath);
     if (!result.ok) { skipped.push(relPath); continue; }
+    // A run outside a worktree works in the repo itself, where the file is on
+    // disk whether git tracks it or not.
+    const readableAtRuntime = !useWorktree || (await git.isTracked(repo.path, relPath));
     const task: Task = {
       id: id(),
       title: repoSpecs.deriveTitle(relPath, result.content),
-      prompt: result.content,
+      prompt: readableAtRuntime
+        ? repoSpecs.referencePrompt(relPath)
+        : repoSpecs.inlinePrompt(relPath, result.content),
       specOrigin: { path: relPath },
       repoId: repo.id,
       repoName: repo.name,

@@ -191,6 +191,48 @@ function discoverSpecs(repoPath: string): RepoSpecFile[] {
   return out;
 }
 
+// The prompt for a task imported from a spec the run can open itself: point it at
+// the file instead of pasting the whole thing in. The spec is committed in the
+// repo, so the run reads it from disk at the version it will actually implement —
+// and re-reads it as it works, rather than relying on one stale copy frozen into
+// the prompt at import time. Callers must only use this when the file is present
+// in the run's working directory (see git.isTracked) — otherwise inline the
+// content with inlinePrompt below.
+//
+// Deliberately plain prose with a backticked path rather than a `@file` mention:
+// `@` is Claude-CLI-specific, and a task's backend is switchable to Codex after
+// import (see CLAUDE.md, "Agent backends"). "Read the spec at `path`" is a plain
+// instruction both backends act on with their own Read tool.
+function referencePrompt(relPath: string): string {
+  return [
+    `Read the spec at \`${relPath}\` and implement it.`,
+    '',
+    'That file is the source of truth for this task. Read it in full first, then read',
+    'the parts of the codebase it touches so your work matches the conventions already',
+    'there. Follow what the spec decides rather than re-planning it.',
+    '',
+    'If the spec is ambiguous, or contradicts the code as it actually exists, prefer the',
+    'codebase and call the discrepancy out in your summary instead of guessing. If some',
+    'of the scope turns out to be unreachable, implement what you can and say plainly',
+    'what you left undone and why.',
+  ].join('\n');
+}
+
+// The prompt for a spec the run *cannot* open: a git-ignored spec dir is never
+// checked out into a worktree, so the file's own text has to travel in the prompt.
+// The path is still named so the run can refer to it (and so the framing's spec
+// completion block lines up).
+function inlinePrompt(relPath: string, content: string): string {
+  return [
+    `Implement the spec below. It comes from \`${relPath}\` in this repo, which is not`,
+    'checked into git, so its full text is reproduced here rather than read from disk.',
+    '',
+    '---',
+    '',
+    content,
+  ].join('\n');
+}
+
 type ReadResult = { ok: true; content: string } | { ok: false; reason: 'not-found' | 'invalid-path' | 'error' };
 
 // Read one spec file's content by its path relative to repoPath (as returned
@@ -221,6 +263,8 @@ function readSpec(repoPath: string, relPath: string): ReadResult {
 export {
   discoverSpecs,
   readSpec,
+  referencePrompt,
+  inlinePrompt,
   deriveTitle,
   parseFrontmatter,
   readSpecConfig,
