@@ -12,13 +12,13 @@
  * user isn't actually billed per token.
  */
 import * as store from './store';
-import type { AskSession, Grooming, ModelUsageStat, Task, UsageEntry, UsageSummary } from './types';
+import type { Grooming, ModelUsageStat, Task, UsageEntry, UsageSummary } from './types';
 
 // The subset of Task/Grooming fields a ledger row needs. Both lifecycles carry
 // all of these, so entriesFromResult doesn't need to know which one it's
 // looking at — only applyResult/applyGroomResult (which also decide whether to
 // accumulate a per-model breakdown onto the record) do.
-interface UsageSource {
+export interface UsageSource {
   id: string;
   title: string;
   repoId: string;
@@ -109,12 +109,20 @@ function applyGroomResult(grooming: Grooming, event: Record<string, unknown>): v
 }
 
 // Called from runner.ts's `result` handler for every live "Ask Sr. Popo"
-// session. Same ledger bookkeeping as applyGroomResult (an ask session has no
-// modelUsage field to accumulate onto either) — the question stands in for a
-// task/grooming title so the ledger row reads sensibly.
-function applyAskResult(session: AskSession, event: Record<string, unknown>): void {
-  const source = { id: session.id, title: session.question, repoId: session.repoId, repoName: session.repoName, model: session.model, resolvedModel: session.resolvedModel };
+// session (see runner.ask). Ephemeral like a memory-distill session below —
+// never stored as a Task or Grooming — so the caller builds a small
+// UsageSource, using the question as the ledger row's "task title".
+function applyAskResult(source: UsageSource, event: Record<string, unknown>): void {
   const entries = entriesFromResult(source, 'ask', event);
+  for (const e of entries) store.appendUsage(e);
+}
+
+// Called from runner.ts's `result` handler for every background memory-
+// distillation session (see runner.distillMemory). These are ephemeral — never
+// stored as a Task or Grooming — so the caller builds a small UsageSource
+// carrying the distill session's own id/title alongside the repo it ran in.
+function applyMemoryResult(source: UsageSource, event: Record<string, unknown>): void {
+  const entries = entriesFromResult(source, 'memory', event);
   for (const e of entries) store.appendUsage(e);
 }
 
@@ -253,4 +261,4 @@ function computeSummary(opts: { period?: string; repoId?: string } = {}): UsageS
 // since it's a no-op once the ledger file exists.
 backfillIfNeeded();
 
-export { applyResult, applyGroomResult, applyAskResult, computeSummary, backfillIfNeeded };
+export { applyResult, applyGroomResult, applyAskResult, applyMemoryResult, computeSummary, backfillIfNeeded };

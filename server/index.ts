@@ -34,6 +34,7 @@ import * as terminal from './terminal';
 import * as usage from './usage';
 import * as taskService from './tasks';
 import * as mcp from './mcp';
+import * as memory from './memory';
 
 const app = express();
 
@@ -230,6 +231,7 @@ function publicSettings(): PublicSettings {
     // GET /api/remote-access endpoint.
     remoteAccessConfigured: !!(db.settings.remoteAccessToken && db.settings.remoteAccessToken.trim()),
     customModels: db.settings.customModels || [],
+    memory: !!db.settings.memory,
   };
 }
 
@@ -519,6 +521,7 @@ app.patch('/api/settings', (req: Request, res: Response) => {
   }
   if ('autoResolveConflicts' in req.body) db.settings.autoResolveConflicts = !!req.body.autoResolveConflicts;
   if ('assignPrToSelf' in req.body) db.settings.assignPrToSelf = !!req.body.assignPrToSelf;
+  if ('memory' in req.body) db.settings.memory = !!req.body.memory;
   // Custom models (e.g. Amazon Bedrock): the board sends the full desired list;
   // we sanitize it into clean entries (invalid rows dropped, API key stripped).
   if ('customModels' in req.body) db.settings.customModels = sanitizeCustomModels(req.body.customModels);
@@ -794,6 +797,7 @@ app.delete('/api/repos/:id', (req: Request, res: Response) => {
     db.groomings.some((g) => g.repoId === req.params.id && !g.archived);
   if (active) return err(res, 409, 'Repo has non-archived tasks or groomings; archive them first');
   db.repos.splice(idx, 1);
+  memory.removeMemory(req.params.id);
   save();
   broadcast({ type: 'repos', repos: db.repos });
   res.json({ ok: true });
@@ -844,6 +848,29 @@ app.post('/api/repos/:id/ask', (req: Request, res: Response) => {
 app.post('/api/asks/:id/stop', (req: Request, res: Response) => {
   if (!runner.stop(req.params.id)) return err(res, 409, 'Ask session is not running');
   res.json({ ok: true });
+});
+
+// ---------- project memory ----------
+//
+// A private, per-repo markdown document of durable learnings, distilled in the
+// background after each task that finishes successfully (see
+// runner.distillMemory) and injected into grooming sessions for context (see
+// groomer.metaPrompt). Lives only under Sr. Popo's own data dir — never inside
+// the user's repository (see server/memory.ts).
+
+app.get('/api/repos/:id/memory', (req: Request, res: Response) => {
+  const repo = getRepo(req.params.id);
+  if (!repo) return err(res, 404, 'Repo not found');
+  res.json(memory.memoryInfo(repo.id));
+});
+
+app.put('/api/repos/:id/memory', (req: Request, res: Response) => {
+  const repo = getRepo(req.params.id);
+  if (!repo) return err(res, 404, 'Repo not found');
+  if (typeof req.body.content !== 'string') return err(res, 400, 'content must be a string');
+  memory.writeMemory(repo.id, req.body.content);
+  broadcast({ type: 'memory', repoId: repo.id, updatedAt: now() });
+  res.json(memory.memoryInfo(repo.id));
 });
 
 // ---------- tasks ----------
@@ -1304,8 +1331,10 @@ app.post('/api/tasks/:id/permissions/:reqId', (req: Request, res: Response) => {
 });
 
 // Toggle a running task's auto-approve ("AUTO MODE"): while on, every tool the run
-// would otherwise prompt for is allowed at once, with no prompt. Process-local and
-// only valid while the claude child is alive — off once the run ends.
+// would otherwise prompt for is allowed at once, with no prompt. Process-local, but
+// sticky per task — it survives this run ending and carries over to the next
+// dispatch/resume of the same task, so stopping and redispatching (or a resume that
+// needs another turn) doesn't re-prompt. Toggle it off explicitly to turn it back off.
 app.post('/api/tasks/:id/auto-approve', (req: Request, res: Response) => {
   const task = getTask(req.params.id);
   if (!task) return err(res, 404, 'Task not found');
@@ -1323,6 +1352,7 @@ app.post('/api/tasks/:id/archive', (req: Request, res: Response) => {
   // The task is gone from the board; drop its uploaded files too. Absent dir is fine.
   attachments.removeDir(task.id);
   task.attachments = [];
+  permissions.forgetTask(task.id);
   save();
   broadcast({ type: 'task-removed', taskId: task.id });
   res.json({ ok: true });

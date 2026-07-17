@@ -58,6 +58,7 @@
       </div>
     </div>
     <button class="btn ghost hidden" id="btn-autonomous" title="Autonomous Mode"><span class="i" data-icon="bot"></span>Autonomous</button>
+    <button class="btn ghost icon" id="workspace-memory" title="Project memory" aria-label="Project memory"><span class="i" data-icon="brain"></span></button>
     <button class="btn ghost icon" id="workspace-terminal" title="Open a terminal here" aria-label="Open terminal"><span class="i" data-icon="terminal"></span></button>
     <button class="btn ghost icon" id="workspace-info" title="Workspace details" aria-label="Workspace details"><span class="i" data-icon="info"></span></button>
   </div>
@@ -473,6 +474,19 @@
               <p class="addon-hint">Caps how many agent sessions run at once so they don't starve each other of CPU. 3 is a good default on a typical laptop.</p>
             </fieldset>
             <fieldset class="addons">
+              <legend>Project memory</legend>
+              <label class="check addon">
+                <input type="checkbox" id="setting-memory" />
+                <span class="addon-text">
+                  <span class="addon-label">Distill learnings after each finished task</span>
+                  <span class="addon-hint">After a task finishes successfully, a short read-only session (on a
+                    cheap fixed model) reviews what changed and folds any durable, project-level learning into
+                    a private per-repo memory document — viewable from a workspace's <strong>Memory</strong>
+                    button. Injected into "Brief an Idea" sessions for context.</span>
+                </span>
+              </label>
+            </fieldset>
+            <fieldset class="addons">
               <legend>Pull requests</legend>
               <label class="check addon">
                 <input type="checkbox" id="setting-auto-resolve-conflicts" />
@@ -642,6 +656,23 @@
       <div class="modal-actions">
         <button class="btn ghost" id="workspace-open-terminal" title="Open a terminal at the repository path"><span class="i" data-icon="terminal"></span>Open Terminal</button>
         <button class="btn ghost" id="workspace-modal-close">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Project memory viewer/editor: a private, per-repo markdown document distilled
+       in the background after each finished task (see server/memory.ts) -->
+  <div id="modal-memory" class="modal hidden">
+    <div class="modal-box">
+      <h2><span class="i" data-icon="brain"></span> Project Memory</h2>
+      <p class="field-hint">Durable learnings Sr. Popo has picked up about this project — conventions,
+        architecture, decisions, gotchas. Distilled automatically after each task that finishes successfully;
+        edit it directly here if you want to correct or add something.</p>
+      <textarea id="memory-content" class="memory-textarea" spellcheck="false" placeholder="No memory recorded yet."></textarea>
+      <div class="modal-actions">
+        <span class="field-hint" id="memory-updated-at"></span>
+        <button class="btn ghost" id="memory-close">Close</button>
+        <button class="btn primary" id="memory-save"><span class="i" data-icon="check"></span>Save</button>
       </div>
     </div>
   </div>

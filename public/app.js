@@ -751,6 +751,45 @@
 
   $('#terminal-close').addEventListener('click', closeTerminal);
 
+  // ---------- project memory ----------
+  // A private, per-repo markdown document (see server/memory.ts) distilled in
+  // the background after each finished task. Pull-based — fetched fresh each
+  // time the modal opens rather than kept live via SSE, so an in-progress edit
+  // is never clobbered by a background distill landing mid-edit.
+  async function openMemoryModal(repoId) {
+    $('#modal-memory').classList.remove('hidden');
+    $('#memory-content').value = '';
+    $('#memory-content').dataset.repoId = repoId;
+    $('#memory-updated-at').textContent = 'Loading…';
+    try {
+      const { content, updatedAt } = await api('GET', `/api/repos/${repoId}/memory`);
+      $('#memory-content').value = content;
+      $('#memory-updated-at').textContent = updatedAt ? `Updated ${new Date(updatedAt).toLocaleString()}` : 'No memory recorded yet';
+    } catch (e) {
+      $('#memory-updated-at').textContent = '';
+      toast(e.message || 'Failed to load project memory', 'error');
+    }
+  }
+
+  async function saveMemoryModal() {
+    const repoId = $('#memory-content').dataset.repoId;
+    if (!repoId) return;
+    try {
+      const { updatedAt } = await api('PUT', `/api/repos/${repoId}/memory`, { content: $('#memory-content').value });
+      $('#memory-updated-at').textContent = updatedAt ? `Updated ${new Date(updatedAt).toLocaleString()}` : '';
+      toast('Project memory saved', 'info');
+    } catch (e) {
+      toast(e.message || 'Failed to save project memory', 'error');
+    }
+  }
+
+  $('#workspace-memory').addEventListener('click', () => {
+    const repoId = state.view.repoId;
+    if (repoId) openMemoryModal(repoId);
+  });
+  $('#memory-close').addEventListener('click', () => $('#modal-memory').classList.add('hidden'));
+  $('#memory-save').addEventListener('click', saveMemoryModal);
+
   $('#workspace-back').addEventListener('click', exitWorkspace);
   $('#workspace-terminal').addEventListener('click', () => {
     const repoId = state.view.repoId;
@@ -3581,6 +3620,7 @@
     $('#setting-merge-strategy').value = state.settings.mergeStrategy || 'merge';
     $('#setting-auto-resolve-conflicts').checked = !!state.settings.autoResolveConflicts;
     $('#setting-assign-pr-to-self').checked = !!state.settings.assignPrToSelf;
+    $('#setting-memory').checked = !!state.settings.memory;
     renderPlugins();
     renderCustomModels();
     renderRemoteAccess();
@@ -3716,6 +3756,9 @@
   });
   $('#setting-assign-pr-to-self').addEventListener('change', async (e) => {
     await saveSettings({ assignPrToSelf: e.target.checked });
+  });
+  $('#setting-memory').addEventListener('change', async (e) => {
+    await saveSettings({ memory: e.target.checked });
   });
 
   // ---------- remote access (LAN) ----------
@@ -4144,6 +4187,7 @@
           $('#setting-merge-strategy').value = state.settings.mergeStrategy || 'merge';
           $('#setting-auto-resolve-conflicts').checked = !!state.settings.autoResolveConflicts;
           $('#setting-assign-pr-to-self').checked = !!state.settings.assignPrToSelf;
+          $('#setting-memory').checked = !!state.settings.memory;
           updateNotifNote();
           renderPlugins();
           renderCustomModels();

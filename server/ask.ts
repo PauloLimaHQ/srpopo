@@ -2,27 +2,20 @@
  * "Ask Sr. Popo" — free-form Q&A about a registered repo, answered by a short,
  * read-only Claude session run inside it (see runner.ask). This file owns the
  * two small pieces that make that answer useful:
- *   - `readMemory(repoId)` — the repo's accumulated project memory, if a
- *     parallel feature has written one (DATA_DIR/memory/<repoId>.md). Missing
- *     is a normal, expected case: the session then answers from repo
- *     exploration alone.
+ *   - `readMemory(repoId)` — the repo's accumulated project memory (see
+ *     server/memory.ts), if any exists yet. Missing is a normal, expected
+ *     case: the session then answers from repo exploration alone.
  *   - `askPrompt(question, memory)` — the session's instructions.
  */
-import fs from 'fs';
-import path from 'path';
-
-import { DATA_DIR } from './store';
+import * as memory from './memory';
 
 // The repo's accumulated project memory, if one exists yet. Returns null (not
-// an error) when the file is absent — memory is optional context, not a
-// requirement to answer a question.
+// an error) when there's none — memory is optional context, not a requirement
+// to answer a question. memory.readMemory itself never throws, returning ''
+// for a missing/unreadable file.
 function readMemory(repoId: string): string | null {
-  try {
-    const text = fs.readFileSync(path.join(DATA_DIR, 'memory', `${repoId}.md`), 'utf8').trim();
-    return text || null;
-  } catch {
-    return null;
-  }
+  const text = memory.readMemory(repoId).trim();
+  return text || null;
 }
 
 // The read-only session prompt for a developer's free-form question about a

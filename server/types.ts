@@ -67,6 +67,11 @@ export interface Settings {
   // User-defined models (e.g. Amazon Bedrock) offered alongside the built-in
   // ones in every model picker. See CustomModel.
   customModels: CustomModel[];
+  // When on, a short read-only session distills durable learnings from each
+  // task that finishes successfully into a per-repo memory document (see
+  // server/memory.ts), which is then injected into grooming sessions for
+  // context. On by default — it runs on a cheap fixed model and is cheap.
+  memory: boolean;
 }
 
 // The redacted, board-facing view of Settings. Omits the raw Linear token and
@@ -88,6 +93,7 @@ export interface PublicSettings {
   // Returned to the board as-is (not a secret) so the pickers and the Models
   // settings pane can render/edit them.
   customModels: CustomModel[];
+  memory: boolean;
 }
 
 // A marketplace plugin as the UI lists it. The full catalog lives in
@@ -337,7 +343,7 @@ export interface UsageEntry {
   repoId: string;
   repoName: string;
   model: string;
-  kind: 'run' | 'groom' | 'ask';
+  kind: 'run' | 'groom' | 'ask' | 'memory';
   costUsd: number;
   inputTokens: number;
   outputTokens: number;

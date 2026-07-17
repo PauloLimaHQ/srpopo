@@ -1099,12 +1099,24 @@ test('permissions: auto-approve allows new requests and clears the pending backl
   assert.deepStrictEqual(await next.promise, { behavior: 'allow' }, 'new request is auto-allowed');
   assert.strictEqual(permissions.listForTask(taskId).length, 0, 'auto-allowed requests never pend');
 
-  // Turning it off goes back to prompting; ending the run clears the flag too.
+  // Turning it off goes back to prompting.
   permissions.setAutoApprove(taskId, false);
   assert.strictEqual(permissions.isAutoApprove(taskId), false, 'auto-approve turns back off');
+
+  // Ending the run (a stop, or a resume awaiting another turn) must NOT drop it —
+  // it's a per-task preference that should carry over to the next dispatch of the
+  // same task, not a per-run one the user has to re-flip every time.
   permissions.setAutoApprove(taskId, true);
   permissions.rejectForTask(taskId, 'Run ended');
-  assert.strictEqual(permissions.isAutoApprove(taskId), false, 'ending the run drops auto-approve');
+  assert.strictEqual(permissions.isAutoApprove(taskId), true, 'auto-approve survives the run ending');
+
+  // A fresh run for the same task should honor it immediately, with no re-prompt.
+  const afterResume = permissions.create(taskId, 'Bash', { command: 'echo hi' });
+  assert.deepStrictEqual(await afterResume.promise, { behavior: 'allow' }, 'the next run auto-allows without re-toggling');
+
+  // Only forgetTask (used when the task itself is archived) actually clears it.
+  permissions.forgetTask(taskId);
+  assert.strictEqual(permissions.isAutoApprove(taskId), false, 'forgetTask drops auto-approve for good');
 });
 
 test('permissions: an unanswered prompt auto-denies after the timeout', async () => {
@@ -1834,4 +1846,111 @@ test('agents/claude: parseLine normalizes init, subagent open/close, and result'
   assert.strictEqual(result.result.numTurns, 3);
   assert.strictEqual(result.result.text, 'done');
   assert.strictEqual((result.result.usageEvent as { total_cost_usd: number }).total_cost_usd, 0.05, 'the raw result is the usage event');
+});
+
+test('store: settings default memory (project memory distillation) to on', () => {
+  const store = require('../server/store');
+  assert.strictEqual(store.db.settings.memory, true, 'memory defaults on');
+  assert.strictEqual(store.DEFAULT_SETTINGS.memory, true, 'memory default is exported');
+});
+
+test('memory: read/write round-trips through the per-repo file, atomically and capped at 64 KB', () => {
+  const memory = require('../server/memory');
+  const fs = require('fs');
+  const repoId = `test-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+  assert.strictEqual(memory.readMemory(repoId), '', 'missing memory reads back empty');
+  assert.deepStrictEqual(memory.memoryInfo(repoId), { content: '', updatedAt: null });
+
+  memory.writeMemory(repoId, '## Conventions\nUse 2-space indent.');
+  assert.strictEqual(memory.readMemory(repoId), '## Conventions\nUse 2-space indent.');
+  const info = memory.memoryInfo(repoId);
+  assert.strictEqual(info.content, '## Conventions\nUse 2-space indent.');
+  assert.match(info.updatedAt, /^\d{4}-\d{2}-\d{2}T/, 'updatedAt is an ISO timestamp');
+
+  // Atomic write: no leftover .tmp file once the write completes.
+  assert.ok(!fs.existsSync(memory.memoryPath(repoId) + '.tmp'), 'no leftover temp file after a write');
+
+  // Hard-capped at 64 KB even if the caller hands over more.
+  memory.writeMemory(repoId, 'x'.repeat(100 * 1024));
+  assert.strictEqual(memory.readMemory(repoId).length, 64 * 1024, 'content is capped at 64 KB');
+
+  memory.removeMemory(repoId);
+  assert.strictEqual(memory.readMemory(repoId), '', 'removeMemory deletes the file');
+});
+
+test('memory: parseDistillResult recovers an update, else null for NO_CHANGES/garbage/failure', () => {
+  const memory = require('../server/memory');
+
+  const updated = `Sure.\n${memory.MEMORY_START}\n## Gotchas\nWatch out for X.\n${memory.MEMORY_END}\nthanks!`;
+  assert.strictEqual(memory.parseDistillResult(updated), '## Gotchas\nWatch out for X.');
+
+  const noChanges = `${memory.MEMORY_START}\nNO_CHANGES\n${memory.MEMORY_END}`;
+  assert.strictEqual(memory.parseDistillResult(noChanges), null, 'NO_CHANGES means leave memory untouched');
+
+  assert.strictEqual(memory.parseDistillResult('no sentinels here at all'), null, 'garbage with no span parses to null');
+  assert.strictEqual(memory.parseDistillResult(''), null, 'empty text (a failed session) parses to null');
+  assert.strictEqual(memory.parseDistillResult(undefined), null);
+});
+
+test('groomer: metaPrompt only appends the "what Sr. Popo remembers" section when memory is non-empty', () => {
+  const groomer = require('../server/groomer');
+
+  const withoutMemory = groomer.metaPrompt('add a dark mode toggle');
+  assert.ok(!withoutMemory.includes('What Sr. Popo remembers'), 'no memory section when memory is omitted');
+
+  const withoutMemoryBlank = groomer.metaPrompt('add a dark mode toggle', '   ');
+  assert.strictEqual(withoutMemoryBlank, withoutMemory, 'a blank memory string leaves the prompt byte-identical');
+
+  const withMemory = groomer.metaPrompt('add a dark mode toggle', '## Conventions\nUse 2-space indent.');
+  assert.match(withMemory, /What Sr\. Popo remembers about this project/);
+  assert.match(withMemory, /Use 2-space indent\./);
+});
+
+test('memory: GET/PUT /api/repos/:id/memory read and write the repo\'s memory file', async () => {
+  const http = require('http');
+  const { app } = require('../server/index');
+  const store = require('../server/store');
+  const memory = require('../server/memory');
+
+  const server = http.createServer(app);
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as { port: number };
+  const base = `http://127.0.0.1:${port}`;
+
+  const repo = { id: store.id(), path: process.cwd(), name: 'memory-test-repo', branch: null, addedAt: store.now() };
+  store.db.repos.push(repo);
+
+  try {
+    let res = await fetch(`${base}/api/repos/nonexistent/memory`);
+    assert.strictEqual(res.status, 404, 'unknown repo -> 404');
+
+    res = await fetch(`${base}/api/repos/${repo.id}/memory`);
+    assert.strictEqual(res.status, 200);
+    assert.deepStrictEqual(await res.json(), { content: '', updatedAt: null }, 'no memory yet');
+
+    res = await fetch(`${base}/api/repos/${repo.id}/memory`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: 123 }),
+    });
+    assert.strictEqual(res.status, 400, 'non-string content -> 400');
+
+    res = await fetch(`${base}/api/repos/${repo.id}/memory`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: '## Decisions\nUse Haiku for background distillation.' }),
+    });
+    assert.strictEqual(res.status, 200);
+    const saved = await res.json();
+    assert.strictEqual(saved.content, '## Decisions\nUse Haiku for background distillation.');
+    assert.ok(saved.updatedAt);
+
+    res = await fetch(`${base}/api/repos/${repo.id}/memory`);
+    assert.strictEqual((await res.json()).content, '## Decisions\nUse Haiku for background distillation.', 're-reads what was saved');
+  } finally {
+    store.db.repos.splice(store.db.repos.indexOf(repo), 1);
+    memory.removeMemory(repo.id);
+    await new Promise((resolve) => server.close(resolve));
+  }
 });

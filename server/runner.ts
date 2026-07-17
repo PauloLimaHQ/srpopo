@@ -2,10 +2,11 @@ import { spawn } from 'child_process';
 import type { ChildProcess } from 'child_process';
 import readline from 'readline';
 
-import { save, now, appendLog } from './store';
+import { db, save, now, appendLog } from './store';
 import { broadcast } from './bus';
 import * as groomer from './groomer';
 import { askPrompt } from './ask';
+import * as memory from './memory';
 import * as permissions from './permissions';
 import * as usage from './usage';
 import * as claude from './agents/claude';
@@ -213,6 +214,77 @@ function launch<T extends SessionRecord>(rec: T, { adapter, args, workDir, promp
 }
 
 /**
+ * Best-effort background memory distillation, kicked off after a task lands in
+ * `review` (see dispatch's resolveExit). A short, read-only Claude session
+ * (see server/memory.ts) reviews what the task changed and folds any durable,
+ * project-level learning into the repo's memory document. Everything here is
+ * fire-and-forget: any guard below failing just means memory catches up on the
+ * next task, never a queued retry.
+ */
+function maybeDistill(task: Task): void {
+  if (!db.settings.memory) return;
+  // `running` is already keyed by session id, and the distiller's id is scoped
+  // to the repo (memory-<repoId>), so checking it here doubles as the "no
+  // distill session already in flight for this repo" guard — with no separate
+  // bookkeeping to leak if a spawn fails before ever reaching launch()'s own
+  // exit handler.
+  if (running.has(`memory-${task.repoId}`)) return;
+  if (runningCount() >= db.settings.maxParallelSessions) return;
+  try {
+    distillMemory(task);
+  } catch (e) {
+    console.warn('[memory] failed to start distill session:', (e as Error).message);
+  }
+}
+
+// Ephemeral: unlike dispatch/groom this session is never persisted to
+// db.json — `emit` only broadcasts, it never save()s a task or grooming — and
+// it always runs read-only in the task's own working directory so git diff/show
+// can see what the task actually changed.
+function distillMemory(task: Task): void {
+  const rec: SessionRecord = {
+    id: `memory-${task.repoId}`,
+    status: 'running',
+    model: memory.MEMORY_MODEL,
+    sessionId: null,
+    resolvedModel: null,
+    costUsd: 0,
+    numTurns: null,
+    durationMs: null,
+    activeSubagents: 0,
+    lastOutcome: null,
+    lastError: null,
+    updatedAt: now(),
+    finishedAt: null,
+  };
+  const prompt = memory.distillPrompt(memory.readMemory(task.repoId), task);
+
+  launch(rec, {
+    adapter: ClaudeAdapter,
+    args: ClaudeAdapter.groomArgs({ model: memory.MEMORY_MODEL, sessionId: null }),
+    workDir: task.worktreePath || task.repoPath,
+    prompt,
+    promptEvent: { type: 'prompt', text: prompt, memory: true },
+    emit: () => {},
+    onResult: (event) => usage.applyMemoryResult({
+      id: rec.id,
+      title: `Memory: ${task.title}`,
+      repoId: task.repoId,
+      repoName: task.repoName,
+      model: rec.model,
+      resolvedModel: rec.resolvedModel,
+    }, event),
+    resolveExit: ({ sawResult }) => {
+      const updated = sawResult && !sawResult.isError ? memory.parseDistillResult(sawResult.text) : null;
+      if (updated !== null) {
+        memory.writeMemory(task.repoId, updated);
+        broadcast({ type: 'memory', repoId: task.repoId, updatedAt: now() });
+      }
+    },
+  });
+}
+
+/**
  * Dispatch a task: spawn its agent CLI in the task's working directory and
  * stream the NDJSON output into the task log + SSE bus. `prompt` is the text sent
  * on stdin; `resume` continues an existing session.
@@ -248,6 +320,7 @@ function dispatch(task: Task, prompt: string, { resume = false }: { resume?: boo
         task.status = 'review';
         task.lastOutcome = 'success';
         record(task, { type: 'proc', text: `Run finished (exit ${code})` });
+        maybeDistill(task);
       } else {
         task.status = 'failed';
         task.lastOutcome = 'error';
@@ -296,7 +369,7 @@ function groom(
   grooming.activeSubagents = 0;
   emitGrooming(grooming);
 
-  const prompt = resume ? resumePrompt! : groomer.metaPrompt(grooming.idea);
+  const prompt = resume ? resumePrompt! : groomer.metaPrompt(grooming.idea, memory.readMemory(grooming.repoId));
 
   return launch(grooming, {
     adapter,
@@ -380,13 +453,13 @@ function groom(
  * any other session. Always Claude, read-only (same allow-list as grooming),
  * and never a worktree — see server/ask.ts for the prompt itself.
  */
-function ask(session: AskSession, question: string, memory: string | null): AskSession {
+function ask(session: AskSession, question: string, projectMemory: string | null): AskSession {
   if (running.has(session.id)) throw new Error('Ask session is already running');
 
   const adapter = ClaudeAdapter;
   session.status = 'running';
 
-  const prompt = askPrompt(question, memory);
+  const prompt = askPrompt(question, projectMemory);
 
   return launch(session, {
     adapter,
@@ -398,7 +471,14 @@ function ask(session: AskSession, question: string, memory: string | null): AskS
       rec.updatedAt = now();
       broadcast({ type: 'ask-update', askId: rec.id, repoId: rec.repoId, sessionId: rec.sessionId, activeSubagents: rec.activeSubagents, costUsd: rec.costUsd });
     },
-    onResult: (event) => usage.applyAskResult(session, event),
+    onResult: (event) => usage.applyAskResult({
+      id: session.id,
+      title: session.question,
+      repoId: session.repoId,
+      repoName: session.repoName,
+      model: session.model,
+      resolvedModel: session.resolvedModel,
+    }, event),
     resolveExit: ({ signal, stopped, sawResult, stderrTail }) => {
       const ok = !!(sawResult && !sawResult.isError) && !signal && !stopped;
       let answer: string;
