@@ -800,7 +800,15 @@
     if (t.groomingId) chips.push(`<span class="chip grooming-chip" title="Spawned by a grooming">${icon('lightbulb')} groomed</span>`);
     if (t.resolvingConflicts) chips.push(`<span class="chip conflict-chip" title="Auto-resolving merge conflicts with main">${icon('git-branch')} Resolving Conflicts</span>`);
     if (t.useWorktree) chips.push(`<span class="chip worktree" title="${esc(t.worktreePath || 'worktree on dispatch')}">${icon('git-branch')} ${esc(t.branch || t.branchName || 'worktree')}</span>`);
-    if (t.addons && t.addons.includes('pull_request')) {
+    // Once a branch exists, prefer its live PR status (color-coded by
+    // open/draft/merged/closed via prChipHtml) over the static "will open a
+    // PR" hint — but only once we actually know there is one; an unknown or
+    // not-yet-existing PR falls back to the addon's intent chip instead.
+    const prRes = t.branch ? state.prByTask.get(t.id) : undefined;
+    if (t.branch && (prRes === undefined || prRes === 'loading' || (prRes && prRes.pr))) {
+      chips.push(prChipHtml(t));
+      if (prRes === undefined) refreshPr(t.id);
+    } else if (t.addons && t.addons.includes('pull_request')) {
       const draft = !!t.prDraft;
       chips.push(`<span class="chip addon-chip" title="${draft ? 'Opens a draft pull request when finished' : 'Opens a pull request when finished'}">${icon('git-pull-request')} PR${draft ? ' (draft)' : ''}</span>`);
     }
@@ -981,26 +989,40 @@
     // and this is the one moment a stale "still open" would cause a needless
     // re-merge attempt — so the prompt reflects the PR's real state right now.
     let hasOpenPr = false;
+    let hasMergedPr = false;
+    // Whether the PR lookup itself could confirm one way or the other. A
+    // transient `gh` failure (not authed, network blip, gh missing) must NOT
+    // be treated the same as "confirmed no PR" — that silently offered a
+    // bypass-review direct merge for a task that in fact had an open/merged
+    // PR, just because this one lookup happened to fail.
+    let lookupFailed = false;
     if (t.branch) {
       let res;
       try {
         res = await api('GET', `/api/tasks/${t.id}/pr`);
         state.prByTask.set(t.id, res);
       } catch { res = null; }
-      if (res && res.pr && res.pr.state !== 'merged') {
-        hasOpenPr = res.pr.state === 'open';
-        options.push({
-          id: 'merge-pr',
-          label: `Merge PR #${res.pr.number}`,
-          hint: res.pr.title || '',
-          group: 'merge',
-        });
+      if (res && res.pr) {
+        if (res.pr.state === 'merged') {
+          hasMergedPr = true;
+        } else {
+          hasOpenPr = res.pr.state === 'open';
+          options.push({
+            id: 'merge-pr',
+            label: `Merge PR #${res.pr.number}`,
+            hint: res.pr.title || '',
+            group: 'merge',
+          });
+        }
+      } else if (!res || res.reason !== 'no-pr') {
+        lookupFailed = true;
       }
     }
-    // Direct, PR-less merge — the fallback when no *open* PR was identified
-    // for the task: while a PR is open, landing the branch is the PR's job
-    // (merge it or close it there), so offering a local merge alongside would
-    // just invite bypassing the review that's already underway. A closed
+    // Direct, PR-less merge — the fallback when no *open or merged* PR was
+    // identified for the task: while a PR is open, landing the branch is the
+    // PR's job (merge it or close it there), and a merged PR has already
+    // landed the branch, so offering a local merge alongside either would
+    // just invite bypassing review or re-merging what's already in. A closed
     // (abandoned) PR doesn't suppress it — a local merge is then the only way
     // left to land the branch. Offered only while there's still a worktree to
     // wrap up, so a task that already finished its merge/branch story
@@ -1008,7 +1030,7 @@
     // Only shown once we actually know the target branch — a guessed default
     // would promise a merge that never happens. Warned since it bypasses code
     // review and CI.
-    if (!hasOpenPr && t.worktreePath && t.branch) {
+    if (!hasOpenPr && !hasMergedPr && !lookupFailed && t.worktreePath && t.branch) {
       let base = t.baseBranch || state.repoBranchByRepo.get(t.repoId);
       if (base === undefined || base === 'loading') {
         try {
@@ -1743,6 +1765,7 @@
     }
     state.prByTask.set(taskId, res);
     if (state.openTaskId === taskId) renderDrawerHead(state.tasks.get(taskId) || task);
+    renderBoard(); // keep the card's PR chip color in sync too
   }
 
   // For a task that runs directly against the repo (no worktree), show the
@@ -4072,6 +4095,7 @@
         state.prByTask.set(msg.taskId, msg.result);
         const t = state.tasks.get(msg.taskId);
         if (t && state.openTaskId === msg.taskId) renderDrawerHead(t);
+        renderBoard(); // update the card's PR chip color too
       }
     };
     es.onerror = () => {
