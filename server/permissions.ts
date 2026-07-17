@@ -37,9 +37,13 @@ interface PendingEntry {
 const byTask = new Map<string, Map<string, PendingEntry>>();
 
 // Tasks the user has flipped into auto-approve ("AUTO MODE"): every tool the run
-// would otherwise prompt for is allowed immediately, with no prompt. Like a
-// pending prompt this is process-local and never persisted — it only makes sense
-// while the `claude` child is alive, and is cleared when the run ends.
+// would otherwise prompt for is allowed immediately, with no prompt. Process-local
+// (never persisted to disk) but deliberately *sticky per task*: unlike pending
+// requests, it survives the `claude` child exiting. A task cycling running -> ready
+// -> running again (a stop, or a resume that needs another turn) spawns a new
+// child, and that child's first tool call would otherwise re-prompt even though the
+// user already said "always allow" for this task — so this only clears on an
+// explicit toggle-off or forgetTask, never as a side effect of a run ending.
 const autoApprove = new Set<string>();
 
 function isAutoApprove(taskId: string): boolean {
@@ -149,10 +153,10 @@ function abandon(taskId: string, reqId: string): boolean {
 }
 
 // Deny every pending request for a task — used when a run is stopped or exits so
-// no promise is left hanging and the UI clears its prompts.
+// no promise is left hanging and the UI clears its prompts. Auto-approve is left
+// alone: it's a per-task preference, not a per-run one, so it carries over to
+// whatever run picks the task up next (see the `autoApprove` comment above).
 function rejectForTask(taskId: string, message = 'Run ended'): void {
-  // Auto-approve is only meaningful while the child is alive; drop it with the run.
-  autoApprove.delete(taskId);
   const m = byTask.get(taskId);
   if (!m) return;
   for (const reqId of [...m.keys()]) settle(taskId, reqId, { behavior: 'deny', message }, 'ended');
@@ -161,6 +165,13 @@ function rejectForTask(taskId: string, message = 'Run ended'): void {
 function listForTask(taskId: string): PublicPermissionRequest[] {
   const m = byTask.get(taskId);
   return m ? [...m.values()].map(toPublic) : [];
+}
+
+// Drop a task's auto-approve preference for good — used when the task itself is
+// gone (archived) so the in-memory set doesn't grow forever. Distinct from
+// rejectForTask, which only tears down a single run.
+function forgetTask(taskId: string): void {
+  autoApprove.delete(taskId);
 }
 
 // Test seam: shorten the auto-deny timeout so tests don't wait 30 minutes.
@@ -173,6 +184,7 @@ export {
   decide,
   abandon,
   rejectForTask,
+  forgetTask,
   listForTask,
   setAutoApprove,
   isAutoApprove,

@@ -215,9 +215,13 @@ The wiring:
   auto-approve (a drawer toggle, or **Shift+Tab** with the task's drawer focused).
   `POST /api/tasks/:id/auto-approve` calls `permissions.setAutoApprove`: any tool that
   would otherwise prompt is allowed immediately (still logged with `reason:'auto'`), and
-  turning it on approves the whole pending backlog at once. Also process-local — cleared
-  by `rejectForTask` when the run ends — and surfaced on `GET /api/state` as
-  `autoApprovePermissions` plus a live `permission`/`action:'auto'` broadcast.
+  turning it on approves the whole pending backlog at once. Process-local, but **sticky
+  per task**: it deliberately survives `rejectForTask` (a stop, or a run ending to await
+  another turn), so redispatching or resuming the same task keeps auto-approve on
+  instead of re-prompting — it only turns off via an explicit toggle or
+  `permissions.forgetTask` (called when a task is archived, to stop the set growing
+  forever). Surfaced on `GET /api/state` as `autoApprovePermissions` plus a live
+  `permission`/`action:'auto'` broadcast.
 
 Note: `--permission-prompt-tool` is a stable but undocumented CLI flag; the request/reply
 shapes here match what the CLI expects. If you change the bridge protocol, re-verify the

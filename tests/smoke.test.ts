@@ -1099,12 +1099,24 @@ test('permissions: auto-approve allows new requests and clears the pending backl
   assert.deepStrictEqual(await next.promise, { behavior: 'allow' }, 'new request is auto-allowed');
   assert.strictEqual(permissions.listForTask(taskId).length, 0, 'auto-allowed requests never pend');
 
-  // Turning it off goes back to prompting; ending the run clears the flag too.
+  // Turning it off goes back to prompting.
   permissions.setAutoApprove(taskId, false);
   assert.strictEqual(permissions.isAutoApprove(taskId), false, 'auto-approve turns back off');
+
+  // Ending the run (a stop, or a resume awaiting another turn) must NOT drop it —
+  // it's a per-task preference that should carry over to the next dispatch of the
+  // same task, not a per-run one the user has to re-flip every time.
   permissions.setAutoApprove(taskId, true);
   permissions.rejectForTask(taskId, 'Run ended');
-  assert.strictEqual(permissions.isAutoApprove(taskId), false, 'ending the run drops auto-approve');
+  assert.strictEqual(permissions.isAutoApprove(taskId), true, 'auto-approve survives the run ending');
+
+  // A fresh run for the same task should honor it immediately, with no re-prompt.
+  const afterResume = permissions.create(taskId, 'Bash', { command: 'echo hi' });
+  assert.deepStrictEqual(await afterResume.promise, { behavior: 'allow' }, 'the next run auto-allows without re-toggling');
+
+  // Only forgetTask (used when the task itself is archived) actually clears it.
+  permissions.forgetTask(taskId);
+  assert.strictEqual(permissions.isAutoApprove(taskId), false, 'forgetTask drops auto-approve for good');
 });
 
 test('permissions: an unanswered prompt auto-denies after the timeout', async () => {
