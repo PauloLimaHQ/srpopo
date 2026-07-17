@@ -1584,8 +1584,10 @@
           <div class="groom-q-options">${opts}${text}</div>
         </div>`;
     }).join('');
+    const n = (g.questions || []).length;
     return `
       <div class="tag">CLARIFY</div>
+      <p class="groom-clarify-hint">Grooming is paused on ${n === 1 ? 'this question' : `these ${n} questions`} — answer below to continue.</p>
       <form class="groom-questions" id="groom-answers-form">
         ${rows}
         <button type="submit" class="btn primary groom-answers-send">${icon('sparkles')} Answer &amp; continue</button>
@@ -1633,8 +1635,9 @@
     $('#drawer-meta').onclick = null;
 
     const promptEl = $('#drawer-prompt');
+    const isClarify = g.status === 'awaiting' && (g.questions || []).length > 0;
     const blocks = [`<div class="tag">IDEA</div><div class="drawer-prompt-body md">${mdToHtml(g.idea)}</div>`];
-    if (g.status === 'awaiting' && (g.questions || []).length) {
+    if (isClarify) {
       blocks.push(groomQuestionsHtml(g));
     }
     if (g.status === 'finished' && (g.taskIds || []).length) {
@@ -1647,6 +1650,7 @@
       blocks.push(`<div class="tag">GROOMED TASKS</div><div class="groom-tasks">${links}</div>`);
     }
     promptEl.classList.remove('hidden');
+    promptEl.classList.toggle('is-clarify', isClarify);
     promptEl.innerHTML = blocks.join('');
     promptEl.onclick = (e) => {
       const link = e.target.closest('[data-task-link]');
@@ -1655,6 +1659,15 @@
     const answersForm = promptEl.querySelector('#groom-answers-form');
     if (answersForm) {
       answersForm.onsubmit = (e) => { e.preventDefault(); submitGroomingAnswers(g); };
+    }
+    // Scroll the panel so the questions are in view and move focus to the
+    // first control — but only when the user isn't already mid-answer, since
+    // this same render also re-runs on unrelated live-update broadcasts and
+    // must not yank focus out from under someone typing.
+    if (isClarify && !promptEl.contains(document.activeElement)) {
+      promptEl.scrollTop = 0;
+      const firstField = promptEl.querySelector('.groom-questions input');
+      if (firstField) firstField.focus({ preventScroll: true });
     }
 
     const actions = groomingCoreActions(g);
