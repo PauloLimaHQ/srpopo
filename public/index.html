@@ -33,6 +33,7 @@
       <button class="btn ghost" id="btn-theme" title="Theme: System" aria-label="Toggle theme"></button>
       <button class="btn ghost" id="btn-settings" title="Settings" aria-label="Settings"><span class="i" data-icon="settings"></span></button>
       <button class="btn ghost" id="btn-repos"><span class="i" data-icon="folder"></span>Repos</button>
+      <button class="btn ghost" id="btn-ask"><span class="i" data-icon="message-circle-question"></span>Ask Sr. Popo</button>
       <button class="btn ghost hidden" id="btn-brief"><span class="i" data-icon="lightbulb"></span>Brief an Idea</button>
       <button class="btn ghost hidden" id="btn-linear"><span class="i" data-icon="linear"></span>From Linear</button>
       <button class="btn ghost hidden" id="btn-specs"><span class="i" data-icon="folder"></span>From Specs</button>
@@ -237,6 +238,30 @@
         <button class="btn ghost" id="task-cancel">Cancel</button>
         <button class="btn" id="task-create">Create in Backlog</button>
         <button class="btn primary" id="task-create-run">Create &amp; Run <span class="i" data-icon="play"></span></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Ask Sr. Popo modal (free-form Q&A about a repo) -->
+  <div id="modal-ask" class="modal hidden">
+    <div class="modal-box">
+      <h2><span class="i" data-icon="message-circle-question"></span>Ask Sr. Popo</h2>
+      <p class="muted">Ask a free-form question about a registered project — Sr. Popo runs a quick,
+        read-only Claude session in that repo to answer it.</p>
+      <label id="ask-repo-field">Repository
+        <div class="row">
+          <select id="ask-repo"></select>
+          <button class="btn ghost" id="ask-add-repo" title="Add a repository" aria-label="Add a repository"><span class="i" data-icon="plus"></span></button>
+        </div>
+      </label>
+      <label>Your question
+        <textarea id="ask-text" rows="3" placeholder="e.g. how do we handle auth?"></textarea>
+      </label>
+      <div id="ask-answer" class="ask-answer hidden"></div>
+      <div class="modal-actions">
+        <button class="btn ghost" id="ask-cancel">Close</button>
+        <button class="btn ghost hidden" id="ask-stop"><span class="i" data-icon="square"></span>Stop</button>
+        <button class="btn primary" id="ask-submit">Ask <span class="i" data-icon="message-circle-question"></span></button>
       </div>
     </div>
   </div>

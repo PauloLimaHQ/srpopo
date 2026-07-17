@@ -5,6 +5,7 @@ import readline from 'readline';
 import { db, save, now, appendLog } from './store';
 import { broadcast } from './bus';
 import * as groomer from './groomer';
+import { askPrompt } from './ask';
 import * as memory from './memory';
 import * as permissions from './permissions';
 import * as usage from './usage';
@@ -14,7 +15,7 @@ import { ClaudeAdapter } from './agents/claude';
 import { CodexAdapter } from './agents/codex';
 import type { AgentAdapter, NormalizedResult } from './agents/types';
 import type { GroomSpec } from './groomer';
-import type { Grooming, LogEvent, Task, TaskAgent } from './types';
+import type { AskSession, Grooming, LogEvent, Task, TaskAgent } from './types';
 
 // The registered agent backends, keyed by Task.agent. Claude is the default and
 // the historical behavior; codex drives the OpenAI Codex CLI. Grooming always
@@ -442,6 +443,58 @@ function groom(
   });
 }
 
+/**
+ * Run a short, read-only "Ask Sr. Popo" Q&A session in a repo. Unlike
+ * dispatch/groom, the session is ephemeral: `session` is a plain in-memory
+ * record (never a Task/Grooming, never persisted), so it drives the same
+ * launch() plumbing but its `emit` only broadcasts — nothing is ever
+ * store.save()'d. It still runs through the shared `running` map, so it
+ * counts against maxParallelSessions and is stoppable via runner.stop like
+ * any other session. Always Claude, read-only (same allow-list as grooming),
+ * and never a worktree — see server/ask.ts for the prompt itself.
+ */
+function ask(session: AskSession, question: string, projectMemory: string | null): AskSession {
+  if (running.has(session.id)) throw new Error('Ask session is already running');
+
+  const adapter = ClaudeAdapter;
+  session.status = 'running';
+
+  const prompt = askPrompt(question, projectMemory);
+
+  return launch(session, {
+    adapter,
+    args: adapter.groomArgs(session, false),
+    workDir: session.repoPath, // read-only exploration; never a worktree
+    prompt,
+    promptEvent: { type: 'prompt', text: prompt, ask: true },
+    emit: (rec: AskSession) => {
+      rec.updatedAt = now();
+      broadcast({ type: 'ask-update', askId: rec.id, repoId: rec.repoId, sessionId: rec.sessionId, activeSubagents: rec.activeSubagents, costUsd: rec.costUsd });
+    },
+    onResult: (event) => usage.applyAskResult({
+      id: session.id,
+      title: session.question,
+      repoId: session.repoId,
+      repoName: session.repoName,
+      model: session.model,
+      resolvedModel: session.resolvedModel,
+    }, event),
+    resolveExit: ({ signal, stopped, sawResult, stderrTail }) => {
+      const ok = !!(sawResult && !sawResult.isError) && !signal && !stopped;
+      let answer: string;
+      if (stopped || signal) {
+        answer = 'Stopped by user';
+      } else if (ok) {
+        answer = (sawResult && sawResult.text) || '';
+      } else {
+        answer = (sawResult && sawResult.errorReason) || stderrTail.trim().split('\n').pop() || `${adapter.label} failed`;
+      }
+      session.status = ok ? 'done' : 'failed';
+      broadcast({ type: 'ask', askId: session.id, repoId: session.repoId, ok, answer, costUsd: session.costUsd });
+    },
+  });
+}
+
 function stop(taskId: string): boolean {
   const child = running.get(taskId);
   if (!child) return false;
@@ -466,6 +519,7 @@ function setBaseUrl(url: string): void {
 export {
   dispatch,
   groom,
+  ask,
   stop,
   stopAll,
   isRunning,

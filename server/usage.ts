@@ -108,6 +108,15 @@ function applyGroomResult(grooming: Grooming, event: Record<string, unknown>): v
   for (const e of entries) store.appendUsage(e);
 }
 
+// Called from runner.ts's `result` handler for every live "Ask Sr. Popo"
+// session (see runner.ask). Ephemeral like a memory-distill session below —
+// never stored as a Task or Grooming — so the caller builds a small
+// UsageSource, using the question as the ledger row's "task title".
+function applyAskResult(source: UsageSource, event: Record<string, unknown>): void {
+  const entries = entriesFromResult(source, 'ask', event);
+  for (const e of entries) store.appendUsage(e);
+}
+
 // Called from runner.ts's `result` handler for every background memory-
 // distillation session (see runner.distillMemory). These are ephemeral — never
 // stored as a Task or Grooming — so the caller builds a small UsageSource
@@ -252,4 +261,4 @@ function computeSummary(opts: { period?: string; repoId?: string } = {}): UsageS
 // since it's a no-op once the ledger file exists.
 backfillIfNeeded();
 
-export { applyResult, applyGroomResult, applyMemoryResult, computeSummary, backfillIfNeeded };
+export { applyResult, applyGroomResult, applyAskResult, applyMemoryResult, computeSummary, backfillIfNeeded };
