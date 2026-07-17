@@ -41,6 +41,9 @@ const DEFAULT_SETTINGS: Settings = {
   remoteAccessToken: '',
   // No custom models until the user adds one in Settings → Models.
   customModels: [],
+  // On by default: cheap (runs on a fixed Haiku model) and the developer
+  // explicitly wants automatic per-repo memory distillation. See server/memory.ts.
+  memory: true,
 };
 
 let db: Db = { repos: [], tasks: [], groomings: [], settings: { ...DEFAULT_SETTINGS } };
