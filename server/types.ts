@@ -278,6 +278,33 @@ export interface Task {
   autoApprovePermissions?: boolean;
 }
 
+// A short-lived "Ask Sr. Popo" Q&A session (see server/ask.ts, runner.ask).
+// Unlike Task/Grooming, never persisted to db.json — it exists only in memory
+// for the life of its `claude` child, driven through the same runner.launch()
+// plumbing dispatch/groom use so it counts against maxParallelSessions and is
+// stoppable via runner.stop, but leaves nothing behind once it exits.
+export interface AskSession {
+  id: string;
+  status: 'running' | 'done' | 'failed';
+  // The developer's question, kept so the usage ledger has something readable
+  // to show as its "task title" (see server/usage.ts's applyAskResult).
+  question: string;
+  repoId: string;
+  repoName: string;
+  repoPath: string;
+  model: string;
+  sessionId: string | null;
+  resolvedModel: string | null;
+  costUsd: number;
+  numTurns: number | null;
+  durationMs: number | null;
+  activeSubagents: number;
+  lastOutcome: string | null;
+  lastError: string | null;
+  updatedAt: string;
+  finishedAt: string | null;
+}
+
 // A file attached to a task. `name` is the stored (sanitized) basename under
 // DATA_DIR/attachments/<taskId>/; `size` is the byte length as written.
 export interface Attachment {
@@ -310,7 +337,7 @@ export interface UsageEntry {
   repoId: string;
   repoName: string;
   model: string;
-  kind: 'run' | 'groom';
+  kind: 'run' | 'groom' | 'ask';
   costUsd: number;
   inputTokens: number;
   outputTokens: number;

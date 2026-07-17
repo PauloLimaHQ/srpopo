@@ -12,7 +12,7 @@ import { db, save, id, now, readLog, removeLog, getTask, getRepo, getGrooming } 
 import { broadcast, sse } from './bus';
 import { appRoot } from './paths';
 import type { GroomSpec } from './groomer';
-import type { Task, Attachment, CustomModel, Grooming, GroomingTarget, Repo, PublicSettings, WorktreeInfo } from './types';
+import type { AskSession, Task, Attachment, CustomModel, Grooming, GroomingTarget, Repo, PublicSettings, WorktreeInfo } from './types';
 import * as git from './git';
 import * as runner from './runner';
 import * as attachments from './attachments';
@@ -20,6 +20,7 @@ import * as addons from './addons';
 import * as permissions from './permissions';
 import * as personas from './personas';
 import * as groomer from './groomer';
+import { readMemory } from './ask';
 import * as github from './github';
 import * as linear from './linear';
 import * as repoSpecs from './repoSpecs';
@@ -789,6 +790,53 @@ app.delete('/api/repos/:id', (req: Request, res: Response) => {
   db.repos.splice(idx, 1);
   save();
   broadcast({ type: 'repos', repos: db.repos });
+  res.json({ ok: true });
+});
+
+// ---------- ask sr. popo (free-form Q&A about a repo) ----------
+
+// Answer a developer's free-form question about a registered repo by running
+// a short, read-only Claude session inside it (see server/ask.ts, runner.ask).
+// Ephemeral — never written to db.json — so it responds immediately with an
+// id and streams its session over the normal SSE bus (`log` events keyed by
+// this id), finishing with a broadcast `ask` event carrying the answer.
+app.post('/api/repos/:id/ask', (req: Request, res: Response) => {
+  const repo = getRepo(req.params.id);
+  if (!repo) return err(res, 404, 'Repo not found');
+  const question = String(req.body?.question || '').trim();
+  if (!question) return err(res, 400, 'question is required');
+  if (atCapacity()) return err(res, 409, capacityError());
+
+  const session: AskSession = {
+    id: `ask-${id()}`,
+    status: 'running',
+    question,
+    repoId: repo.id,
+    repoName: repo.name,
+    repoPath: repo.path,
+    model: 'default',
+    sessionId: null,
+    resolvedModel: null,
+    costUsd: 0,
+    numTurns: null,
+    durationMs: null,
+    activeSubagents: 0,
+    lastOutcome: null,
+    lastError: null,
+    updatedAt: now(),
+    finishedAt: null,
+  };
+
+  try {
+    runner.ask(session, question, readMemory(repo.id));
+  } catch (e) {
+    return err(res, 500, (e as Error).message);
+  }
+  res.json({ askId: session.id });
+});
+
+app.post('/api/asks/:id/stop', (req: Request, res: Response) => {
+  if (!runner.stop(req.params.id)) return err(res, 409, 'Ask session is not running');
   res.json({ ok: true });
 });
 

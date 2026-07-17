@@ -12,7 +12,7 @@
  * user isn't actually billed per token.
  */
 import * as store from './store';
-import type { Grooming, ModelUsageStat, Task, UsageEntry, UsageSummary } from './types';
+import type { AskSession, Grooming, ModelUsageStat, Task, UsageEntry, UsageSummary } from './types';
 
 // The subset of Task/Grooming fields a ledger row needs. Both lifecycles carry
 // all of these, so entriesFromResult doesn't need to know which one it's
@@ -105,6 +105,16 @@ function applyResult(task: Task, event: Record<string, unknown>): void {
 // field to accumulate onto (see accumulate's comment above).
 function applyGroomResult(grooming: Grooming, event: Record<string, unknown>): void {
   const entries = entriesFromResult(grooming, 'groom', event);
+  for (const e of entries) store.appendUsage(e);
+}
+
+// Called from runner.ts's `result` handler for every live "Ask Sr. Popo"
+// session. Same ledger bookkeeping as applyGroomResult (an ask session has no
+// modelUsage field to accumulate onto either) — the question stands in for a
+// task/grooming title so the ledger row reads sensibly.
+function applyAskResult(session: AskSession, event: Record<string, unknown>): void {
+  const source = { id: session.id, title: session.question, repoId: session.repoId, repoName: session.repoName, model: session.model, resolvedModel: session.resolvedModel };
+  const entries = entriesFromResult(source, 'ask', event);
   for (const e of entries) store.appendUsage(e);
 }
 
@@ -243,4 +253,4 @@ function computeSummary(opts: { period?: string; repoId?: string } = {}): UsageS
 // since it's a no-op once the ledger file exists.
 backfillIfNeeded();
 
-export { applyResult, applyGroomResult, computeSummary, backfillIfNeeded };
+export { applyResult, applyGroomResult, applyAskResult, computeSummary, backfillIfNeeded };
