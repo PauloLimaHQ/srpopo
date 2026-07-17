@@ -12,7 +12,8 @@ import { db, save, id, now, readLog, removeLog, getTask, getRepo, getGrooming } 
 import { broadcast, sse } from './bus';
 import { appRoot } from './paths';
 import type { GroomSpec } from './groomer';
-import type { Task, Attachment, CustomModel, Grooming, GroomingTarget, Repo, PublicSettings, WorktreeInfo } from './types';
+import type { Task, Attachment, CustomModel, Grooming, GroomingTarget, Repo, PublicSettings, WorktreeInfo, TaskAgent } from './types';
+import { suggestModel } from './models';
 import * as git from './git';
 import * as runner from './runner';
 import * as attachments from './attachments';
@@ -341,6 +342,8 @@ function spawnGroomedTasks(grooming: Grooming, specs: GroomSpec[]): string[] {
       grooming.target === 'ready' ? 'ready'
       : grooming.target === 'auto' && spec.ready ? 'ready'
       : 'backlog';
+    // grooming spawns Claude tasks; the user can switch a card's agent later.
+    const agent: TaskAgent = 'claude';
     const task: Task = {
       id: id(),
       title: spec.title || grooming.title,
@@ -350,7 +353,7 @@ function spawnGroomedTasks(grooming: Grooming, specs: GroomSpec[]): string[] {
       repoId: grooming.repoId,
       repoName: grooming.repoName,
       repoPath: grooming.repoPath,
-      agent: 'claude', // grooming spawns Claude tasks; the user can switch a card's agent later
+      agent,
       addons: [],
       prDraft: false,
       personas: [],
@@ -362,7 +365,10 @@ function spawnGroomedTasks(grooming: Grooming, specs: GroomSpec[]): string[] {
       branchName: specs.length === 1 ? grooming.branchName : null,
       baseBranch: null,
       branch: null,
-      model: grooming.model,
+      // Suggested per the task's own judged complexity, in this agent's own
+      // model vocabulary — not simply copied from whichever model ran the
+      // grooming session (see server/models.ts).
+      model: suggestModel(agent, spec.complexity),
       permissionMode: 'acceptEdits',
       allowedTools: '',
       promptPermissions: true,

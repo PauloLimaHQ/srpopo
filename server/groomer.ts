@@ -27,11 +27,16 @@ const SPEC_END = '@@SRPOPO_SPEC_END@@';
 
 // One groomed task as the session proposes it. `ready` is the session's own
 // judgment that the prompt is self-contained enough to dispatch unreviewed —
-// honored only when the grooming's target is 'auto'.
+// honored only when the grooming's target is 'auto'. `complexity` is the
+// session's own judgment of how much model capability the *execution* of this
+// specific task actually needs — it drives the suggested execution model
+// (server/models.ts) independently of whichever model ran the grooming
+// session itself (see spawnGroomedTasks in server/index.ts).
 export interface GroomSpec {
   title: string;
   prompt: string;
   ready: boolean;
+  complexity: 'simple' | 'standard' | 'complex';
 }
 
 // One clarifying question the grooming session asks back when the idea is too
@@ -98,11 +103,19 @@ function metaPrompt(idea: unknown): string {
     '    coding agent.',
     '  - "ready": true when the prompt is unambiguous and safe to dispatch without a human reviewing',
     '    it first; false when the developer should look it over.',
+    '  - "complexity": how much model capability EXECUTING this task actually needs — "simple",',
+    '    "standard", or "complex". This picks the execution model and is independent of whichever model',
+    "    is running this grooming session; don't default to the grooming session's own tier. Judge it by",
+    '    the work itself: "simple" for mechanical/narrow changes (renames, small config tweaks, adding one',
+    '    straightforward test), "standard" for typical feature work or bug fixes touching a few files,',
+    '    "complex" only for genuinely hard problems (tricky concurrency, cross-cutting architecture,',
+    '    ambiguous tradeoffs needing strong judgment). Most tasks are "standard" — reserve "complex" for',
+    '    when it is truly warranted.',
     '',
     'Emit exactly ONE JSON object this turn — either the "questions" shape or the "tasks" shape — between',
     'these markers:',
     SPEC_START,
-    '{ "tasks": [ { "title": "…", "prompt": "…", "ready": true } ] }',
+    '{ "tasks": [ { "title": "…", "prompt": "…", "ready": true, "complexity": "standard" } ] }',
     SPEC_END,
   ].join('\n');
 }
@@ -176,7 +189,8 @@ function normalizeSpec(obj: unknown): GroomSpec | null {
   const prompt = typeof rec.prompt === 'string' ? rec.prompt.trim() : '';
   if (!prompt) return null;
   const title = typeof rec.title === 'string' ? rec.title.trim() : '';
-  return { title, prompt, ready: rec.ready === true };
+  const complexity = rec.complexity === 'simple' || rec.complexity === 'complex' ? rec.complexity : 'standard';
+  return { title, prompt, ready: rec.ready === true, complexity };
 }
 
 // Normalize one raw question entry; null when it has no usable question text.
