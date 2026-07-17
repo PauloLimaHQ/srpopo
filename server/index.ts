@@ -33,6 +33,7 @@ import * as terminal from './terminal';
 import * as usage from './usage';
 import * as taskService from './tasks';
 import * as mcp from './mcp';
+import * as memory from './memory';
 
 const app = express();
 
@@ -229,6 +230,7 @@ function publicSettings(): PublicSettings {
     // GET /api/remote-access endpoint.
     remoteAccessConfigured: !!(db.settings.remoteAccessToken && db.settings.remoteAccessToken.trim()),
     customModels: db.settings.customModels || [],
+    memory: !!db.settings.memory,
   };
 }
 
@@ -518,6 +520,7 @@ app.patch('/api/settings', (req: Request, res: Response) => {
   }
   if ('autoResolveConflicts' in req.body) db.settings.autoResolveConflicts = !!req.body.autoResolveConflicts;
   if ('assignPrToSelf' in req.body) db.settings.assignPrToSelf = !!req.body.assignPrToSelf;
+  if ('memory' in req.body) db.settings.memory = !!req.body.memory;
   // Custom models (e.g. Amazon Bedrock): the board sends the full desired list;
   // we sanitize it into clean entries (invalid rows dropped, API key stripped).
   if ('customModels' in req.body) db.settings.customModels = sanitizeCustomModels(req.body.customModels);
@@ -793,9 +796,33 @@ app.delete('/api/repos/:id', (req: Request, res: Response) => {
     db.groomings.some((g) => g.repoId === req.params.id && !g.archived);
   if (active) return err(res, 409, 'Repo has non-archived tasks or groomings; archive them first');
   db.repos.splice(idx, 1);
+  memory.removeMemory(req.params.id);
   save();
   broadcast({ type: 'repos', repos: db.repos });
   res.json({ ok: true });
+});
+
+// ---------- project memory ----------
+//
+// A private, per-repo markdown document of durable learnings, distilled in the
+// background after each task that finishes successfully (see
+// runner.distillMemory) and injected into grooming sessions for context (see
+// groomer.metaPrompt). Lives only under Sr. Popo's own data dir — never inside
+// the user's repository (see server/memory.ts).
+
+app.get('/api/repos/:id/memory', (req: Request, res: Response) => {
+  const repo = getRepo(req.params.id);
+  if (!repo) return err(res, 404, 'Repo not found');
+  res.json(memory.memoryInfo(repo.id));
+});
+
+app.put('/api/repos/:id/memory', (req: Request, res: Response) => {
+  const repo = getRepo(req.params.id);
+  if (!repo) return err(res, 404, 'Repo not found');
+  if (typeof req.body.content !== 'string') return err(res, 400, 'content must be a string');
+  memory.writeMemory(repo.id, req.body.content);
+  broadcast({ type: 'memory', repoId: repo.id, updatedAt: now() });
+  res.json(memory.memoryInfo(repo.id));
 });
 
 // ---------- tasks ----------

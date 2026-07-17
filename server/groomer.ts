@@ -54,8 +54,8 @@ export interface GroomQuestion {
 // grounded in the repo (the session explores it) and must end with either the
 // questions JSON or the spec JSON between the sentinels so the parsers can
 // recover it reliably.
-function metaPrompt(idea: unknown): string {
-  return [
+function metaPrompt(idea: unknown, memory?: string): string {
+  const lines = [
     'You are an expert prompt engineer and staff-level software lead working inside a git repository.',
     'A developer has a rough idea for a change they want to make in THIS codebase, but it is not yet',
     'specified well enough to hand to a coding agent.',
@@ -83,6 +83,20 @@ function metaPrompt(idea: unknown): string {
     '"""',
     String(idea || '').trim(),
     '"""',
+  ];
+
+  if (memory && memory.trim()) {
+    lines.push(
+      '',
+      'What Sr. Popo remembers about this project (accumulated from past sessions; treat as helpful',
+      'context, verify against the code when it matters):',
+      '"""',
+      memory.trim(),
+      '"""',
+    );
+  }
+
+  lines.push(
     '',
     'Asking to clarify (only when it genuinely matters):',
     'If — and only if — you cannot write a confident spec without a decision the developer needs to make,',
@@ -117,7 +131,8 @@ function metaPrompt(idea: unknown): string {
     SPEC_START,
     '{ "tasks": [ { "title": "…", "prompt": "…", "ready": true, "complexity": "standard" } ] }',
     SPEC_END,
-  ].join('\n');
+  );
+  return lines.join('\n');
 }
 
 // The follow-up prompt that resumes a paused grooming session once the developer

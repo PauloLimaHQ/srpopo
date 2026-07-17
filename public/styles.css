@@ -1036,6 +1036,7 @@ input, textarea, select {
   padding: 9px 11px; font-size: 13px; font-family: inherit; width: 100%;
 }
 textarea { font-family: var(--mono); font-size: 12px; }
+.memory-textarea { min-height: 320px; resize: vertical; }
 /* Checkboxes and radios aren't text fields: keep them at their intrinsic size
    rather than inheriting the field padding/width above. Left stretched, one in a
    flex row squeezes its siblings to zero width. */

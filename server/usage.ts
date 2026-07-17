@@ -18,7 +18,7 @@ import type { Grooming, ModelUsageStat, Task, UsageEntry, UsageSummary } from '.
 // all of these, so entriesFromResult doesn't need to know which one it's
 // looking at — only applyResult/applyGroomResult (which also decide whether to
 // accumulate a per-model breakdown onto the record) do.
-interface UsageSource {
+export interface UsageSource {
   id: string;
   title: string;
   repoId: string;
@@ -105,6 +105,15 @@ function applyResult(task: Task, event: Record<string, unknown>): void {
 // field to accumulate onto (see accumulate's comment above).
 function applyGroomResult(grooming: Grooming, event: Record<string, unknown>): void {
   const entries = entriesFromResult(grooming, 'groom', event);
+  for (const e of entries) store.appendUsage(e);
+}
+
+// Called from runner.ts's `result` handler for every background memory-
+// distillation session (see runner.distillMemory). These are ephemeral — never
+// stored as a Task or Grooming — so the caller builds a small UsageSource
+// carrying the distill session's own id/title alongside the repo it ran in.
+function applyMemoryResult(source: UsageSource, event: Record<string, unknown>): void {
+  const entries = entriesFromResult(source, 'memory', event);
   for (const e of entries) store.appendUsage(e);
 }
 
@@ -243,4 +252,4 @@ function computeSummary(opts: { period?: string; repoId?: string } = {}): UsageS
 // since it's a no-op once the ledger file exists.
 backfillIfNeeded();
 
-export { applyResult, applyGroomResult, computeSummary, backfillIfNeeded };
+export { applyResult, applyGroomResult, applyMemoryResult, computeSummary, backfillIfNeeded };
