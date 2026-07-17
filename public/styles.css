@@ -413,21 +413,28 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
   font-size: 11px; color: var(--conflict); font-weight: 600;
 }
 .groom-awaiting-hint svg { flex: none; width: 14px; height: 14px; }
-/* The clarify form shown in an awaiting grooming's drawer. */
+/* The clarify form shown in an awaiting grooming's drawer. Given its own
+   modifier on #drawer-prompt (below) since reading + answering these is the
+   whole point of the awaiting state, unlike a plain prompt recap. */
+.groom-clarify-hint { font-size: 12px; color: var(--text-dim); margin: 2px 0 10px; }
 .groom-questions { display: flex; flex-direction: column; gap: 14px; margin-top: 4px; }
-.groom-q { display: flex; flex-direction: column; gap: 8px; }
-.groom-q-text { font-size: 13px; font-weight: 600; color: var(--text); }
+.groom-q {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--bg-raised);
+}
+.groom-q-text { font-size: 14px; font-weight: 600; line-height: 1.45; color: var(--text); }
 .groom-q-options { display: flex; flex-direction: column; gap: 6px; }
 .groom-opt {
-  display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text);
-  padding: 6px 9px; border: 1px solid var(--border); border-radius: 8px;
-  background: var(--bg-raised); cursor: pointer;
+  display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text);
+  padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg-card); cursor: pointer;
 }
 .groom-opt:hover { border-color: var(--conflict); }
 .groom-opt input { accent-color: var(--conflict); margin: 0; }
 .groom-q-textinput {
-  width: 100%; box-sizing: border-box; font: inherit; font-size: 12px;
-  padding: 7px 9px; border: 1px solid var(--border); border-radius: 8px;
+  width: 100%; box-sizing: border-box; font: inherit; font-size: 13px;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px;
   background: var(--bg-card); color: var(--text);
 }
 .groom-q-textinput:focus { outline: none; border-color: var(--conflict); }
@@ -519,6 +526,15 @@ a.chip.pr:hover { border-color: currentColor; }
 }
 .drawer-prompt .tag { font-size: 10px; color: var(--purple); font-weight: 700; letter-spacing: 1px; margin-bottom: 4px; }
 .drawer-prompt-body { font-size: 13px; word-break: break-word; }
+/* Awaiting-clarification grooming: the question(s) are the whole reason the
+   drawer is open, so give the panel real room instead of the 180px recap
+   cap, and call it out with the conflict color used elsewhere for "needs
+   input" state. */
+.drawer-prompt.is-clarify {
+  max-height: min(64vh, 560px);
+  border-color: var(--conflict-soft);
+}
+.drawer-prompt.is-clarify .tag { color: var(--conflict); }
 
 /* Interactive tool-permission prompts — a run is blocked waiting on the user. */
 .permission-prompts {

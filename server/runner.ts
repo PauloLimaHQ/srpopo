@@ -346,7 +346,7 @@ function groom(
       if (!specs && succeeded && resultText.trim()) {
         // Session finished but we couldn't parse a structured spec — keep the
         // full text as one task prompt so nothing is lost (never auto-ready).
-        specs = [{ title: grooming.title, prompt: resultText.trim(), ready: false }];
+        specs = [{ title: grooming.title, prompt: resultText.trim(), ready: false, complexity: 'standard' }];
         record(grooming, { type: 'proc', text: 'Kept unstructured output as a single task prompt' });
       }
       if (specs) {

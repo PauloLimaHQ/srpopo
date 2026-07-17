@@ -1192,25 +1192,26 @@ test('groomer: parseResult recovers task specs from the session output', () => {
   const groomer = require('../server/groomer');
 
   // Primary path: the { tasks: […] } shape between the sentinels, with prose
-  // around it and a per-task ready flag.
+  // around it, a per-task ready flag, and a per-task complexity judgment.
   const sentinel = `Here is my spec.\n${groomer.SPEC_START}\n` +
     '{ "tasks": [' +
-    '{ "title": "Add bulk archive", "prompt": "Add a button that archives all Done tasks.", "ready": true },' +
-    '{ "title": "Add undo", "prompt": "Let the user undo the bulk archive." }' +
+    '{ "title": "Add bulk archive", "prompt": "Add a button that archives all Done tasks.", "ready": true, "complexity": "simple" },' +
+    '{ "title": "Add undo", "prompt": "Let the user undo the bulk archive.", "complexity": "complex" }' +
     '] }' +
     `\n${groomer.SPEC_END}\nthanks!`;
   assert.deepStrictEqual(groomer.parseResult(sentinel), [
-    { title: 'Add bulk archive', prompt: 'Add a button that archives all Done tasks.', ready: true },
-    { title: 'Add undo', prompt: 'Let the user undo the bulk archive.', ready: false },
+    { title: 'Add bulk archive', prompt: 'Add a button that archives all Done tasks.', ready: true, complexity: 'simple' },
+    { title: 'Add undo', prompt: 'Let the user undo the bulk archive.', ready: false, complexity: 'complex' },
   ]);
 
-  // Legacy single-object shape still parses as one task.
-  const single = `${groomer.SPEC_START}{ "title": "T", "prompt": "P" }${groomer.SPEC_END}`;
-  assert.deepStrictEqual(groomer.parseResult(single), [{ title: 'T', prompt: 'P', ready: false }]);
+  // Legacy single-object shape still parses as one task; a missing/invalid
+  // complexity defaults to 'standard'.
+  const single = `${groomer.SPEC_START}{ "title": "T", "prompt": "P", "complexity": "bogus" }${groomer.SPEC_END}`;
+  assert.deepStrictEqual(groomer.parseResult(single), [{ title: 'T', prompt: 'P', ready: false, complexity: 'standard' }]);
 
   // Fallback: a ```json fenced block when the markers are missing.
   const fenced = 'blah\n```json\n{"tasks":[{"title":"T","prompt":"P","ready":true}]}\n```\n';
-  assert.deepStrictEqual(groomer.parseResult(fenced), [{ title: 'T', prompt: 'P', ready: true }]);
+  assert.deepStrictEqual(groomer.parseResult(fenced), [{ title: 'T', prompt: 'P', ready: true, complexity: 'standard' }]);
 
   // No usable prompt → null (never a partial/empty spec).
   assert.strictEqual(groomer.parseResult('no spec here at all'), null);
@@ -1218,6 +1219,31 @@ test('groomer: parseResult recovers task specs from the session output', () => {
     'a spec without any prompt is rejected');
   assert.strictEqual(groomer.parseResult(''), null);
   assert.strictEqual(groomer.parseResult(undefined), null);
+});
+
+test('models: suggestModel maps complexity to a model within the given backend only', () => {
+  const models = require('../server/models');
+
+  // Claude tasks only ever get Claude model names.
+  assert.strictEqual(models.suggestModel('claude', 'simple'), 'haiku');
+  assert.strictEqual(models.suggestModel('claude', 'standard'), 'sonnet');
+  assert.strictEqual(models.suggestModel('claude', 'complex'), 'opus');
+  assert.strictEqual(models.suggestModel('claude', undefined), 'sonnet', 'missing complexity defaults to standard');
+
+  // Codex tasks only ever get Codex model names — never an Anthropic model,
+  // even when the complexity tier is the same.
+  assert.strictEqual(models.suggestModel('codex', 'simple'), 'gpt-5.6-luna');
+  assert.strictEqual(models.suggestModel('codex', 'standard'), 'gpt-5.6-sol');
+  assert.strictEqual(models.suggestModel('codex', 'complex'), 'gpt-5.6-terra');
+  assert.strictEqual(models.suggestModel('codex', undefined), 'gpt-5.6-sol', 'missing complexity defaults to standard');
+
+  // Never crosses backends: no Claude alias appears in a Codex suggestion or vice versa.
+  const claudeNames = ['haiku', 'sonnet', 'opus'];
+  const codexNames = ['gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra'];
+  for (const c of ['simple', 'standard', 'complex']) {
+    assert.ok(!codexNames.includes(models.suggestModel('claude', c)));
+    assert.ok(!claudeNames.includes(models.suggestModel('codex', c)));
+  }
 });
 
 test('groomer: metaPrompt offers the clarify path alongside the finish path', () => {
