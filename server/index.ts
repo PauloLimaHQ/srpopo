@@ -1250,8 +1250,10 @@ app.post('/api/tasks/:id/permissions/:reqId', (req: Request, res: Response) => {
 });
 
 // Toggle a running task's auto-approve ("AUTO MODE"): while on, every tool the run
-// would otherwise prompt for is allowed at once, with no prompt. Process-local and
-// only valid while the claude child is alive — off once the run ends.
+// would otherwise prompt for is allowed at once, with no prompt. Process-local, but
+// sticky per task — it survives this run ending and carries over to the next
+// dispatch/resume of the same task, so stopping and redispatching (or a resume that
+// needs another turn) doesn't re-prompt. Toggle it off explicitly to turn it back off.
 app.post('/api/tasks/:id/auto-approve', (req: Request, res: Response) => {
   const task = getTask(req.params.id);
   if (!task) return err(res, 404, 'Task not found');
@@ -1269,6 +1271,7 @@ app.post('/api/tasks/:id/archive', (req: Request, res: Response) => {
   // The task is gone from the board; drop its uploaded files too. Absent dir is fine.
   attachments.removeDir(task.id);
   task.attachments = [];
+  permissions.forgetTask(task.id);
   save();
   broadcast({ type: 'task-removed', taskId: task.id });
   res.json({ ok: true });
