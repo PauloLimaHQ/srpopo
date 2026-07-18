@@ -139,6 +139,25 @@
     $('#update-downloading-dismiss').addEventListener('click', () => el.remove());
   }
 
+  // A downloaded update couldn't be applied automatically (e.g. an ad-hoc-
+  // signed macOS build failing Squirrel.Mac's signature check) — offer a
+  // manual download instead of a Relaunch button that would do nothing.
+  function showUpdateInstallFailed(releasesUrl) {
+    $('#update-banner')?.remove();
+    $('#update-downloading')?.remove();
+    if ($('#update-install-failed')) return;
+    const el = document.createElement('div');
+    el.id = 'update-install-failed';
+    el.className = 'toast info update-banner';
+    el.innerHTML =
+      `${icon('download')}` +
+      `<span>Sr. Popo downloaded an update but couldn't install it automatically on this build — grab it manually.</span>` +
+      `<a class="btn primary" href="${esc(releasesUrl)}" target="_blank" rel="noopener">Download update</a>` +
+      `<button class="btn ghost" id="update-install-failed-dismiss">Dismiss</button>`;
+    $('#toasts').appendChild(el);
+    $('#update-install-failed-dismiss').addEventListener('click', () => el.remove());
+  }
+
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -4134,10 +4153,12 @@
   if (isElectron && window.srpopo.onUpdateReady) {
     window.srpopo.onUpdateReady((version) => showUpdateBanner(version));
     window.srpopo.onUpdateDownloading?.((version) => showUpdateDownloading(version));
+    window.srpopo.onUpdateInstallFailed?.((releasesUrl) => showUpdateInstallFailed(releasesUrl));
     // The check may have landed before this window loaded — ask for the state.
     window.srpopo.getUpdateStatus?.().then((s) => {
       if (!s) return;
-      if (s.ready) showUpdateBanner(s.ready);
+      if (s.installFailed) showUpdateInstallFailed(s.installFailed);
+      else if (s.ready) showUpdateBanner(s.ready);
       else if (s.downloading) showUpdateDownloading(s.downloading);
     }).catch(() => { /* older shell without the handler */ });
   }
