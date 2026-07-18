@@ -188,10 +188,14 @@ safe package-manager defaults (`DEFAULT_ALLOWED_TOOLS`: npm/pnpm/yarn) at dispat
 ## Interactive permissions (ask instead of auto-deny)
 
 A headless `claude -p` run auto-**denies** any tool it isn't told to allow, so a task
-can otherwise "finish" without doing the work. When a task has `promptPermissions` set
-(the default; a New-Task checkbox toggles it), the run instead **asks the user** before
-running an unapproved tool. Whitelisted tools (task allow-list, add-on `allow`, defaults)
-still auto-approve; only the leftovers prompt. Skipped under `bypassPermissions`.
+can otherwise "finish" without doing the work. `promptPermissions` defaults to `true`
+for every task — there's no UI toggle for it, since the only case where you *don't*
+want the run to ask is `bypassPermissions` (YOLO), which already skips the prompt on
+its own. When set, the run **asks the user** before running an unapproved tool.
+Whitelisted tools (task allow-list, add-on `allow`, defaults) still auto-approve; only
+the leftovers prompt. Skipped under `bypassPermissions`. Unattended paths that have no
+human to answer (autonomous mode's dispatch/review passes, `server/autonomous.ts`)
+force it to `false` explicitly.
 
 The wiring:
 - **`runner.buildArgs`** adds `--permission-prompt-tool mcp__srpopo__approve` and a
