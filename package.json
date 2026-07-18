@@ -1,6 +1,6 @@
 {
   "name": "srpopo",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Sr. Popo — local orchestrator hub for coding-agent tasks across your repos",
   "main": "dist/electron/main.js",
   "scripts": {
