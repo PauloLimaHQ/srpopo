@@ -327,4 +327,10 @@ respect the invariants above, run lint + test, and summarize the diff and any ri
 - The packaged app runs from a read-only bundle — never write inside the app dir; use
   `SRPOPO_DATA_DIR`.
 - Builds are unsigned for now; don't add signing/notarization steps without the
-  credentials being configured.
+  credentials being configured. This means macOS auto-update can download and
+  verify a new version, but Squirrel.Mac (the native installer electron-updater
+  drives on macOS) refuses to actually apply it without a real Developer ID
+  signature — an ad-hoc-signed build fails that step silently in the background.
+  `electron/main.ts` detects the failure and swaps the "Relaunch to update"
+  banner for a manual-download link (`srpopo:update-install-failed`) instead of
+  leaving a button that does nothing. Don't "fix" it by ignoring the error.

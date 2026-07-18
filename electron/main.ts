@@ -32,6 +32,24 @@ let httpUrl = '';
 let isQuitting = false;
 let updateReadyVersion: string | null = null; // set once electron-updater has a downloaded update waiting
 let updateDownloadingVersion: string | null = null; // set while a new version is downloading in the background
+let updateInstallFailed = false; // set once we know the native installer can't apply an update this run
+
+// package.json's mac.identity is "-" (ad-hoc) — there's no paid Apple Developer
+// ID configured yet (see CLAUDE.md's "Builds are unsigned" gotcha). That's
+// enough for an arm64 build to launch, but Squirrel.Mac — the native installer
+// electron-updater drives under the hood on macOS — requires a real Developer
+// ID signature to actually apply an update; an ad-hoc build downloads and
+// "verifies" fine, then fails that install step silently in the background.
+// Recognize it and fall back to "download manually" instead of a Relaunch
+// button that does nothing.
+const RELEASES_URL = 'https://github.com/PauloLimaHQ/srpopo/releases/latest';
+
+function notifyUpdateInstallFailed(): void {
+  updateReadyVersion = null;
+  updateInstallFailed = true;
+  if (mainWindow) mainWindow.webContents.send('srpopo:update-install-failed', RELEASES_URL);
+  refreshTray();
+}
 
 // Restart into an already-downloaded update. `isQuitting` MUST be set first:
 // quitAndInstall closes every window, and mainWindow's 'close' handler cancels
@@ -39,7 +57,21 @@ let updateDownloadingVersion: string | null = null; // set while a new version i
 // whole restart.
 function installUpdate(): void {
   isQuitting = true;
-  autoUpdater.quitAndInstall();
+  try {
+    autoUpdater.quitAndInstall();
+  } catch (err) {
+    console.error('[autoUpdater] quitAndInstall threw', err);
+  }
+  // A build the native installer can actually apply quits almost immediately.
+  // If we're still alive a few seconds later, the install silently failed (see
+  // notifyUpdateInstallFailed above) — recover instead of leaving isQuitting
+  // stuck true, which would quit the whole app instead of hiding to the tray
+  // on the next window close.
+  setTimeout(() => {
+    if (!isQuitting) return; // already recovered via the autoUpdater 'error' handler
+    isQuitting = false;
+    notifyUpdateInstallFailed();
+  }, 4000);
 }
 
 // Single-instance: focus the existing window instead of spawning a second app.
@@ -350,6 +382,9 @@ function refreshTray(): void {
   } else if (updateDownloadingVersion) {
     items.push({ label: `Downloading update (v${updateDownloadingVersion})…`, enabled: false });
     items.push({ type: 'separator' });
+  } else if (updateInstallFailed) {
+    items.push({ label: 'Update ready — download manually', click: () => shell.openExternal(RELEASES_URL) });
+    items.push({ type: 'separator' });
   }
   if (running.length) {
     items.push({ label: `Running (${running.length})`, enabled: false });
@@ -487,7 +522,14 @@ app.whenReady().then(async () => {
     autoUpdater.on('error', (err) => {
       console.error('[autoUpdater]', err);
       updateDownloadingVersion = null; // a failed download isn't still in flight
-      refreshTray();
+      if (updateReadyVersion) {
+        // The HTTP download succeeded and we already told the board it was
+        // ready, but the native Squirrel.Mac install step just failed in the
+        // background — see notifyUpdateInstallFailed's comment above.
+        notifyUpdateInstallFailed();
+      } else {
+        refreshTray();
+      }
     });
 
     autoUpdater.checkForUpdates().catch((err) => console.error('[autoUpdater]', err));
@@ -524,6 +566,7 @@ ipcMain.handle('srpopo:restart-to-update', () => installUpdate());
 ipcMain.handle('srpopo:update-status', () => ({
   ready: updateReadyVersion,
   downloading: updateDownloadingVersion,
+  installFailed: updateInstallFailed ? RELEASES_URL : null,
 }));
 
 // Open the native folder picker so the user can select a repo instead of
