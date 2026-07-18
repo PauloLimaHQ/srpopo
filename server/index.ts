@@ -357,7 +357,7 @@ function spawnGroomedTasks(grooming: Grooming, specs: GroomSpec[]): string[] {
       repoName: grooming.repoName,
       repoPath: grooming.repoPath,
       agent,
-      addons: [],
+      addons: ['pull_request'],
       prDraft: false,
       personas: [],
       attachments: [],
