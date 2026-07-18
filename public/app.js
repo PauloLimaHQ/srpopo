@@ -2335,7 +2335,6 @@
         model: fields.model,
         permissionMode: fields.permissionMode,
         allowedTools: fields.allowedTools,
-        promptPermissions: fields.promptPermissions,
         useWorktree: fields.useWorktree,
         addons: fields.addons,
         prDraft: fields.prDraft,
@@ -2435,9 +2434,6 @@
     syncAgentModels();
     $('#task-perm').value = task ? (task.permissionMode || 'acceptEdits') : (last.permissionMode || 'acceptEdits');
     $('#task-allowed-tools').value = task ? (task.allowedTools || '') : (last.allowedTools || '');
-    $('#task-prompt-permissions').checked = task
-      ? (task.promptPermissions !== false)
-      : (last.promptPermissions ?? true);
     $('#task-worktree').checked = task ? !!task.useWorktree : (last.useWorktree ?? true);
     // A materialized worktree can't be toggled off; the repo can't move after creation.
     $('#task-worktree').disabled = !!(task && task.worktreePath);
@@ -2477,7 +2473,6 @@
       model: $('#task-model').value,
       permissionMode: $('#task-perm').value,
       allowedTools: $('#task-allowed-tools').value,
-      promptPermissions: $('#task-prompt-permissions').checked,
       useWorktree: $('#task-worktree').checked,
       branchName: $('#task-branch').value.trim(),
       // Only pin a base branch when the user picked one other than the repo's
@@ -2523,7 +2518,6 @@
     // sandbox level. Surface that in the form so the choice isn't misleading.
     const codex = agent === 'codex';
     $('#task-perm-codex-hint').classList.toggle('hidden', !codex);
-    $('#task-prompt-permissions').closest('.addon').classList.toggle('hidden', codex);
   }
   $('#task-agent').addEventListener('change', syncAgentModels);
 
