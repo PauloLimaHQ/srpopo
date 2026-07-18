@@ -139,6 +139,25 @@
     $('#update-downloading-dismiss').addEventListener('click', () => el.remove());
   }
 
+  // A downloaded update couldn't be applied automatically (e.g. an ad-hoc-
+  // signed macOS build failing Squirrel.Mac's signature check) — offer a
+  // manual download instead of a Relaunch button that would do nothing.
+  function showUpdateInstallFailed(releasesUrl) {
+    $('#update-banner')?.remove();
+    $('#update-downloading')?.remove();
+    if ($('#update-install-failed')) return;
+    const el = document.createElement('div');
+    el.id = 'update-install-failed';
+    el.className = 'toast info update-banner';
+    el.innerHTML =
+      `${icon('download')}` +
+      `<span>Sr. Popo downloaded an update but couldn't install it automatically on this build — grab it manually.</span>` +
+      `<a class="btn primary" href="${esc(releasesUrl)}" target="_blank" rel="noopener">Download update</a>` +
+      `<button class="btn ghost" id="update-install-failed-dismiss">Dismiss</button>`;
+    $('#toasts').appendChild(el);
+    $('#update-install-failed-dismiss').addEventListener('click', () => el.remove());
+  }
+
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -2329,7 +2348,6 @@
         model: fields.model,
         permissionMode: fields.permissionMode,
         allowedTools: fields.allowedTools,
-        promptPermissions: fields.promptPermissions,
         useWorktree: fields.useWorktree,
         addons: fields.addons,
         prDraft: fields.prDraft,
@@ -2429,9 +2447,6 @@
     syncAgentModels();
     $('#task-perm').value = task ? (task.permissionMode || 'acceptEdits') : (last.permissionMode || 'acceptEdits');
     $('#task-allowed-tools').value = task ? (task.allowedTools || '') : (last.allowedTools || '');
-    $('#task-prompt-permissions').checked = task
-      ? (task.promptPermissions !== false)
-      : (last.promptPermissions ?? true);
     $('#task-worktree').checked = task ? !!task.useWorktree : (last.useWorktree ?? true);
     // A materialized worktree can't be toggled off; the repo can't move after creation.
     $('#task-worktree').disabled = !!(task && task.worktreePath);
@@ -2471,7 +2486,6 @@
       model: $('#task-model').value,
       permissionMode: $('#task-perm').value,
       allowedTools: $('#task-allowed-tools').value,
-      promptPermissions: $('#task-prompt-permissions').checked,
       useWorktree: $('#task-worktree').checked,
       branchName: $('#task-branch').value.trim(),
       // Only pin a base branch when the user picked one other than the repo's
@@ -2517,7 +2531,6 @@
     // sandbox level. Surface that in the form so the choice isn't misleading.
     const codex = agent === 'codex';
     $('#task-perm-codex-hint').classList.toggle('hidden', !codex);
-    $('#task-prompt-permissions').closest('.addon').classList.toggle('hidden', codex);
   }
   $('#task-agent').addEventListener('change', syncAgentModels);
 
@@ -4129,10 +4142,12 @@
   if (isElectron && window.srpopo.onUpdateReady) {
     window.srpopo.onUpdateReady((version) => showUpdateBanner(version));
     window.srpopo.onUpdateDownloading?.((version) => showUpdateDownloading(version));
+    window.srpopo.onUpdateInstallFailed?.((releasesUrl) => showUpdateInstallFailed(releasesUrl));
     // The check may have landed before this window loaded — ask for the state.
     window.srpopo.getUpdateStatus?.().then((s) => {
       if (!s) return;
-      if (s.ready) showUpdateBanner(s.ready);
+      if (s.installFailed) showUpdateInstallFailed(s.installFailed);
+      else if (s.ready) showUpdateBanner(s.ready);
       else if (s.downloading) showUpdateDownloading(s.downloading);
     }).catch(() => { /* older shell without the handler */ });
   }

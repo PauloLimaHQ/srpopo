@@ -26,6 +26,14 @@ contextBridge.exposeInMainWorld('srpopo', {
     ipcRenderer.on('srpopo:update-ready', listener);
     return () => ipcRenderer.removeListener('srpopo:update-ready', listener);
   },
+  // Fired when a downloaded update can't be applied automatically on this
+  // build (e.g. an ad-hoc-signed macOS build failing Squirrel.Mac's signature
+  // check) — the renderer offers a manual download link instead.
+  onUpdateInstallFailed: (callback: (releasesUrl: string) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, releasesUrl: string) => callback(releasesUrl);
+    ipcRenderer.on('srpopo:update-install-failed', listener);
+    return () => ipcRenderer.removeListener('srpopo:update-install-failed', listener);
+  },
   // Whatever the main process knew before this window finished loading.
   getUpdateStatus: () => ipcRenderer.invoke('srpopo:update-status'),
   restartToUpdate: () => ipcRenderer.invoke('srpopo:restart-to-update'),

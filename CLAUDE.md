@@ -188,10 +188,14 @@ safe package-manager defaults (`DEFAULT_ALLOWED_TOOLS`: npm/pnpm/yarn) at dispat
 ## Interactive permissions (ask instead of auto-deny)
 
 A headless `claude -p` run auto-**denies** any tool it isn't told to allow, so a task
-can otherwise "finish" without doing the work. When a task has `promptPermissions` set
-(the default; a New-Task checkbox toggles it), the run instead **asks the user** before
-running an unapproved tool. Whitelisted tools (task allow-list, add-on `allow`, defaults)
-still auto-approve; only the leftovers prompt. Skipped under `bypassPermissions`.
+can otherwise "finish" without doing the work. `promptPermissions` defaults to `true`
+for every task — there's no UI toggle for it, since the only case where you *don't*
+want the run to ask is `bypassPermissions` (YOLO), which already skips the prompt on
+its own. When set, the run **asks the user** before running an unapproved tool.
+Whitelisted tools (task allow-list, add-on `allow`, defaults) still auto-approve; only
+the leftovers prompt. Skipped under `bypassPermissions`. Unattended paths that have no
+human to answer (autonomous mode's dispatch/review passes, `server/autonomous.ts`)
+force it to `false` explicitly.
 
 The wiring:
 - **`runner.buildArgs`** adds `--permission-prompt-tool mcp__srpopo__approve` and a
@@ -327,4 +331,10 @@ respect the invariants above, run lint + test, and summarize the diff and any ri
 - The packaged app runs from a read-only bundle — never write inside the app dir; use
   `SRPOPO_DATA_DIR`.
 - Builds are unsigned for now; don't add signing/notarization steps without the
-  credentials being configured.
+  credentials being configured. This means macOS auto-update can download and
+  verify a new version, but Squirrel.Mac (the native installer electron-updater
+  drives on macOS) refuses to actually apply it without a real Developer ID
+  signature — an ad-hoc-signed build fails that step silently in the background.
+  `electron/main.ts` detects the failure and swaps the "Relaunch to update"
+  banner for a manual-download link (`srpopo:update-install-failed`) instead of
+  leaving a button that does nothing. Don't "fix" it by ignoring the error.
