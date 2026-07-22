@@ -13,7 +13,7 @@
     personas: [],     // catalog of expert personas (from /api/personas)
     plugins: [],      // marketplace catalog (from /api/plugins)
     settings: { notifications: true, sounds: true, maxParallelSessions: 3, installedPlugins: [], mergeStrategy: 'merge', remoteAccess: false, remoteAccessConfigured: false, customModels: [] }, // user preferences (from /api/settings)
-    filters: { search: '', repoIds: new Set() }, // board filters — free-text search plus Super View's project quick-filter (repoIds is only consulted in Super View; a workspace's repo scope comes from state.view)
+    filters: { search: '' }, // board filters (free-text only — repo scope comes from state.view)
     view: { mode: 'super' }, // { mode: 'super' } | { mode: 'workspace', repoId }
     prByTask: new Map(), // taskId -> 'loading' | { pr, reason } from /api/tasks/:id/pr
     repoBranchByTask: new Map(), // taskId -> 'loading' | repo's live current branch (non-worktree tasks only)
@@ -261,7 +261,6 @@
   // the only filter left to apply is the free-text search over title/repo/prompt.
   function taskMatchesFilters(t) {
     const f = state.filters;
-    if (state.view.mode === 'super' && f.repoIds.size && !f.repoIds.has(t.repoId)) return false;
     if (f.search) {
       const hay = `${t.title} ${t.repoName} ${t.prompt || ''}`.toLowerCase();
       if (!hay.includes(f.search)) return false;
@@ -269,19 +268,18 @@
     return true;
   }
 
-  const filtersActive = () => !!state.filters.search || (state.view.mode === 'super' && state.filters.repoIds.size > 0);
+  const filtersActive = () => !!state.filters.search;
 
   const FILTER_KEY = 'srpopo.filters';
   function saveFilters() {
     try {
-      localStorage.setItem(FILTER_KEY, JSON.stringify({ search: state.filters.search, repoIds: [...state.filters.repoIds] }));
+      localStorage.setItem(FILTER_KEY, JSON.stringify({ search: state.filters.search }));
     } catch { /* storage unavailable — non-fatal */ }
   }
   function loadFilters() {
     try {
       const f = JSON.parse(localStorage.getItem(FILTER_KEY)) || {};
       state.filters.search = (f.search || '').toLowerCase();
-      state.filters.repoIds = new Set(Array.isArray(f.repoIds) ? f.repoIds : []);
     } catch { /* ignore malformed storage */ }
   }
 
@@ -302,7 +300,6 @@
 
   function groomingMatchesFilters(g) {
     const f = state.filters;
-    if (state.view.mode === 'super' && f.repoIds.size && !f.repoIds.has(g.repoId)) return false;
     if (f.search) {
       const hay = `${g.title} ${g.repoName} ${g.idea || ''}`.toLowerCase();
       if (!hay.includes(f.search)) return false;
@@ -310,72 +307,24 @@
     return true;
   }
 
-  // Tasks currently in scope for the board: a single repo inside a workspace,
-  // or every repo in Super View (the project quick-filter is applied later via
-  // taskMatchesFilters, same as the free-text search).
-  function scopeTasks() {
-    return state.view.mode === 'workspace' ? tasksForRepo(state.view.repoId) : [...state.tasks.values()];
-  }
-  function scopeGroomings() {
-    return state.view.mode === 'workspace' ? groomingsForRepo(state.view.repoId) : [...state.groomings.values()];
-  }
-
   function updateFilterMeta() {
-    const all = scopeTasks();
+    const all = tasksForRepo(state.view.repoId);
     const shown = all.filter(taskMatchesFilters).length;
     $('#filter-count').textContent = filtersActive() ? `${shown} of ${all.length}` : `${all.length} tasks`;
     $('#filter-clear').classList.toggle('hidden', !filtersActive());
   }
 
-  // Repo quick-filter pills — shown only in Super View, and only once there's
-  // more than one repo to distinguish between.
-  function renderRepoFilterPills() {
-    const wrap = $('#filter-repos');
-    const isSuper = state.view.mode === 'super';
-    wrap.classList.toggle('hidden', !isSuper || state.repos.length < 2);
-    if (!isSuper || state.repos.length < 2) return;
-    wrap.innerHTML = state.repos.map((r) => {
-      const active = state.filters.repoIds.has(r.id);
-      return `
-        <button type="button" class="filter-pill ${active ? 'active' : ''}" data-repo="${esc(r.id)}">
-          ${esc(r.name)}
-          <span class="filter-pill-count">${tasksForRepo(r.id).length}</span>
-        </button>`;
-    }).join('');
-    wrap.querySelectorAll('.filter-pill').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const id = btn.dataset.repo;
-        if (state.filters.repoIds.has(id)) state.filters.repoIds.delete(id);
-        else state.filters.repoIds.add(id);
-        onFiltersChanged();
-      });
-    });
-  }
-
   // ---------- board ----------
-  // The single choke point every "something changed" handler calls. In Super
-  // View this draws every repo's cards on one board (scopeTasks/scopeGroomings
-  // span all repos); inside a workspace it's scoped to just that repo. Either
-  // way it's the same five columns + locked Grooming column.
+  // The single choke point every "something changed" handler calls. Outside a
+  // workspace there's no board to draw — refresh the Super View instead so its
+  // per-repo stats (graph, live badge, task count) stay live.
   function renderBoard() {
+    if (state.view.mode !== 'workspace') { renderSuperView(); return; }
     updateFilterMeta();
-    renderRepoFilterPills();
     const board = $('#board');
     board.innerHTML = '';
-    const isSuper = state.view.mode === 'super';
-
-    if (isSuper && !state.repos.length) {
-      board.innerHTML = `
-        <div class="workspace-empty">
-          <p>No repositories yet.</p>
-          <button class="btn primary" id="super-view-add-repo">${icon('plus')} Add a repository</button>
-        </div>`;
-      $('#super-view-add-repo').addEventListener('click', openReposModal);
-      return;
-    }
-
-    const repoTasks = scopeTasks();
-    const repoGroomings = scopeGroomings();
+    const repoTasks = tasksForRepo(state.view.repoId);
+    const repoGroomings = groomingsForRepo(state.view.repoId);
 
     // Grooming leads the board. It's part of the process but has its own
     // lifecycle, so the column is locked: no drag in, no drag out. Shown when
@@ -477,37 +426,100 @@
   const currentWorkspaceRepoId = () => (state.view.mode === 'workspace' ? state.view.repoId : null);
 
   // Toggles the Super View / workspace board and re-renders whichever is now visible.
-  // Both modes draw into the same #board — Super View just scopes it to every
-  // repo instead of one (see renderBoard/scopeTasks).
   function renderView() {
     const isSuper = state.view.mode === 'super';
+    $('#super-view').classList.toggle('hidden', !isSuper);
+    $('#board').classList.toggle('hidden', isSuper);
     $('#workspace-header').classList.toggle('hidden', isSuper);
-    $('#filterbar').classList.remove('hidden');
-    if (!isSuper) renderWorkspaceHeader();
-    renderBoard();
+    $('#filterbar').classList.toggle('hidden', isSuper);
+    if (isSuper) renderSuperView();
+    else { renderWorkspaceHeader(); renderBoard(); }
     renderAutonomous();
   }
 
   // Live lookup of a repo's current branch, cached like refreshRepoBranchForTask
-  // — used by the workspace header chip.
+  // — used by both the Super View cards and the workspace header chip.
   async function refreshRepoBranchCard(repoId, force) {
     if (!force && state.repoBranchByRepo.has(repoId)) return;
     state.repoBranchByRepo.set(repoId, 'loading');
     let branch = null;
     try { ({ branch } = await api('GET', `/api/repos/${repoId}/branch`)); } catch { /* stays null */ }
     state.repoBranchByRepo.set(repoId, branch);
-    if (state.view.mode === 'workspace' && state.view.repoId === repoId) renderWorkspaceHeader();
+    if (state.view.mode === 'super') renderSuperView();
+    else if (state.view.mode === 'workspace' && state.view.repoId === repoId) renderWorkspaceHeader();
   }
 
   // Live worktree list for a repo (ground truth from git, not stale task.worktreePath
-  // values) — feeds the workspace popover.
+  // values) — feeds the Super View's worktree count and the workspace popover.
   async function refreshRepoWorktreesCard(repoId, force) {
     if (!force && state.worktreesByRepo.has(repoId)) return;
     state.worktreesByRepo.set(repoId, 'loading');
     let worktrees = [];
     try { ({ worktrees } = await api('GET', `/api/repos/${repoId}/worktrees`)); } catch { /* stays [] */ }
     state.worktreesByRepo.set(repoId, worktrees);
+    if (state.view.mode === 'super') renderSuperView();
     if (!$('#modal-workspace').classList.contains('hidden') && state.view.repoId === repoId) renderWorkspaceWorktreeList(repoId);
+  }
+
+  // A dependency-free "graph": a stacked bar whose segments are proportional
+  // (via flex-grow) to a repo's task counts per column (grooming cards lead).
+  function workspaceGraphHtml(tasks, groomings) {
+    if (!tasks.length && !groomings.length) return `<div class="workspace-graph empty"></div>`;
+    const counts = new Map();
+    for (const t of tasks) {
+      const col = COLUMN_OF_STATUS[t.status];
+      counts.set(col, (counts.get(col) || 0) + 1);
+    }
+    const segs = [GROOMING_COLUMN, ...COLUMNS]
+      .map((c) => ({ c, n: c.key === 'grooming' ? groomings.length : counts.get(c.key) }))
+      .filter(({ n }) => n)
+      .map(({ c, n }) =>
+        `<span class="workspace-graph-seg" style="background:${c.dot};flex:${n} 0 0" title="${esc(c.label)}: ${n}"></span>`
+      ).join('');
+    return `<div class="workspace-graph">${segs}</div>`;
+  }
+
+  function workspaceCardHtml(r) {
+    const tasks = tasksForRepo(r.id);
+    const groomings = groomingsForRepo(r.id);
+    const liveCount = tasks.filter(isLive).length + groomings.filter(isGroomingLive).length;
+    const branch = state.repoBranchByRepo.get(r.id);
+    const wt = state.worktreesByRepo.get(r.id);
+    const wtCount = Array.isArray(wt) ? wt.length : null;
+    return `
+      <div class="workspace-card" data-repo="${esc(r.id)}" title="${esc(r.path)}">
+        <div class="workspace-card-head">
+          <span class="workspace-card-name">${esc(r.name)}</span>
+          ${liveCount ? `<span class="chip running-badge"><span class="spinner"></span>${liveCount} live</span>` : ''}
+        </div>
+        ${workspaceGraphHtml(tasks, groomings)}
+        <div class="workspace-card-foot">
+          ${branch && branch !== 'loading' ? `<span class="chip">${icon('git-branch')} ${esc(branch)}</span>` : ''}
+          <span class="chip">${wtCount == null ? '…' : wtCount} worktree${wtCount === 1 ? '' : 's'}</span>
+          <span class="chip">${tasks.length} task${tasks.length === 1 ? '' : 's'}</span>
+        </div>
+      </div>`;
+  }
+
+  function renderSuperView() {
+    const el = $('#super-view');
+    if (!state.repos.length) {
+      el.innerHTML = `
+        <div class="workspace-empty">
+          <p>No repositories yet.</p>
+          <button class="btn primary" id="super-view-add-repo">${icon('plus')} Add a repository</button>
+        </div>`;
+      $('#super-view-add-repo').addEventListener('click', openReposModal);
+      return;
+    }
+    el.innerHTML = `<div class="workspace-grid">${state.repos.map(workspaceCardHtml).join('')}</div>`;
+    el.querySelectorAll('.workspace-card').forEach((card) => {
+      card.addEventListener('click', () => enterWorkspace(card.dataset.repo));
+    });
+    for (const r of state.repos) {
+      refreshRepoBranchCard(r.id);
+      refreshRepoWorktreesCard(r.id);
+    }
   }
 
   function renderWorkspaceHeader() {
@@ -838,12 +850,8 @@
     el.dataset.id = t.id;
 
     const modelName = t.model === 'default' ? (t.resolvedModel || 'default') : t.model;
-    // In Super View the repo chip doubles as a jump-to-workspace link, since
-    // that board mixes cards from every repo — see the click handler below.
     const chips = [
-      state.view.mode === 'super'
-        ? `<span class="chip repo repo-jump" data-jump-repo="${esc(t.repoId)}" title="Open ${esc(t.repoName)} workspace">${esc(t.repoName)}</span>`
-        : `<span class="chip repo">${esc(t.repoName)}</span>`,
+      `<span class="chip repo">${esc(t.repoName)}</span>`,
     ];
     // Show the backend only for the non-default agent, so Claude cards read the
     // same as before; Codex gets an explicit badge (no emoji — icons.js glyph).
@@ -909,8 +917,6 @@
     el.addEventListener('dragend', () => el.classList.remove('dragging'));
     el.addEventListener('click', (e) => {
       if (e.target.closest('[data-action="stop"]')) { stopTask(t.id); return; }
-      const jump = e.target.closest('[data-jump-repo]');
-      if (jump) { enterWorkspace(jump.dataset.jumpRepo); return; }
       openDrawer(t.id);
     });
     el.addEventListener('contextmenu', (e) => {
@@ -3912,7 +3918,6 @@
   });
   $('#filter-clear').addEventListener('click', () => {
     state.filters.search = '';
-    state.filters.repoIds.clear();
     $('#filter-search').value = '';
     onFiltersChanged();
   });
