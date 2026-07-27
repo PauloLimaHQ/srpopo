@@ -35,6 +35,7 @@
       <button class="btn ghost" id="btn-repos"><span class="i" data-icon="folder"></span>Repos</button>
       <button class="btn ghost" id="btn-ask"><span class="i" data-icon="message-circle-question"></span>Ask Sr. Popo</button>
       <button class="btn ghost hidden" id="btn-brief"><span class="i" data-icon="lightbulb"></span>Brief an Idea</button>
+      <button class="btn ghost hidden" id="btn-hive"><span class="i" data-icon="crown"></span>Orchestrate a Goal</button>
       <button class="btn ghost hidden" id="btn-linear"><span class="i" data-icon="linear"></span>From Linear</button>
       <button class="btn ghost hidden" id="btn-specs"><span class="i" data-icon="folder"></span>From Specs</button>
       <button class="btn primary" id="btn-new-task"><span class="i" data-icon="plus"></span>New Task</button>
@@ -299,6 +300,63 @@
         <button class="btn ghost" id="brief-cancel">Cancel</button>
         <button class="btn" id="brief-draft">Save as Draft</button>
         <button class="btn primary" id="brief-submit">Groom it <span class="i" data-icon="sparkles"></span></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Orchestrate a Goal modal (hive orchestration) -->
+  <div id="modal-hive" class="modal hidden">
+    <div class="modal-box">
+      <h2 id="hive-modal-title"><span class="i" data-icon="crown"></span>Orchestrate a Goal</h2>
+      <p class="muted">Describe one high-level goal and pick a project. An orchestrator agent explores the repo
+        read-only, breaks the goal into worker tasks on the board, watches what they produce, and keeps
+        coordinating follow-ups until the goal is done. It never edits the repo itself — the workers do.</p>
+      <label id="hive-repo-field">Repository
+        <div class="row">
+          <select id="hive-repo"></select>
+          <button class="btn ghost" id="hive-add-repo" title="Add a repository" aria-label="Add a repository"><span class="i" data-icon="plus"></span></button>
+        </div>
+        <span id="hive-repo-branch" class="field-hint"></span>
+      </label>
+      <label>Your goal
+        <textarea id="hive-text" rows="5"
+                  placeholder="e.g. make the board keyboard-navigable end to end"></textarea>
+      </label>
+      <label class="check addon">
+        <input type="checkbox" id="hive-autonomous" />
+        <span class="addon-text">
+          <span class="addon-label">Hand execution to Autonomous Mode</span>
+          <span class="addon-hint">The orchestrator creates tasks straight into <strong>Ready</strong> and Autonomous
+            Mode dispatches, reviews and merges them — no babysitting. Without this, the orchestrator dispatches
+            each task itself and a human merges.</span>
+        </span>
+      </label>
+      <div id="hive-autonomous-fields" class="hidden">
+        <label>Budget cap (USD)
+          <input id="hive-budget" type="number" min="0.5" max="1000" step="0.5" value="20" />
+          <span class="field-hint">Shared with the Autonomous Mode session this starts; new work stops being picked up once it's spent.</span>
+        </label>
+        <label class="check addon">
+          <input type="checkbox" id="hive-review-mode" checked />
+          <span class="addon-text">
+            <span class="addon-label">Review &amp; finish tasks in Review</span>
+            <span class="addon-hint">Let Autonomous Mode re-review each finished branch and apply fixes before merging.</span>
+          </span>
+        </label>
+      </div>
+      <label>Model <span class="field-hint">— used for the orchestrator session</span>
+        <select id="hive-model">
+          <option value="default">Account default</option>
+          <option value="sonnet">Sonnet</option>
+          <option value="opus">Opus</option>
+          <option value="haiku">Haiku</option>
+          <option value="fable">Fable</option>
+        </select>
+      </label>
+      <div class="modal-actions">
+        <button class="btn ghost" id="hive-cancel">Cancel</button>
+        <button class="btn" id="hive-draft">Save as Draft</button>
+        <button class="btn primary" id="hive-submit">Orchestrate it <span class="i" data-icon="crown"></span></button>
       </div>
     </div>
   </div>

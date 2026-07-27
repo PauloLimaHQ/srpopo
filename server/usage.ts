@@ -12,7 +12,7 @@
  * user isn't actually billed per token.
  */
 import * as store from './store';
-import type { Grooming, ModelUsageStat, Task, UsageEntry, UsageSummary } from './types';
+import type { Grooming, ModelUsageStat, Orchestration, Task, UsageEntry, UsageSummary } from './types';
 
 // The subset of Task/Grooming fields a ledger row needs. Both lifecycles carry
 // all of these, so entriesFromResult doesn't need to know which one it's
@@ -105,6 +105,15 @@ function applyResult(task: Task, event: Record<string, unknown>): void {
 // field to accumulate onto (see accumulate's comment above).
 function applyGroomResult(grooming: Grooming, event: Record<string, unknown>): void {
   const entries = entriesFromResult(grooming, 'groom', event);
+  for (const e of entries) store.appendUsage(e);
+}
+
+// Called from runner.ts's `result` handler for every hive orchestrator ("queen")
+// turn. Ledgered like a grooming session — it is the same kind of read-only
+// planning session — so an orchestration's own spend shows up in the Usage panel
+// alongside the worker runs it spawned.
+function applyOrchestrationResult(orchestration: Orchestration, event: Record<string, unknown>): void {
+  const entries = entriesFromResult(orchestration, 'groom', event);
   for (const e of entries) store.appendUsage(e);
 }
 
@@ -261,4 +270,12 @@ function computeSummary(opts: { period?: string; repoId?: string } = {}): UsageS
 // since it's a no-op once the ledger file exists.
 backfillIfNeeded();
 
-export { applyResult, applyGroomResult, applyAskResult, applyMemoryResult, computeSummary, backfillIfNeeded };
+export {
+  applyResult,
+  applyGroomResult,
+  applyOrchestrationResult,
+  applyAskResult,
+  applyMemoryResult,
+  computeSummary,
+  backfillIfNeeded,
+};

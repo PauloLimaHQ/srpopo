@@ -5,6 +5,7 @@ import readline from 'readline';
 import { db, save, now, appendLog } from './store';
 import { broadcast } from './bus';
 import * as groomer from './groomer';
+import * as queen from './queen';
 import { askPrompt } from './ask';
 import * as memory from './memory';
 import * as permissions from './permissions';
@@ -15,7 +16,7 @@ import { ClaudeAdapter } from './agents/claude';
 import { CodexAdapter } from './agents/codex';
 import type { AgentAdapter, NormalizedResult } from './agents/types';
 import type { GroomSpec } from './groomer';
-import type { AskSession, Grooming, LogEvent, Task, TaskAgent } from './types';
+import type { AskSession, Grooming, LogEvent, Orchestration, Task, TaskAgent } from './types';
 
 // The registered agent backends, keyed by Task.agent. Claude is the default and
 // the historical behavior; codex drives the OpenAI Codex CLI. Grooming always
@@ -80,6 +81,12 @@ function emitGrooming(grooming: Grooming): void {
   grooming.updatedAt = now();
   save();
   broadcast({ type: 'grooming', grooming });
+}
+
+function emitOrchestration(orchestration: Orchestration): void {
+  orchestration.updatedAt = now();
+  save();
+  broadcast({ type: 'orchestration', orchestration });
 }
 
 function record(rec: SessionRecord, event: LogEvent): void {
@@ -444,6 +451,130 @@ function groom(
 }
 
 /**
+ * Run one turn of a hive orchestration's "queen" session: a read-only Claude
+ * session that plans the goal and drives the board through Sr. Popo's own MCP
+ * server (see orchestrateArgs in server/agents/claude.ts — research tools plus
+ * the board tools, never a write tool and never a worktree).
+ *
+ * Every turn must end with one status object between the HIVE sentinels (see
+ * server/queen.ts), which decides where the card lands:
+ *   waiting  → `waiting`, with the watched task ids kept on the card so the hive
+ *              engine (server/hive.ts) can resume this same session when they land
+ *   question → `awaiting`, paused on a question for the developer
+ *   done     → `finished`
+ *   blocked  → `failed`
+ * `waiting` and `awaiting` keep the sessionId (they are resumable, and survive a
+ * server restart); the terminal states drop it. Pass `resumePrompt` to continue
+ * the session — the engine's status update, or the developer's answer.
+ */
+function orchestrate(
+  orchestration: Orchestration,
+  { resumePrompt }: { resumePrompt?: string } = {},
+): Orchestration {
+  if (running.has(orchestration.id)) throw new Error('Orchestration is already running');
+
+  const adapter = ClaudeAdapter;
+  const resume = typeof resumePrompt === 'string';
+  orchestration.status = 'running';
+  orchestration.startedAt = orchestration.startedAt && resume ? orchestration.startedAt : now();
+  orchestration.finishedAt = null;
+  orchestration.lastOutcome = null;
+  orchestration.lastError = null;
+  // A fresh (non-resume) run starts the goal over — drop the previous session and
+  // whatever it was watching.
+  if (!resume) {
+    orchestration.sessionId = null;
+    orchestration.watch = [];
+    orchestration.note = null;
+    // The turn cap (hive.MAX_TURNS) counts turns of ONE queen session, so a
+    // fresh run of the goal starts the count over.
+    orchestration.turnCount = 0;
+  }
+  orchestration.runCount = (orchestration.runCount || 0) + 1;
+  orchestration.turnCount = (orchestration.turnCount || 0) + 1;
+  orchestration.activeSubagents = 0;
+  emitOrchestration(orchestration);
+
+  const prompt = resume
+    ? resumePrompt!
+    : queen.metaPrompt(orchestration, memory.readMemory(orchestration.repoId));
+
+  return launch(orchestration, {
+    adapter,
+    args: claude.orchestrateArgs(orchestration, resume),
+    workDir: orchestration.repoPath, // planning is read-only exploration; never a worktree
+    prompt,
+    promptEvent: { type: 'prompt', text: prompt, orchestrate: true, resume, run: orchestration.runCount },
+    emit: emitOrchestration,
+    onResult: (event) => usage.applyOrchestrationResult(orchestration, event),
+    resolveExit: ({ code, signal, stopped, sawResult, stderrTail }) => {
+      if (signal || stopped) {
+        // Park a stopped orchestration back in draft with the goal intact. The
+        // session goes with it — a fresh run re-plans from scratch (mirrors how
+        // a stopped grooming card is parked).
+        orchestration.sessionId = null;
+        orchestration.watch = [];
+        orchestration.status = 'draft';
+        orchestration.lastOutcome = 'stopped';
+        orchestration.lastError = 'Orchestration stopped by user';
+        record(orchestration, { type: 'proc', text: 'Orchestration stopped by user' });
+        return;
+      }
+      const succeeded = sawResult && !sawResult.isError;
+      const status = succeeded ? queen.parseStatus(sawResult.text) : null;
+      if (!status) {
+        orchestration.sessionId = null;
+        orchestration.watch = [];
+        orchestration.status = 'failed';
+        orchestration.lastOutcome = 'error';
+        orchestration.lastError = succeeded
+          ? 'The orchestrator ended its turn without a valid status update'
+          : (sawResult && sawResult.errorReason) ||
+            stderrTail.trim().split('\n').pop() ||
+            `${adapter.label} exited with code ${code}`;
+        record(orchestration, { type: 'proc', text: `Orchestration failed (exit ${code}): ${orchestration.lastError}` });
+        return;
+      }
+
+      orchestration.note = status.note || null;
+      if (status.state === 'waiting') {
+        // Still going: keep the session (the engine resumes it) and remember the
+        // workers this turn asked for, both as the live watch set and on the
+        // running roster of every task this orchestration has touched.
+        orchestration.watch = status.watch;
+        orchestration.taskIds = [...new Set([...(orchestration.taskIds || []), ...status.watch])];
+        orchestration.status = 'waiting';
+        orchestration.lastOutcome = 'waiting';
+        orchestration.finishedAt = null; // paused between turns, not finished
+        record(orchestration, {
+          type: 'proc',
+          text: `Waiting on ${status.watch.length} task${status.watch.length === 1 ? '' : 's'}${status.note ? `: ${status.note}` : ''}`,
+        });
+      } else if (status.state === 'question') {
+        orchestration.watch = [];
+        orchestration.status = 'awaiting';
+        orchestration.lastOutcome = 'awaiting';
+        orchestration.finishedAt = null;
+        record(orchestration, { type: 'proc', text: `Orchestration needs input: ${status.note}` });
+      } else if (status.state === 'done') {
+        orchestration.sessionId = null;
+        orchestration.watch = [];
+        orchestration.status = 'finished';
+        orchestration.lastOutcome = 'orchestrated';
+        record(orchestration, { type: 'proc', text: `Goal complete: ${status.note}` });
+      } else {
+        orchestration.sessionId = null;
+        orchestration.watch = [];
+        orchestration.status = 'failed';
+        orchestration.lastOutcome = 'blocked';
+        orchestration.lastError = status.note || 'The orchestrator reported it is blocked';
+        record(orchestration, { type: 'proc', text: `Orchestration blocked: ${orchestration.lastError}` });
+      }
+    },
+  });
+}
+
+/**
  * Run a short, read-only "Ask Sr. Popo" Q&A session in a repo. Unlike
  * dispatch/groom, the session is ephemeral: `session` is a plain in-memory
  * record (never a Task/Grooming, never persisted), so it drives the same
@@ -519,6 +650,7 @@ function setBaseUrl(url: string): void {
 export {
   dispatch,
   groom,
+  orchestrate,
   ask,
   stop,
   stopAll,

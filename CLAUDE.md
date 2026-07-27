@@ -43,6 +43,9 @@ static with **no build step** (see Conventions).
 | `server/permissions.ts` | In-memory registry of pending tool-approval prompts (see "Interactive permissions"). |
 | `server/permission-mcp.js` | **Stays plain JS.** Standalone MCP stdio bridge `claude` spawns to ask before running a tool — kept JS so it runs without a TS loader in both dev and the packaged app. `tsc` copies it into `dist/` untouched (`allowJs`). |
 | `server/groomer.ts` | Meta-prompt + result parser for "Brief an Idea" (see "Grooming" below). |
+| `server/queen.ts` | Meta-prompt + turn-status parser for the hive orchestrator (see "Hive Orchestration"). |
+| `server/hive.ts` | Hive engine: watches the bus and resumes a waiting queen session when its worker tasks land. |
+| `server/sentinels.ts` | Tolerant extraction of the sentinel-delimited JSON both `groomer.ts` and `queen.ts` end a turn with. |
 | `server/types.ts` | Shared interfaces (`Task`, `Repo`, `Db`, `Decision`, …). Typing only. |
 | `server/paths.ts` | Resolves the app root (`public/`, `assets/`, `build/`) from source or `dist/`. |
 | `electron/main.ts` | macOS tray/menu-bar app shell; boots the server on a local port. |
@@ -301,6 +304,45 @@ and **resumes** the same session (`runner.groom` with a `resumePrompt` → `clau
 --resume`), which then finishes (or, rarely, asks again). An `awaiting` card survives a
 server restart (the claude session is resumable); `POST /api/groomings/:id/run`
 re-grooms from scratch, discarding the pending questions.
+
+## Hive Orchestration: "Orchestrate a Goal"
+
+Another **installable plugin** (`hive` in `server/plugins.ts`) — the "Orchestrate a Goal"
+button and the board's Orchestration column only surface once it's installed.
+
+An orchestration is its own entity (`db.orchestrations`, `Orchestration` in `types.ts`)
+with its own REST routes (`/api/orchestrations/...`) and lifecycle: **draft** (gray) →
+**running** (purple, set only by `runner.orchestrate`) → **waiting** (blue — watching
+worker tasks) or **awaiting** (amber — it asked the developer something) →
+**finished** (green) or **failed** (red). Like a grooming card it never leaves its
+locked column; the status only recolors it in place.
+
+The **queen** is a read-only `claude -p` session scoped to one repo and one high-level
+goal. It plans, and **workers do all the editing** — it is given the grooming research
+tools plus Sr. Popo's own board tools and nothing else (`orchestrateArgs` in
+`server/agents/claude.ts`), so a write tool is auto-denied by the headless run. It
+reaches the board through the **`/mcp` server** (`server/mcp.ts`), registered via
+`--mcp-config` as an **HTTP** MCP server named `board` pointing at the app's own
+`127.0.0.1` base URL — verified against a live `claude` CLI, so no stdio proxy is
+needed. Never confuse that name with the per-task permission bridge (`srpopo`); the
+queen gets no permission bridge and no worktree.
+
+Every queen turn ends with ONE JSON object between `@@SRPOPO_HIVE_START@@` /
+`@@SRPOPO_HIVE_END@@` (parsed by `queen.parseStatus`): `waiting` (with the worker task
+ids to watch), `question`, `done`, or `blocked`. `server/hive.ts` is the engine: it
+subscribes to the SSE bus and, when a watched worker reaches `review`/`done`/`failed`
+(the last covering Autonomous Mode's merge → done), debounces a few seconds and
+**resumes the same session** with a status digest from `queen.statusPrompt`. It never
+resumes a session that is already running, re-arms `waiting` orchestrations from the
+store on boot (`hive.start()` in `index.start`), and hard-stops a queen after
+`hive.MAX_TURNS` turns. To change how goals are orchestrated, edit `queen.ts`; to
+change when the queen wakes up, edit `hive.ts`.
+
+**Autonomous hand-off.** `POST /api/orchestrations/:id/run` takes an optional
+`{ autonomous: { budgetUsd, reviewMode } }`: it starts an Autonomous Mode session for
+the repo first, and the queen is told to create `ready` tasks with the engine's
+`REQUIRED_ADDONS` and let it dispatch/review/merge them. Without it the queen runs in
+manual mode — it dispatches its own tasks and a human merges.
 
 ## Maintaining this repo with Claude (the meta-workflow)
 

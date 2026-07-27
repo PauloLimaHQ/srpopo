@@ -7,8 +7,10 @@
     repos: [],
     tasks: new Map(), // id -> task
     groomings: new Map(), // id -> grooming card (own lifecycle, Grooming column)
+    orchestrations: new Map(), // id -> orchestration card (own lifecycle, Orchestration column)
     openTaskId: null, // task shown in drawer
     openGroomingId: null, // grooming card shown in drawer (mutually exclusive)
+    openOrchestrationId: null, // orchestration card shown in drawer (mutually exclusive)
     addons: [],       // catalog of optional task behaviors (from /api/addons)
     personas: [],     // catalog of expert personas (from /api/personas)
     plugins: [],      // marketplace catalog (from /api/plugins)
@@ -62,6 +64,9 @@
   // grooming cards (their own draft/running/finished lifecycle), and is locked —
   // nothing is ever dragged into or out of it.
   const GROOMING_COLUMN = { key: 'grooming', label: 'Grooming', dot: '#c06fce' };
+  // Same idea for Hive Orchestration: a locked column of orchestration cards,
+  // each one a goal an orchestrator agent is planning and coordinating.
+  const HIVE_COLUMN = { key: 'hive', label: 'Orchestration', dot: '#d1a03c' };
   // failed tasks are surfaced in the Review column with a FAILED badge
   const COLUMN_OF_STATUS = {
     backlog: 'backlog', ready: 'ready', running: 'running',
@@ -71,6 +76,7 @@
   // and shows a spinner + stop button instead.
   const isLive = (t) => t.status === 'running';
   const isGroomingLive = (g) => g.status === 'running';
+  const isOrchestrationLive = (o) => o.status === 'running';
 
   const $ = (sel) => document.querySelector(sel);
 
@@ -307,6 +313,20 @@
     return true;
   }
 
+  // Orchestration cards scoped to a workspace, same idea as groomingsForRepo.
+  function orchestrationsForRepo(repoId) {
+    return [...state.orchestrations.values()].filter((o) => o.repoId === repoId);
+  }
+
+  function orchestrationMatchesFilters(o) {
+    const f = state.filters;
+    if (f.search) {
+      const hay = `${o.title} ${o.repoName} ${o.goal || ''}`.toLowerCase();
+      if (!hay.includes(f.search)) return false;
+    }
+    return true;
+  }
+
   function updateFilterMeta() {
     const all = tasksForRepo(state.view.repoId);
     const shown = all.filter(taskMatchesFilters).length;
@@ -325,6 +345,7 @@
     board.innerHTML = '';
     const repoTasks = tasksForRepo(state.view.repoId);
     const repoGroomings = groomingsForRepo(state.view.repoId);
+    const repoOrchestrations = orchestrationsForRepo(state.view.repoId);
 
     // Grooming leads the board. It's part of the process but has its own
     // lifecycle, so the column is locked: no drag in, no drag out. Shown when
@@ -352,6 +373,31 @@
       board.appendChild(colEl);
     }
 
+    // Orchestration sits next to Grooming: also part of the process, also its
+    // own lifecycle, also locked (no drag in, no drag out). Shown when the Hive
+    // Orchestration plugin is installed, or when cards already exist.
+    if (pluginInstalled('hive') || repoOrchestrations.length) {
+      const orchestrations = repoOrchestrations
+        .filter(orchestrationMatchesFilters)
+        .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+      const colEl = document.createElement('div');
+      colEl.className = 'column hive-column';
+      colEl.dataset.col = HIVE_COLUMN.key;
+      colEl.innerHTML = `
+        <div class="column-head">
+          <span class="dot" style="background:${HIVE_COLUMN.dot}"></span>
+          ${HIVE_COLUMN.label}
+          <span class="count">${orchestrations.length}</span>
+        </div>
+        <div class="column-body"></div>`;
+      const body = colEl.querySelector('.column-body');
+      if (!orchestrations.length) {
+        body.innerHTML = `<div class="column-empty">${filtersActive() ? 'no matches' : 'orchestrate a goal to fill this'}</div>`;
+      }
+      for (const o of orchestrations) body.appendChild(renderOrchestrationCard(o));
+      board.appendChild(colEl);
+    }
+
     for (const col of COLUMNS) {
       const tasks = repoTasks
         .filter((t) => COLUMN_OF_STATUS[t.status] === col.key)
@@ -364,7 +410,8 @@
       // was rejected without opening Settings.
       const max = state.settings.maxParallelSessions;
       const liveCount = [...state.tasks.values()].filter(isLive).length +
-        [...state.groomings.values()].filter(isGroomingLive).length;
+        [...state.groomings.values()].filter(isGroomingLive).length +
+        [...state.orchestrations.values()].filter(isOrchestrationLive).length;
       const countLabel = col.key === 'running' && max ? `${liveCount}/${max}` : tasks.length;
 
       const colEl = document.createElement('div');
@@ -374,7 +421,7 @@
         <div class="column-head">
           <span class="dot" style="background:${col.dot}"></span>
           ${col.label}
-          <span class="count" ${col.key === 'running' && max ? `title="${liveCount} of ${max} parallel sessions in use (running + grooming)"` : ''}>${countLabel}</span>
+          <span class="count" ${col.key === 'running' && max ? `title="${liveCount} of ${max} parallel sessions in use (running + grooming + orchestration)"` : ''}>${countLabel}</span>
         </div>
         <div class="column-body"></div>`;
       const body = colEl.querySelector('.column-body');
@@ -463,15 +510,18 @@
 
   // A dependency-free "graph": a stacked bar whose segments are proportional
   // (via flex-grow) to a repo's task counts per column (grooming cards lead).
-  function workspaceGraphHtml(tasks, groomings) {
-    if (!tasks.length && !groomings.length) return `<div class="workspace-graph empty"></div>`;
+  function workspaceGraphHtml(tasks, groomings, orchestrations) {
+    if (!tasks.length && !groomings.length && !orchestrations.length) return `<div class="workspace-graph empty"></div>`;
     const counts = new Map();
     for (const t of tasks) {
       const col = COLUMN_OF_STATUS[t.status];
       counts.set(col, (counts.get(col) || 0) + 1);
     }
-    const segs = [GROOMING_COLUMN, ...COLUMNS]
-      .map((c) => ({ c, n: c.key === 'grooming' ? groomings.length : counts.get(c.key) }))
+    const segs = [GROOMING_COLUMN, HIVE_COLUMN, ...COLUMNS]
+      .map((c) => ({
+        c,
+        n: c.key === 'grooming' ? groomings.length : c.key === 'hive' ? orchestrations.length : counts.get(c.key),
+      }))
       .filter(({ n }) => n)
       .map(({ c, n }) =>
         `<span class="workspace-graph-seg" style="background:${c.dot};flex:${n} 0 0" title="${esc(c.label)}: ${n}"></span>`
@@ -482,7 +532,9 @@
   function workspaceCardHtml(r) {
     const tasks = tasksForRepo(r.id);
     const groomings = groomingsForRepo(r.id);
-    const liveCount = tasks.filter(isLive).length + groomings.filter(isGroomingLive).length;
+    const orchestrations = orchestrationsForRepo(r.id);
+    const liveCount = tasks.filter(isLive).length + groomings.filter(isGroomingLive).length +
+      orchestrations.filter(isOrchestrationLive).length;
     const branch = state.repoBranchByRepo.get(r.id);
     const wt = state.worktreesByRepo.get(r.id);
     const wtCount = Array.isArray(wt) ? wt.length : null;
@@ -492,7 +544,7 @@
           <span class="workspace-card-name">${esc(r.name)}</span>
           ${liveCount ? `<span class="chip running-badge"><span class="spinner"></span>${liveCount} live</span>` : ''}
         </div>
-        ${workspaceGraphHtml(tasks, groomings)}
+        ${workspaceGraphHtml(tasks, groomings, orchestrations)}
         <div class="workspace-card-foot">
           ${branch && branch !== 'loading' ? `<span class="chip">${icon('git-branch')} ${esc(branch)}</span>` : ''}
           <span class="chip">${wtCount == null ? '…' : wtCount} worktree${wtCount === 1 ? '' : 's'}</span>
@@ -1005,6 +1057,85 @@
     try { await api('POST', `/api/groomings/${id}/stop`); } catch (e) { toast(e.message); }
   }
 
+  // Worker-task links, shared by an orchestration's card and its drawer: one
+  // row per task the orchestrator spawned, with its live status chip.
+  function orchestrationTaskLinksHtml(o) {
+    if (!(o.taskIds || []).length) return '';
+    return `<div class="groom-tasks">` + o.taskIds.map((id) => {
+      const t = state.tasks.get(id);
+      const watching = (o.watch || []).includes(id);
+      return `<button type="button" class="groom-task-link${watching ? ' hive-watching' : ''}" data-task-link="${esc(id)}" ${t ? '' : 'disabled'}
+          ${watching ? 'title="The orchestrator is waiting on this task"' : ''}>
+          ${icon('chevron-right')} <span class="groom-task-title">${esc(t ? t.title : 'task (removed)')}</span>${t ? `<span class="chip">${esc(t.status)}</span>` : ''}
+        </button>`;
+    }).join('') + `</div>`;
+  }
+
+  // An orchestration card. Like a grooming card it never moves columns: its
+  // status only recolors it in place — draft (gray), running (purple), waiting
+  // on workers (blue), needs input (amber), finished (green), failed (red).
+  function renderOrchestrationCard(o) {
+    const el = document.createElement('div');
+    el.className = `card hive hive-${o.status}`;
+    el.draggable = false;
+    el.dataset.id = o.id;
+
+    const chips = [
+      `<span class="chip model">${esc(o.model === 'default' ? (o.resolvedModel || 'default') : o.model)}</span>`,
+    ];
+    if (o.mode === 'autonomous') {
+      chips.push(`<span class="chip hive-mode" title="Worker tasks are dispatched and merged by Autonomous Mode">${icon('bot')} autonomous</span>`);
+    }
+    if (o.status === 'draft') chips.push(`<span class="chip badge-draft">DRAFT</span>`);
+    if (o.status === 'waiting') chips.push(`<span class="chip badge-waiting">${icon('loader')} WATCHING</span>`);
+    if (o.status === 'awaiting') chips.push(`<span class="chip badge-awaiting">${icon('circle-help')} NEEDS INPUT</span>`);
+    if (o.status === 'finished') chips.push(`<span class="chip badge-groomed">${icon('circle-check')} DONE</span>`);
+    if (o.status === 'failed') chips.push(`<span class="chip badge-failed">FAILED</span>`);
+    if (o.lastOutcome === 'stopped') chips.push(`<span class="chip badge-stopped">stopped</span>`);
+    if (o.costUsd > 0) chips.push(`<span class="chip cost">$${o.costUsd.toFixed(2)}</span>`);
+
+    let statusRow = '';
+    if (isOrchestrationLive(o)) {
+      statusRow = `
+        <div class="card-status">
+          <span class="spinner"></span>
+          <span class="live-label hive-live-label">orchestrating</span>
+          <span class="elapsed" data-start="${esc(o.startedAt)}">${elapsedSince(o.startedAt)}</span>
+          <button class="btn icon danger card-stop" data-action="stop" title="Stop orchestration" aria-label="Stop orchestration">${icon('square')}</button>
+        </div>`;
+    }
+
+    // The queen's latest word — what it's waiting on, its question, or its
+    // closing summary — is the single most useful line on the card.
+    const note = o.note
+      ? `<div class="hive-note${o.status === 'awaiting' ? ' hive-note-awaiting' : ''}">${o.status === 'awaiting' ? icon('circle-help') : ''}${esc(String(o.note).slice(0, 200))}</div>`
+      : '';
+
+    el.innerHTML = `
+      <div class="card-title">${esc(o.title)}</div>
+      <div class="card-chips">${chips.join('')}</div>
+      ${statusRow}
+      ${note}
+      ${orchestrationTaskLinksHtml(o)}
+      ${o.status === 'failed' && o.lastError ? `<div class="card-error">${esc(o.lastError.slice(0, 140))}</div>` : ''}`;
+
+    el.addEventListener('click', (e) => {
+      if (e.target.closest('[data-action="stop"]')) { stopOrchestration(o.id); return; }
+      const link = e.target.closest('[data-task-link]');
+      if (link && !link.disabled) { openDrawer(link.dataset.taskLink); return; }
+      openOrchestrationDrawer(o.id);
+    });
+    el.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      showContextMenu(orchestrationCoreActions(o), e.clientX, e.clientY);
+    });
+    return el;
+  }
+
+  async function stopOrchestration(id) {
+    try { await api('POST', `/api/orchestrations/${id}/stop`); } catch (e) { toast(e.message); }
+  }
+
   // Tick elapsed timers without re-rendering the whole board.
   setInterval(() => {
     document.querySelectorAll('.elapsed[data-start]').forEach((el) => {
@@ -1249,6 +1380,7 @@
   async function openDrawer(taskId) {
     state.openTaskId = taskId;
     state.openGroomingId = null;
+    state.openOrchestrationId = null;
     $('#drawer').classList.remove('hidden');
     $('#drawer-overlay').classList.remove('hidden');
     $('#timeline').innerHTML = '<div class="ev-meta">loading session…</div>';
@@ -1273,6 +1405,7 @@
   async function openGroomingDrawer(groomingId) {
     state.openTaskId = null;
     state.openGroomingId = groomingId;
+    state.openOrchestrationId = null;
     $('#drawer').classList.remove('hidden');
     $('#drawer-overlay').classList.remove('hidden');
     $('#timeline').innerHTML = '<div class="ev-meta">loading session…</div>';
@@ -1290,9 +1423,34 @@
     } catch (e) { toast(e.message); }
   }
 
+  // The same drawer again, showing an orchestration card: its goal, the queen
+  // session's timeline, the worker tasks it spawned, and (when it asked
+  // something) a reply box.
+  async function openOrchestrationDrawer(orchestrationId) {
+    state.openTaskId = null;
+    state.openGroomingId = null;
+    state.openOrchestrationId = orchestrationId;
+    $('#drawer').classList.remove('hidden');
+    $('#drawer-overlay').classList.remove('hidden');
+    $('#timeline').innerHTML = '<div class="ev-meta">loading session…</div>';
+    timeline.toolRows.clear();
+    timeline.subagents.clear();
+    renderPermissionPrompts(null);
+
+    try {
+      const { orchestration, events } = await api('GET', `/api/orchestrations/${orchestrationId}/logs`);
+      state.orchestrations.set(orchestration.id, orchestration);
+      renderOrchestrationDrawerHead(orchestration);
+      $('#timeline').innerHTML = events.length ? '' : '<div class="ev-meta">not started yet — run it to plan the goal</div>';
+      for (const ev of events) appendEvent(ev);
+      scrollTimeline();
+    } catch (e) { toast(e.message); }
+  }
+
   function closeDrawer() {
     state.openTaskId = null;
     state.openGroomingId = null;
+    state.openOrchestrationId = null;
     $('#drawer').classList.add('hidden');
     $('#drawer-overlay').classList.add('hidden');
     renderPermissionPrompts(null);
@@ -1503,6 +1661,42 @@
         if (!confirm(`Delete grooming “${g.title}”?\n\nThis removes the card and its session log. Tasks it spawned are kept.`)) return;
         await api('DELETE', `/api/groomings/${g.id}`);
         if (state.openGroomingId === g.id) closeDrawer();
+      } });
+    return actions;
+  }
+
+  // The per-orchestration action set shared by the drawer's action row and the
+  // card's right-click menu — mirrors groomingCoreActions.
+  function orchestrationCoreActions(o) {
+    const actions = [];
+    if (isOrchestrationLive(o) || o.status === 'waiting') {
+      actions.push({ id: 'stop', label: 'Stop', icon: 'square', cls: 'danger',
+        title: o.status === 'waiting' ? 'Stop watching the worker tasks and park this goal' : 'Stop the orchestrator session',
+        run: () => api('POST', `/api/orchestrations/${o.id}/stop`) });
+      return actions;
+    }
+    if (o.status === 'draft' || o.status === 'failed') {
+      actions.push({ id: 'run', label: 'Orchestrate', icon: 'crown', cls: 'primary',
+        run: () => openHiveModal(o) });
+      actions.push({ id: 'edit', label: 'Edit', icon: 'pencil', cls: 'ghost',
+        run: () => { openHiveModal(o); } });
+    }
+    // An awaiting card answers via the drawer form; this is the escape hatch to
+    // discard the question and re-plan the goal from scratch.
+    if (o.status === 'awaiting') {
+      actions.push({ id: 'stop', label: 'Stop', icon: 'square', cls: 'danger',
+        run: () => api('POST', `/api/orchestrations/${o.id}/stop`) });
+    }
+    actions.push({ id: 'archive', label: 'Archive', cls: 'ghost',
+      run: async () => {
+        await api('POST', `/api/orchestrations/${o.id}/archive`);
+        if (state.openOrchestrationId === o.id) closeDrawer();
+      } });
+    actions.push({ id: 'delete', label: 'Delete', icon: 'trash', cls: 'ghost danger',
+      run: async () => {
+        if (!confirm(`Delete orchestration “${o.title}”?\n\nThis removes the card and its session log. The worker tasks it created are kept.`)) return;
+        await api('DELETE', `/api/orchestrations/${o.id}`);
+        if (state.openOrchestrationId === o.id) closeDrawer();
       } });
     return actions;
   }
@@ -1771,6 +1965,119 @@
       : g.status === 'awaiting'
         ? 'Answer the questions above to continue grooming'
         : 'Grooming sessions run once and are never resumed';
+  }
+
+  // Send the developer's free-text answer to a paused (awaiting) orchestration
+  // and resume its session.
+  async function submitOrchestrationReply(o) {
+    const form = $('#hive-reply-form');
+    if (!form) return;
+    const input = form.querySelector('.hive-reply-input');
+    const reply = input ? input.value.trim() : '';
+    if (!reply) { toast('Type an answer first'); return; }
+    const btn = form.querySelector('.hive-reply-send');
+    if (btn) btn.disabled = true;
+    try {
+      await api('POST', `/api/orchestrations/${o.id}/reply`, { reply });
+      toast('Resuming the orchestrator with your answer…', 'info');
+    } catch (e) {
+      toast(e.message);
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  // The reply form shown in an awaiting orchestration's drawer: the question it
+  // asked plus one textarea. Deliberately simpler than grooming's structured
+  // options — an orchestrator's questions are open-ended by nature.
+  function orchestrationReplyHtml(o) {
+    return `
+      <div class="tag">NEEDS INPUT</div>
+      <p class="groom-clarify-hint">The orchestrator is paused on this question — answer below to continue.</p>
+      <div class="hive-question">${esc(o.note || 'It asked for input but recorded no question.')}</div>
+      <form class="hive-reply" id="hive-reply-form">
+        <textarea class="hive-reply-input groom-q-textinput" rows="3" placeholder="Type your answer…"></textarea>
+        <button type="submit" class="btn primary hive-reply-send">${icon('crown')} Answer &amp; continue</button>
+      </form>`;
+  }
+
+  const HIVE_STATUS_LABEL = {
+    draft: 'draft',
+    running: 'orchestrating…',
+    waiting: 'watching workers',
+    awaiting: 'needs input',
+    finished: 'done',
+    failed: 'failed',
+  };
+
+  function renderOrchestrationDrawerHead(o) {
+    $('#drawer-title').textContent = o.title;
+    const meta = [
+      `<span class="chip repo">${esc(o.repoName)}</span>`,
+      `<span class="chip model">${esc(o.resolvedModel || o.model)}</span>`,
+      `<span class="chip hive-status hive-status-${esc(o.status)}">${esc(HIVE_STATUS_LABEL[o.status] || o.status)}</span>`,
+    ];
+    if (o.mode === 'autonomous') {
+      meta.push(`<span class="chip hive-mode" title="Worker tasks are dispatched and merged by Autonomous Mode">${icon('bot')} autonomous</span>`);
+    }
+    if (o.sessionId) meta.push(`<span class="chip" title="session id">${esc(o.sessionId.slice(0, 8))}…</span>`);
+    if (o.costUsd > 0) meta.push(`<span class="chip cost">$${o.costUsd.toFixed(2)} total</span>`);
+    if (o.turnCount) meta.push(`<span class="chip" title="Orchestrator turns so far">${o.turnCount} turn${o.turnCount === 1 ? '' : 's'}</span>`);
+    $('#drawer-meta').innerHTML = meta.join('');
+    $('#drawer-meta').onclick = null;
+
+    const promptEl = $('#drawer-prompt');
+    const isAwaiting = o.status === 'awaiting';
+    const blocks = [`<div class="tag">GOAL</div><div class="drawer-prompt-body md">${mdToHtml(o.goal)}</div>`];
+    if (isAwaiting) blocks.push(orchestrationReplyHtml(o));
+    else if (o.note) {
+      const tag = o.status === 'finished' ? 'SUMMARY' : 'LATEST';
+      blocks.push(`<div class="tag">${tag}</div><div class="drawer-prompt-body md">${mdToHtml(o.note)}</div>`);
+    }
+    if ((o.taskIds || []).length) {
+      blocks.push(`<div class="tag">WORKER TASKS</div>${orchestrationTaskLinksHtml(o)}`);
+    }
+    promptEl.classList.remove('hidden');
+    promptEl.classList.toggle('is-clarify', isAwaiting);
+    promptEl.innerHTML = blocks.join('');
+    promptEl.onclick = (e) => {
+      const link = e.target.closest('[data-task-link]');
+      if (link && !link.disabled) openDrawer(link.dataset.taskLink);
+    };
+    const replyForm = promptEl.querySelector('#hive-reply-form');
+    if (replyForm) {
+      replyForm.onsubmit = (e) => { e.preventDefault(); submitOrchestrationReply(o); };
+      // Same rule as the grooming clarify form: focus the answer box, but never
+      // yank focus away from someone already typing on an unrelated re-render.
+      if (!promptEl.contains(document.activeElement)) {
+        promptEl.scrollTop = 0;
+        const field = promptEl.querySelector('.hive-reply-input');
+        if (field) field.focus({ preventScroll: true });
+      }
+    }
+
+    const actions = orchestrationCoreActions(o);
+    const box = $('#drawer-actions');
+    box.innerHTML = actions.map((a) =>
+      `<button class="btn ${a.cls}" data-act="${a.id}">${a.icon ? icon(a.icon) + ' ' : ''}${esc(a.label)}</button>`
+    ).join('');
+    box.onclick = async (e) => {
+      const act = e.target.closest('[data-act]')?.dataset.act;
+      const action = actions.find((a) => a.id === act);
+      if (!action) return;
+      try { await action.run(); } catch (err) { toast(err.message); }
+    };
+
+    // The orchestrator's session is driven by the engine, never by a free-text
+    // follow-up — the only way in is the reply box above.
+    $('#followup-input').disabled = true;
+    $('#followup-send').disabled = true;
+    $('#followup-input').placeholder = isOrchestrationLive(o)
+      ? 'Orchestrating the goal…'
+      : o.status === 'waiting'
+        ? 'Waiting on its worker tasks — it resumes itself when they land'
+        : isAwaiting
+          ? 'Answer the question above to continue'
+          : 'Orchestrator sessions are resumed by Sr. Popo, not by hand';
   }
 
   // ---------- GitHub PR chip ----------
@@ -2780,6 +3087,105 @@
     refreshRepoBranchHint($('#brief-repo').value, $('#brief-repo-branch'));
   });
 
+  // ---------- orchestrate a goal (hive) ----------
+  function refreshHiveRepoSelect() {
+    const sel = $('#hive-repo');
+    if (!sel) return;
+    sel.innerHTML = state.repos.length
+      ? state.repos.map((r) => `<option value="${r.id}">${esc(r.name)} — ${esc(r.path)}</option>`).join('')
+      : '<option value="">No repos yet — add one first</option>';
+  }
+
+  // null => new orchestration; a card => edit that draft (or failed card).
+  let hiveEditingId = null;
+
+  function syncHiveAutonomousFields() {
+    $('#hive-autonomous-fields').classList.toggle('hidden', !$('#hive-autonomous').checked);
+  }
+
+  // Running an existing card goes through this modal too (rather than firing a
+  // bare POST like grooming's "Groom" action): a run has to decide whether to
+  // hand execution to Autonomous Mode, and that choice belongs to the user.
+  function openHiveModal(orchestration = null) {
+    // Guard: the header button passes its click event here — treat it as "new".
+    if (!orchestration || !orchestration.id) orchestration = null;
+    hiveEditingId = orchestration ? orchestration.id : null;
+    refreshHiveRepoSelect();
+    const last = loadLastUsed();
+    $('#hive-text').value = orchestration ? orchestration.goal : '';
+    $('#hive-model').value = orchestration ? (orchestration.model || 'default') : (last.model || 'default');
+    // The Autonomous hand-off needs its own plugin; without it, offer manual mode only.
+    const canAuto = pluginInstalled('autonomous');
+    $('#hive-autonomous').closest('.check').classList.toggle('hidden', !canAuto);
+    $('#hive-autonomous').checked = canAuto && !!orchestration && orchestration.mode === 'autonomous';
+    syncHiveAutonomousFields();
+    // The repo is fixed once the card exists — hide the picker in edit mode.
+    $('#hive-repo-field').classList.toggle('hidden', !!orchestration);
+    if (orchestration) $('#hive-repo').value = orchestration.repoId;
+    else if (currentWorkspaceRepoId()) $('#hive-repo').value = currentWorkspaceRepoId();
+    else if (last.repoId && state.repos.some((r) => r.id === last.repoId)) $('#hive-repo').value = last.repoId;
+    refreshRepoBranchHint($('#hive-repo').value, $('#hive-repo-branch'));
+    $('#hive-modal-title').innerHTML = `${icon('crown')}${orchestration ? 'Edit Goal' : 'Orchestrate a Goal'}`;
+    $('#hive-draft').textContent = orchestration ? 'Save Draft' : 'Save as Draft';
+    $('#modal-hive').classList.remove('hidden');
+    $('#hive-text').focus();
+  }
+
+  // The Autonomous hand-off config to send along with a run, or undefined for
+  // plain manual mode (the orchestrator dispatches its own tasks).
+  function hiveAutonomousPayload() {
+    if (!$('#hive-autonomous').checked) return undefined;
+    const budgetUsd = Number($('#hive-budget').value);
+    if (!Number.isFinite(budgetUsd) || budgetUsd <= 0) throw new Error('Enter an autonomous budget greater than 0');
+    return { budgetUsd, reviewMode: $('#hive-review-mode').checked };
+  }
+
+  // Create (or update) an orchestration card. `run` starts the orchestrator
+  // session right away; otherwise the card is parked as a gray draft.
+  async function submitHive(run) {
+    const goal = $('#hive-text').value.trim();
+    const repoId = $('#hive-repo').value;
+    if (!goal) { toast('Describe your goal first'); return; }
+    if (!hiveEditingId && !repoId) { toast('Add a repository first'); return; }
+    let autonomousOpts;
+    try { autonomousOpts = run ? hiveAutonomousPayload() : undefined; }
+    catch (e) { toast(e.message); return; }
+    const fields = { goal, model: $('#hive-model').value };
+    try {
+      let orchestration;
+      if (hiveEditingId) {
+        orchestration = await api('PATCH', `/api/orchestrations/${hiveEditingId}`, fields);
+        if (run) orchestration = await api('POST', `/api/orchestrations/${orchestration.id}/run`, { autonomous: autonomousOpts });
+      } else {
+        orchestration = await api('POST', '/api/orchestrations', { ...fields, repoId, run: !!run, autonomous: autonomousOpts });
+      }
+      state.orchestrations.set(orchestration.id, orchestration);
+      $('#modal-hive').classList.add('hidden');
+      hiveEditingId = null;
+      renderBoard();
+      if (run) {
+        toast('Planning your goal into worker tasks…', 'info');
+        openOrchestrationDrawer(orchestration.id);
+      }
+    } catch (e) { toast(e.message); }
+  }
+
+  $('#btn-hive').addEventListener('click', () => openHiveModal());
+  $('#hive-cancel').addEventListener('click', () => $('#modal-hive').classList.add('hidden'));
+  $('#hive-submit').addEventListener('click', () => submitHive(true));
+  $('#hive-draft').addEventListener('click', () => submitHive(false));
+  $('#hive-autonomous').addEventListener('change', syncHiveAutonomousFields);
+  $('#hive-text').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submitHive(true);
+  });
+  $('#hive-add-repo').addEventListener('click', () => {
+    $('#modal-hive').classList.add('hidden');
+    openReposModal();
+  });
+  $('#hive-repo').addEventListener('change', () => {
+    refreshRepoBranchHint($('#hive-repo').value, $('#hive-repo-branch'));
+  });
+
   // ---------- create task from linear ----------
   const linearConfigured = () => !!state.settings.linearConfigured;
   let linearSelectedId = null; // the Linear UUID picked from the browse list, if any
@@ -3278,6 +3684,36 @@
     playSound(g.status === 'failed' ? 'failed' : 'finish');
   }
 
+  // Orchestration cards notify/chime only on the states that actually want the
+  // developer's attention — a turn ending in `waiting` is the engine doing its
+  // job, and announcing every one of those would be noise.
+  const HIVE_NOTIFY_STATES = ['awaiting', 'finished', 'failed'];
+
+  function maybeNotifyOrchestrationBrowser(prev, o) {
+    if (isElectron || !notificationsOn()) return;
+    if (!prev || prev.status !== 'running' || !HIVE_NOTIFY_STATES.includes(o.status)) return;
+    if (o.lastOutcome === 'stopped') return;
+    let title, body;
+    if (o.status === 'awaiting') {
+      title = `Orchestrator needs input — ${o.title}`;
+      body = o.note ? String(o.note).slice(0, 140) : o.repoName;
+    } else if (o.status === 'failed') {
+      title = `Orchestration failed — ${o.title}`;
+      body = o.lastError ? String(o.lastError).slice(0, 140) : o.repoName;
+    } else {
+      const n = (o.taskIds || []).length;
+      title = `Goal complete — ${o.title}`;
+      body = `${o.repoName} · ${n} worker task${n === 1 ? '' : 's'}`;
+    }
+    showBrowserNotification(title, { body, tag: `srpopo-${o.id}` });
+  }
+
+  function maybePlayOrchestrationSound(prev, o) {
+    if (!prev || prev.status !== 'running' || !HIVE_NOTIFY_STATES.includes(o.status)) return;
+    if (o.lastOutcome === 'stopped') return;
+    playSound(o.status === 'failed' ? 'failed' : 'finish');
+  }
+
   function updateNotifNote() {
     const note = $('#setting-notif-note');
     if (isElectron) { note.textContent = 'Delivered through your system’s notification center.'; return; }
@@ -3298,6 +3734,7 @@
   // Autonomous control. (The Grooming column itself is gated in renderBoard.)
   function renderPluginState() {
     $('#btn-brief').classList.toggle('hidden', !pluginInstalled('grooming'));
+    $('#btn-hive').classList.toggle('hidden', !pluginInstalled('hive'));
     $('#btn-linear').classList.toggle('hidden', !pluginInstalled('linear'));
     $('#btn-specs').classList.toggle('hidden', !pluginInstalled('repo-specs'));
     renderAutonomous();
@@ -3943,6 +4380,9 @@
       ...(pluginInstalled('grooming')
         ? [{ label: 'Brief an Idea', hint: 'Groom a rough idea into tasks', icon: 'lightbulb', run: () => openBriefModal() }]
         : []),
+      ...(pluginInstalled('hive')
+        ? [{ label: 'Orchestrate a Goal', hint: 'Let an orchestrator agent plan and drive it', icon: 'crown', run: () => openHiveModal() }]
+        : []),
       ...(pluginInstalled('linear')
         ? [{ label: 'Create Task from Linear', hint: 'Import an assigned issue', icon: 'linear', run: () => openLinearModal() }]
         : []),
@@ -4190,6 +4630,11 @@
           const g = state.groomings.get(state.openGroomingId);
           if (g) renderGroomingDrawerHead(g);
         }
+        // Same for an open orchestration drawer's worker-task links.
+        if (state.openOrchestrationId) {
+          const o = state.orchestrations.get(state.openOrchestrationId);
+          if (o && (o.taskIds || []).includes(msg.task.id)) renderOrchestrationDrawerHead(o);
+        }
         maybeNotifyBrowser(prev, msg.task);
         maybePlayTaskSound(prev, msg.task);
       } else if (msg.type === 'settings') {
@@ -4225,16 +4670,28 @@
         state.groomings.delete(msg.groomingId);
         if (state.openGroomingId === msg.groomingId) closeDrawer();
         renderBoard();
+      } else if (msg.type === 'orchestration') {
+        const prev = state.orchestrations.get(msg.orchestration.id);
+        state.orchestrations.set(msg.orchestration.id, msg.orchestration);
+        renderBoard();
+        if (state.openOrchestrationId === msg.orchestration.id) renderOrchestrationDrawerHead(msg.orchestration);
+        maybeNotifyOrchestrationBrowser(prev, msg.orchestration);
+        maybePlayOrchestrationSound(prev, msg.orchestration);
+      } else if (msg.type === 'orchestration-removed') {
+        state.orchestrations.delete(msg.orchestrationId);
+        if (state.openOrchestrationId === msg.orchestrationId) closeDrawer();
+        renderBoard();
       } else if (msg.type === 'repos') {
         state.repos = msg.repos;
         renderRepoList();
         refreshRepoSelect();
         refreshBriefRepoSelect();
+        refreshHiveRepoSelect();
         refreshLinearRepoSelect();
         // Fall back to the Super View if the workspace's own repo was just removed.
         if (state.view.mode === 'workspace' && !state.repos.some((r) => r.id === state.view.repoId)) exitWorkspace();
         else renderView();
-      } else if (msg.type === 'log' && (msg.taskId === state.openTaskId || msg.taskId === state.openGroomingId)) {
+      } else if (msg.type === 'log' && (msg.taskId === state.openTaskId || msg.taskId === state.openGroomingId || msg.taskId === state.openOrchestrationId)) {
         appendEvent(msg.event);
       } else if (msg.type === 'log' && msg.taskId === state.askId) {
         appendAskEvent(msg.event);
@@ -4309,10 +4766,11 @@
   // ---------- boot ----------
   async function boot() {
     try {
-      const { repos, tasks, groomings, settings, autonomous } = await api('GET', '/api/state');
+      const { repos, tasks, groomings, orchestrations, settings, autonomous } = await api('GET', '/api/state');
       state.repos = repos;
       state.tasks = new Map(tasks.map((t) => [t.id, t]));
       state.groomings = new Map((groomings || []).map((g) => [g.id, g]));
+      state.orchestrations = new Map((orchestrations || []).map((o) => [o.id, o]));
       state.autonomous = autonomous || null;
       // Seed live tool-approval prompts, then drop the transient field off the task.
       state.permissions = new Map();

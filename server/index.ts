@@ -8,11 +8,11 @@ import { execFile } from 'child_process';
 import type { Server } from 'http';
 import type { AddressInfo } from 'net';
 
-import { db, save, id, now, readLog, removeLog, getTask, getRepo, getGrooming } from './store';
+import { db, save, id, now, readLog, removeLog, getTask, getRepo, getGrooming, getOrchestration } from './store';
 import { broadcast, sse } from './bus';
 import { appRoot } from './paths';
 import type { GroomSpec } from './groomer';
-import type { AskSession, Task, Attachment, CustomModel, Grooming, GroomingTarget, Repo, PublicSettings, WorktreeInfo, TaskAgent } from './types';
+import type { AskSession, Task, Attachment, CustomModel, Grooming, GroomingTarget, Orchestration, Repo, PublicSettings, WorktreeInfo, TaskAgent } from './types';
 import { suggestModel } from './models';
 import * as git from './git';
 import * as runner from './runner';
@@ -21,6 +21,8 @@ import * as addons from './addons';
 import * as permissions from './permissions';
 import * as personas from './personas';
 import * as groomer from './groomer';
+import * as queen from './queen';
+import * as hive from './hive';
 import { readMemory } from './ask';
 import * as github from './github';
 import * as linear from './linear';
@@ -463,6 +465,7 @@ app.get('/api/state', (req: Request, res: Response) => {
       .filter((t) => !t.archived)
       .map((t) => ({ ...t, pendingPermissions: permissions.listForTask(t.id), autoApprovePermissions: permissions.isAutoApprove(t.id) })),
     groomings: db.groomings.filter((g) => !g.archived),
+    orchestrations: db.orchestrations.filter((o) => !o.archived),
     settings: publicSettings(),
     // Live autonomous-session snapshot so a reconnecting board rebuilds its banner
     // (like pendingPermissions above, this is process-local and never persisted).
@@ -794,8 +797,9 @@ app.delete('/api/repos/:id', (req: Request, res: Response) => {
   const idx = db.repos.findIndex((r) => r.id === req.params.id);
   if (idx === -1) return err(res, 404, 'Repo not found');
   const active = db.tasks.some((t) => t.repoId === req.params.id && !t.archived) ||
-    db.groomings.some((g) => g.repoId === req.params.id && !g.archived);
-  if (active) return err(res, 409, 'Repo has non-archived tasks or groomings; archive them first');
+    db.groomings.some((g) => g.repoId === req.params.id && !g.archived) ||
+    db.orchestrations.some((o) => o.repoId === req.params.id && !o.archived);
+  if (active) return err(res, 409, 'Repo has non-archived tasks, groomings or orchestrations; archive them first');
   db.repos.splice(idx, 1);
   memory.removeMemory(req.params.id);
   save();
@@ -1005,6 +1009,243 @@ app.get('/api/groomings/:id/logs', (req: Request, res: Response) => {
   const grooming = getGrooming(req.params.id);
   if (!grooming) return err(res, 404, 'Grooming not found');
   res.json({ grooming, events: readLog(grooming.id) });
+});
+
+// ---------- orchestrations (hive orchestration) ----------
+
+// Build an orchestration card (draft) for a goal. Mirrors createGrooming: the
+// single source of truth for the record's shape, so every entry point (today
+// just POST /api/orchestrations) produces an identical card.
+function createOrchestration(repo: Repo, goal: string, body: Record<string, unknown>): Orchestration {
+  const orchestration: Orchestration = {
+    id: id(),
+    title: queen.deriveTitle(goal),
+    goal,
+    repoId: repo.id,
+    repoName: repo.name,
+    repoPath: repo.path,
+    model: (body.model as string) || 'default',
+    // Resolved for real at dispatch (see runOrchestration) — a session started
+    // while Autonomous Mode owns this repo hands execution over to it.
+    mode: 'manual',
+    status: 'draft',
+    sessionId: null,
+    resolvedModel: null,
+    costUsd: 0,
+    numTurns: null,
+    durationMs: null,
+    runCount: 0,
+    turnCount: 0,
+    activeSubagents: 0,
+    lastOutcome: null,
+    lastError: null,
+    note: null,
+    watch: [],
+    taskIds: [],
+    archived: false,
+    createdAt: now(),
+    updatedAt: now(),
+    startedAt: null,
+    finishedAt: null,
+  };
+  db.orchestrations.push(orchestration);
+  save();
+  broadcast({ type: 'orchestration', orchestration });
+  return orchestration;
+}
+
+// Kick off (or resume) the queen session for an orchestration. On a launch
+// failure the card rolls back to draft and the error is rethrown for the route
+// to report — same contract as runGrooming.
+function runOrchestration(orchestration: Orchestration, resumePrompt?: string): Orchestration {
+  try {
+    return runner.orchestrate(orchestration, { resumePrompt });
+  } catch (e) {
+    orchestration.status = 'draft';
+    orchestration.lastOutcome = 'error';
+    orchestration.lastError = (e as Error).message;
+    orchestration.updatedAt = now();
+    save();
+    broadcast({ type: 'orchestration', orchestration });
+    throw e;
+  }
+}
+
+// Whether Autonomous Mode is currently driving this repo — which is exactly the
+// question "does the queen hand execution off, or dispatch tasks itself?".
+function autonomousOwnsRepo(repoId: string): boolean {
+  const status = autonomous.status();
+  return !!status.active && status.repoId === repoId;
+}
+
+// Optionally start an Autonomous Mode session for the orchestration's repo
+// before the queen plans anything, so the queen knows to create `ready` tasks
+// and let the engine dispatch/review/merge them. Throws (with the same messages
+// the /api/autonomous/start route uses) so the caller can surface a 4xx/409.
+async function maybeStartAutonomous(orchestration: Orchestration, raw: unknown): Promise<void> {
+  if (!raw || typeof raw !== 'object') return;
+  if (!pluginInstalled('autonomous')) throw new Error('Install the Autonomous Mode plugin first');
+  if (autonomous.isActive()) {
+    // Already running: fine if it's this repo (that IS the hand-off), an error
+    // otherwise — one session at a time, scoped to one repo.
+    if (!autonomousOwnsRepo(orchestration.repoId)) throw new Error('Autonomous mode is already running for another workspace');
+    return;
+  }
+  const opts = raw as { budgetUsd?: unknown; reviewMode?: unknown };
+  const budgetUsd = Number(opts.budgetUsd);
+  if (!Number.isFinite(budgetUsd) || budgetUsd <= 0) throw new Error('budgetUsd must be a positive number');
+  await autonomous.start({ repoId: orchestration.repoId, budgetUsd, reviewMode: !!opts.reviewMode });
+}
+
+// "Orchestrate a Goal": create an orchestration card for a high-level goal. The
+// card has its own lifecycle (draft → running → waiting/awaiting → finished or
+// failed) and never becomes a task — its queen session plans the goal and
+// spawns worker tasks on the board. Pass `run: false` to keep it as a draft; by
+// default the session starts right away. Gated on the Hive Orchestration plugin.
+app.post('/api/orchestrations', async (req: Request, res: Response) => {
+  if (!pluginInstalled('hive')) return err(res, 400, 'Install the Hive Orchestration plugin first');
+  const goal = String(req.body.goal || '').trim();
+  if (!goal) return err(res, 400, 'goal is required');
+  const repo = getRepo(req.body.repoId);
+  if (!repo) return err(res, 400, 'Unknown repo');
+  const run = req.body.run !== false;
+  if (run && atCapacity()) return err(res, 409, capacityError());
+
+  const orchestration = createOrchestration(repo, goal, req.body);
+  if (!run) return res.json(orchestration);
+  try {
+    await maybeStartAutonomous(orchestration, req.body.autonomous);
+  } catch (e) {
+    return err(res, 409, (e as Error).message);
+  }
+  try {
+    orchestration.mode = autonomousOwnsRepo(orchestration.repoId) ? 'autonomous' : 'manual';
+    res.json(runOrchestration(orchestration));
+  } catch (e) {
+    err(res, 500, (e as Error).message);
+  }
+});
+
+// Start (or re-run) a draft/failed orchestration's queen session. Optionally
+// hands execution to Autonomous Mode first (`autonomous: { budgetUsd, reviewMode }`).
+// Like a task dispatch, `running` is entered only through the runner, never via PATCH.
+app.post('/api/orchestrations/:id/run', async (req: Request, res: Response) => {
+  const orchestration = getOrchestration(req.params.id);
+  if (!orchestration) return err(res, 404, 'Orchestration not found');
+  if (runner.isRunning(orchestration.id)) return err(res, 409, 'Orchestration is already running');
+  if (orchestration.status === 'finished') return err(res, 409, 'Orchestration already finished — start a new goal instead');
+  if (atCapacity()) return err(res, 409, capacityError());
+  try {
+    await maybeStartAutonomous(orchestration, req.body && req.body.autonomous);
+  } catch (e) {
+    return err(res, 409, (e as Error).message);
+  }
+  try {
+    // A re-run re-plans from scratch, so stop watching whatever the old session
+    // was waiting on before the new one takes over.
+    hive.forget(orchestration.id);
+    orchestration.mode = autonomousOwnsRepo(orchestration.repoId) ? 'autonomous' : 'manual';
+    res.json(runOrchestration(orchestration));
+  } catch (e) {
+    err(res, 500, (e as Error).message);
+  }
+});
+
+// Answer the question a paused (awaiting) orchestration asked, and resume its
+// session so it can keep coordinating. One free-text reply — deliberately
+// simpler than grooming's structured questions.
+app.post('/api/orchestrations/:id/reply', (req: Request, res: Response) => {
+  const orchestration = getOrchestration(req.params.id);
+  if (!orchestration) return err(res, 404, 'Orchestration not found');
+  if (runner.isRunning(orchestration.id)) return err(res, 409, 'Orchestration is already running');
+  if (orchestration.status !== 'awaiting') return err(res, 409, 'Orchestration is not waiting for an answer');
+  if (!orchestration.sessionId) return err(res, 409, 'Orchestration session is no longer resumable — run it again');
+  const reply = String((req.body && req.body.reply) || '').trim();
+  if (!reply) return err(res, 400, 'reply is required');
+  if (atCapacity()) return err(res, 409, capacityError());
+  try {
+    res.json(runOrchestration(orchestration, queen.replyPrompt(orchestration.note, reply, orchestration.mode)));
+  } catch (e) {
+    err(res, 500, (e as Error).message);
+  }
+});
+
+// Stop an orchestration: kill a live queen turn, or — for one merely waiting on
+// its workers — disarm the watchers and park the card. Either way it lands back
+// in draft with the goal intact; the worker tasks it spawned keep running (they
+// are independent) and a re-run re-plans from scratch.
+app.post('/api/orchestrations/:id/stop', (req: Request, res: Response) => {
+  const orchestration = getOrchestration(req.params.id);
+  if (!orchestration) return err(res, 404, 'Orchestration not found');
+  hive.forget(orchestration.id);
+  // A live turn: the runner's exit path parks the card (see runner.orchestrate).
+  if (runner.stop(orchestration.id)) return res.json({ ok: true });
+  if (orchestration.status !== 'waiting' && orchestration.status !== 'awaiting') {
+    return err(res, 409, 'Orchestration is not running');
+  }
+  orchestration.status = 'draft';
+  orchestration.sessionId = null;
+  orchestration.watch = [];
+  orchestration.lastOutcome = 'stopped';
+  orchestration.lastError = 'Orchestration stopped by user';
+  orchestration.updatedAt = now();
+  save();
+  broadcast({ type: 'orchestration', orchestration });
+  res.json({ ok: true });
+});
+
+// Edit a draft's goal/model. Finished cards are immutable history; a running one
+// belongs to its live session.
+app.patch('/api/orchestrations/:id', (req: Request, res: Response) => {
+  const orchestration = getOrchestration(req.params.id);
+  if (!orchestration) return err(res, 404, 'Orchestration not found');
+  if (runner.isRunning(orchestration.id)) return err(res, 409, 'Orchestration is running; stop it first');
+  if (orchestration.status === 'finished') return err(res, 409, 'Orchestration already finished');
+
+  if ('goal' in req.body) {
+    const goal = String(req.body.goal || '').trim();
+    if (!goal) return err(res, 400, 'goal cannot be empty');
+    orchestration.goal = goal;
+    orchestration.title = queen.deriveTitle(goal);
+  }
+  if ('model' in req.body) orchestration.model = String(req.body.model || 'default');
+  orchestration.updatedAt = now();
+  save();
+  broadcast({ type: 'orchestration', orchestration });
+  res.json(orchestration);
+});
+
+app.post('/api/orchestrations/:id/archive', (req: Request, res: Response) => {
+  const orchestration = getOrchestration(req.params.id);
+  if (!orchestration) return err(res, 404, 'Orchestration not found');
+  if (runner.isRunning(orchestration.id)) return err(res, 409, 'Stop the orchestration before archiving');
+  orchestration.archived = true;
+  orchestration.updatedAt = now();
+  hive.forget(orchestration.id);
+  save();
+  broadcast({ type: 'orchestration-removed', orchestrationId: orchestration.id });
+  res.json({ ok: true });
+});
+
+// Delete an orchestration card outright (its session log goes too). The worker
+// tasks it spawned are independent once created — deleting the card never
+// touches them, exactly like a grooming.
+app.delete('/api/orchestrations/:id', (req: Request, res: Response) => {
+  const idx = db.orchestrations.findIndex((o) => o.id === req.params.id);
+  if (idx === -1) return err(res, 404, 'Orchestration not found');
+  if (runner.isRunning(req.params.id)) return err(res, 409, 'Stop the orchestration before deleting');
+  db.orchestrations.splice(idx, 1);
+  removeLog(req.params.id);
+  hive.forget(req.params.id);
+  save();
+  broadcast({ type: 'orchestration-removed', orchestrationId: req.params.id });
+  res.json({ ok: true });
+});
+
+app.get('/api/orchestrations/:id/logs', (req: Request, res: Response) => {
+  const orchestration = getOrchestration(req.params.id);
+  if (!orchestration) return err(res, 404, 'Orchestration not found');
+  res.json({ orchestration, events: readLog(orchestration.id) });
 });
 
 // ---------- linear (import a Linear issue as a groomed task) ----------
@@ -1510,6 +1751,10 @@ function start(port: string | number = process.env.PORT || 7777): Promise<{ serv
       // server/pr-refresh.ts) — always on, so a PR merged/closed outside
       // Sr. Popo is reflected on the board without opening the task first.
       prRefresh.start();
+      // Hive Orchestration engine: subscribes to the bus and re-arms the
+      // watchers of any orchestration left `waiting` before a restart (see
+      // server/hive.ts). A no-op until an orchestration actually exists.
+      hive.start();
       resolve({ server, port: listenPort, url });
       backfillRepoNames();
     });

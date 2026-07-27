@@ -204,6 +204,69 @@ export interface Grooming {
   finishedAt: string | null;
 }
 
+// An orchestration ("hive") card's lifecycle — separate from tasks and from
+// groomings. It never becomes a task; it spawns and coordinates them.
+//   draft    — configured, the queen session hasn't started yet
+//   running  — a live queen session (set only by runner.orchestrate)
+//   waiting  — the queen ended a turn and is watching worker tasks; the hive
+//              engine resumes it when one of them lands (see server/hive.ts)
+//   awaiting — the queen asked the developer a question and is paused on it
+//   finished — the queen declared the goal done
+//   failed   — the queen declared itself blocked, the run failed, or the turn
+//              cap was reached
+export type OrchestrationStatus = 'draft' | 'running' | 'waiting' | 'awaiting' | 'finished' | 'failed';
+
+// How the worker tasks an orchestration spawns actually get executed:
+//   autonomous — handed to Autonomous Mode (server/autonomous.ts), which
+//                dispatches, review-loops and merges them; the queen watches
+//                for done/failed
+//   manual     — the queen dispatches tasks itself and watches for review/failed;
+//                a human merges
+export type OrchestrationMode = 'autonomous' | 'manual';
+
+// A "Orchestrate a Goal" card. Lives in db.orchestrations with its own locked
+// board column and lifecycle. The queen session is read-only in the repo — it
+// plans and coordinates, and only ever mutates the board through Sr. Popo's own
+// MCP server (server/mcp.ts); the worker tasks it spawns do all the editing, so
+// there is never a worktree of its own to clean up.
+export interface Orchestration {
+  id: string;
+  title: string;
+  // The high-level goal being orchestrated.
+  goal: string;
+  repoId: string;
+  repoName: string;
+  repoPath: string;
+  model: string;
+  mode: OrchestrationMode;
+  status: OrchestrationStatus;
+  sessionId: string | null;
+  resolvedModel: string | null;
+  costUsd: number;
+  numTurns: number | null;
+  durationMs: number | null;
+  runCount: number;
+  // Queen turns run so far (a fresh run plus every resume) — capped by
+  // hive.MAX_TURNS so a queen that never converges can't loop forever.
+  turnCount: number;
+  activeSubagents: number;
+  lastOutcome: string | null;
+  lastError: string | null;
+  // The queen's latest note: what it's waiting on, the question it asked, or
+  // the closing summary. Rendered on the card and in the drawer.
+  note: string | null;
+  // Worker task ids the queen asked to be watched this turn — the engine
+  // resumes the session when one of them reaches a terminal state.
+  watch: string[];
+  // Every worker task this orchestration has watched, accumulated across turns.
+  taskIds: string[];
+  archived: boolean;
+  createdAt: string;
+  updatedAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
 export interface Task {
   id: string;
   title: string;
@@ -410,6 +473,7 @@ export interface Db {
   repos: Repo[];
   tasks: Task[];
   groomings: Grooming[];
+  orchestrations: Orchestration[];
   settings: Settings;
 }
 

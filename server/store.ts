@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 
-import type { Db, Grooming, LogEvent, Repo, Settings, Task, UsageEntry } from './types';
+import type { Db, Grooming, LogEvent, Orchestration, Repo, Settings, Task, UsageEntry } from './types';
 
 // When embedded in Electron the packaged app dir is read-only, so the main
 // process points us at a writable per-user location via SRPOPO_DATA_DIR.
@@ -46,11 +46,11 @@ const DEFAULT_SETTINGS: Settings = {
   memory: true,
 };
 
-let db: Db = { repos: [], tasks: [], groomings: [], settings: { ...DEFAULT_SETTINGS } };
+let db: Db = { repos: [], tasks: [], groomings: [], orchestrations: [], settings: { ...DEFAULT_SETTINGS } };
 if (fs.existsSync(DB_PATH)) {
   try {
     db = Object.assign(
-      { repos: [], tasks: [], groomings: [], settings: {} },
+      { repos: [], tasks: [], groomings: [], orchestrations: [], settings: {} },
       JSON.parse(fs.readFileSync(DB_PATH, 'utf8')),
     ) as Db;
   } catch (err) {
@@ -59,6 +59,8 @@ if (fs.existsSync(DB_PATH)) {
 }
 // Older db.json files predate the groomings collection.
 if (!Array.isArray(db.groomings)) db.groomings = [];
+// …and the orchestrations one (Hive Orchestration, see server/hive.ts).
+if (!Array.isArray(db.orchestrations)) db.orchestrations = [];
 // Backfill any missing setting so the rest of the app can read them directly.
 // Capture pre-backfill hints first so we can migrate older db.json files below.
 const hadInstalledPlugins = Array.isArray(db.settings?.installedPlugins);
@@ -89,6 +91,18 @@ for (const g of db.groomings) {
     g.status = 'failed';
     g.lastOutcome = 'error';
     g.lastError = 'Server restarted while grooming was running';
+  }
+}
+// Same for orchestration cards: a live queen session died with the server. A
+// card that was merely `waiting` (or `awaiting` an answer) is left alone — its
+// claude session is resumable, and hive.start() re-arms the watchers on boot.
+for (const o of db.orchestrations) {
+  if (!Array.isArray(o.watch)) o.watch = [];
+  if (!Array.isArray(o.taskIds)) o.taskIds = [];
+  if (o.status === 'running') {
+    o.status = 'failed';
+    o.lastOutcome = 'error';
+    o.lastError = 'Server restarted while the orchestrator was running';
   }
 }
 
@@ -142,6 +156,10 @@ function getGrooming(groomingId: string): Grooming | undefined {
   return db.groomings.find((g) => g.id === groomingId);
 }
 
+function getOrchestration(orchestrationId: string): Orchestration | undefined {
+  return db.orchestrations.find((o) => o.id === orchestrationId);
+}
+
 // Drop a task/grooming session log from disk (e.g. when a grooming is deleted).
 function removeLog(taskId: string): void {
   try { fs.rmSync(logPath(taskId), { force: true }); } catch { /* best effort */ }
@@ -180,6 +198,6 @@ function readUsage(): UsageEntry[] {
 }
 
 export {
-  db, save, id, now, appendLog, readLog, removeLog, logPath, getTask, getRepo, getGrooming,
+  db, save, id, now, appendLog, readLog, removeLog, logPath, getTask, getRepo, getGrooming, getOrchestration,
   DATA_DIR, DEFAULT_SETTINGS, appendUsage, readUsage, usageLogExists, touchUsageLog,
 };
