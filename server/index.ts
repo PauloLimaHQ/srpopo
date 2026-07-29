@@ -228,6 +228,7 @@ function publicSettings(): PublicSettings {
     installedPlugins: plugins.sanitize(db.settings.installedPlugins),
     mergeStrategy: db.settings.mergeStrategy,
     autoResolveConflicts: !!db.settings.autoResolveConflicts,
+    minMergeGrade: db.settings.minMergeGrade,
     assignPrToSelf: !!db.settings.assignPrToSelf,
     remoteAccess: !!db.settings.remoteAccess,
     // Derived boolean only — the raw token never leaves the localhost-only
@@ -363,6 +364,9 @@ function spawnGroomedTasks(grooming: Grooming, specs: GroomSpec[]): string[] {
       agent,
       addons: ['pull_request'],
       prDraft: false,
+      // Grading in Code Review is opt-in per task (an extra session); the user
+      // turns it on when they want this one graded before Validation.
+      autoCodeReview: false,
       personas: [],
       autoPersona: false,
       attachments: [],
@@ -524,6 +528,14 @@ app.patch('/api/settings', (req: Request, res: Response) => {
       return err(res, 400, 'mergeStrategy must be one of merge, squash, rebase');
     }
     db.settings.mergeStrategy = strategy;
+  }
+  // The Code Review grade Autonomous Mode requires before it merges (1..5).
+  if ('minMergeGrade' in req.body) {
+    const grade = Math.trunc(Number(req.body.minMergeGrade));
+    if (!Number.isFinite(grade) || grade < 1 || grade > 5) {
+      return err(res, 400, 'minMergeGrade must be a whole number between 1 and 5');
+    }
+    db.settings.minMergeGrade = grade;
   }
   if ('autoResolveConflicts' in req.body) db.settings.autoResolveConflicts = !!req.body.autoResolveConflicts;
   if ('assignPrToSelf' in req.body) db.settings.assignPrToSelf = !!req.body.assignPrToSelf;
@@ -1434,6 +1446,9 @@ app.post('/api/repos/:id/specs/import', async (req: Request, res: Response) => {
       agent: 'claude', // spec imports run on Claude by default; switchable per task after import
       addons: [],
       prDraft: false,
+      // Grading in Code Review is opt-in per task (an extra session); the user
+      // turns it on when they want this one graded before Validation.
+      autoCodeReview: false,
       personas: [],
       autoPersona: false,
       attachments: [],
@@ -1477,7 +1492,7 @@ app.patch('/api/tasks/:id', (req: Request, res: Response) => {
   if (!task) return err(res, 404, 'Task not found');
   if (runner.isRunning(task.id)) return err(res, 409, 'Task is running; stop it first');
 
-  const allowed = ['title', 'prompt', 'agent', 'model', 'permissionMode', 'allowedTools', 'promptPermissions', 'useWorktree', 'branchName', 'baseBranch', 'status', 'addons', 'prDraft', 'personas', 'autoPersona'] as const;
+  const allowed = ['title', 'prompt', 'agent', 'model', 'permissionMode', 'allowedTools', 'promptPermissions', 'useWorktree', 'branchName', 'baseBranch', 'status', 'addons', 'prDraft', 'autoCodeReview', 'personas', 'autoPersona'] as const;
   for (const key of allowed) {
     if (key in req.body) {
       if (key === 'agent') {
@@ -1487,6 +1502,8 @@ app.patch('/api/tasks/:id', (req: Request, res: Response) => {
         task.addons = addons.sanitize(req.body.addons);
       } else if (key === 'prDraft') {
         task.prDraft = !!req.body.prDraft;
+      } else if (key === 'autoCodeReview') {
+        task.autoCodeReview = !!req.body.autoCodeReview;
       } else if (key === 'allowedTools') {
         task.allowedTools = runner.normalizeAllowedTools(req.body.allowedTools);
       } else if (key === 'promptPermissions') {
@@ -1497,8 +1514,11 @@ app.patch('/api/tasks/:id', (req: Request, res: Response) => {
         task.autoPersona = !!req.body.autoPersona;
       } else if (key === 'status') {
         const target = req.body.status;
-        if (!['backlog', 'ready', 'review', 'done', 'failed'].includes(target)) {
-          return err(res, 400, `Cannot set status to "${target}" directly (use /dispatch to run)`);
+        // `running` and `code_review` are runner-owned: each is a live child
+        // process, so only the endpoint that spawns it may set it.
+        if (!['backlog', 'ready', 'validation', 'done', 'failed'].includes(target)) {
+          const hint = target === 'code_review' ? '/code-review' : '/dispatch';
+          return err(res, 400, `Cannot set status to "${target}" directly (use ${hint} to start that run)`);
         }
         task.status = target;
       } else if (key === 'useWorktree' && task.worktreePath) {
@@ -1532,7 +1552,7 @@ app.post(
   (req: Request, res: Response) => {
     const task = getTask(req.params.id);
     if (!task) return err(res, 404, 'Task not found');
-    if (task.status === 'running') {
+    if (task.status === 'running' || task.status === 'code_review') {
       return err(res, 409, 'Task is running; stop it first');
     }
     const header = req.header('X-Filename');
@@ -1593,7 +1613,7 @@ app.get('/api/tasks/:id/attachments/:name/preview', (req: Request, res: Response
 app.delete('/api/tasks/:id/attachments/:name', (req: Request, res: Response) => {
   const task = getTask(req.params.id);
   if (!task) return err(res, 404, 'Task not found');
-  if (task.status === 'running') {
+  if (task.status === 'running' || task.status === 'code_review') {
     return err(res, 409, 'Task is running; stop it first');
   }
   const name = attachments.sanitizeName(req.params.name);
@@ -1621,6 +1641,27 @@ app.post('/api/tasks/:id/dispatch', async (req: Request, res: Response) => {
     task.updatedAt = now();
     save();
     broadcast({ type: 'task', task });
+    err(res, 500, (e as Error).message);
+  }
+});
+
+// Start the Code Review stage for a task by hand — the manual equivalent of the
+// automatic flow a finished run takes (see runner.maybeCodeReview). A fresh
+// read-only reviewer session grades the branch and comments on its pull request,
+// so an open PR is a hard requirement; the run itself owns the `code_review`
+// status (which is why PATCH refuses to set it).
+app.post('/api/tasks/:id/code-review', async (req: Request, res: Response) => {
+  const task = getTask(req.params.id);
+  if (!task) return err(res, 404, 'Task not found');
+  if (runner.isRunning(task.id)) return err(res, 409, 'Task is already running');
+  const { pr } = await github.prForTask(task);
+  if (!pr || pr.state !== 'open') return err(res, 409, 'Code Review needs an open pull request');
+  if (atCapacity()) return err(res, 409, capacityError());
+
+  try {
+    runner.codeReview(task, pr);
+    res.json(task);
+  } catch (e) {
     err(res, 500, (e as Error).message);
   }
 });

@@ -5,7 +5,7 @@
  * high-level goal for one repo, spawns worker tasks onto the board over Sr. Popo's
  * own MCP server, then ends its turn as `waiting` with the ids of the workers whose
  * results it needs. This module is what wakes it back up: it watches the SSE bus
- * and, once a watched worker lands in a terminal state (`review` / `done` /
+ * and, once a watched worker lands in a terminal state (`validation` / `done` /
  * `failed` — the last one covering Autonomous Mode's merge → done transitions),
  * resumes the very same claude session with a status digest of everything it was
  * watching.
@@ -30,9 +30,11 @@ import * as orchestrator from './orchestrator';
 import type { Orchestration, Task, TaskStatus } from './types';
 
 // Worker states that mean "this task landed and the orchestrator should look at it".
-// `review` is where a manual-mode worker parks; `done` is where Autonomous Mode
-// leaves one after merging its PR; `failed` needs the orchestrator's judgment either way.
-const TERMINAL: TaskStatus[] = ['review', 'done', 'failed'];
+// `validation` is where a manual-mode worker parks; `done` is where Autonomous
+// Mode leaves one after merging its PR; `failed` needs the orchestrator's judgment
+// either way. `code_review` is deliberately NOT terminal — a worker being graded
+// by the Code Review stage is still in flight, and lands in `validation` next.
+const TERMINAL: TaskStatus[] = ['validation', 'done', 'failed'];
 
 // How many turns one orchestrator session may run before the engine calls it off.
 // The same philosophy as autonomous.MAX_REVIEW_ROUNDS: a model that keeps finding

@@ -44,12 +44,15 @@ export interface Settings {
   // Preferred `gh pr merge` strategy, used by both the "Move to Done" merge step
   // and the Autonomous Mode engine (see github.mergePrForTask).
   mergeStrategy: MergeStrategy;
-  // When on, a task sitting in `review` whose PR has merge conflicts with main is
-  // automatically resumed with an instruction to resolve them (see
-  // server/conflicts.ts). Applies to plain review-column tasks and to Autonomous
-  // Mode's own merge-safety check alike. Opt-in: off by default since it silently
-  // spawns a new `claude` run.
+  // When on, a task sitting in `validation` whose PR has merge conflicts with main
+  // is automatically resumed with an instruction to resolve them (see
+  // server/conflicts.ts). Applies to plain validation-column tasks and to
+  // Autonomous Mode's own merge-safety check alike. Opt-in: off by default since
+  // it silently spawns a new `claude` run.
   autoResolveConflicts: boolean;
+  // The lowest Code Review grade (1..5, see Task.codeReview) Autonomous Mode will
+  // merge. A graded-below-this task is left in `validation` for the human instead.
+  minMergeGrade: number;
   // When on, the "Create a Pull Request at the end" add-on (server/addons.ts)
   // assigns the PR it opens to the logged-in `gh` user (`--assignee @me`).
   // Off by default like the other opt-in GitHub behaviors above.
@@ -89,6 +92,7 @@ export interface PublicSettings {
   installedPlugins: string[];
   mergeStrategy: MergeStrategy;
   autoResolveConflicts: boolean;
+  minMergeGrade: number;
   assignPrToSelf: boolean;
   // Whether LAN remote access is enabled, and whether a token exists — never the
   // raw token itself (that only flows over the localhost-only GET /api/remote-access).
@@ -134,11 +138,17 @@ export interface WorktreeInfo {
   taskStatus: TaskStatus | null;
 }
 
+// The fixed board columns a task moves through. The finished-work phase is two
+// distinct stages: `code_review` is a fresh, read-only reviewer agent grading the
+// branch (set only by the runner, like `running`), and `validation` is where the
+// human validates and accepts the work. Older db.json files stored the legacy
+// `review` status; store.ts migrates those to `validation` on load.
 export type TaskStatus =
   | 'backlog'
   | 'ready'
   | 'running'
-  | 'review'
+  | 'code_review'
+  | 'validation'
   | 'done'
   | 'failed';
 
@@ -226,7 +236,7 @@ export type OrchestrationStatus = 'draft' | 'running' | 'waiting' | 'awaiting' |
 //                dispatches, review-loops and merges them; the orchestrator watches
 //                for done/failed
 //   manual     — the orchestrator dispatches tasks itself and watches for
-//                review/failed; a human merges
+//                validation/failed; a human merges
 export type OrchestrationMode = 'autonomous' | 'manual';
 
 // A "Orchestrate a Goal" card. Lives in db.orchestrations with its own locked
@@ -273,6 +283,21 @@ export interface Orchestration {
   finishedAt: string | null;
 }
 
+// The verdict one Code Review pass produced for a task's branch (see
+// server/reviewer.ts). The grade is also written to the PR as a `mergeable/<n>`
+// label by the server (server/github.ts), while the reviewer agent itself posts
+// the long-form review as a PR comment.
+export interface TaskCodeReview {
+  // 1..5 — 1 must not be merged, 2 not mergeable but better than 1, 3 mergeable
+  // with reservations, 4 mergeable with only nits, 5 good to go.
+  grade: number;
+  summary: string;
+  blockers: string[];
+  // The `gh pr comment` URL the reviewer reported, when it reported one.
+  commentUrl: string | null;
+  reviewedAt: string;
+}
+
 export interface Task {
   id: string;
   title: string;
@@ -298,6 +323,13 @@ export interface Task {
   // PR it opens at the end is created as a draft (`gh pr create --draft`)
   // instead of ready for review. Ignored when that add-on isn't selected.
   prDraft: boolean;
+  // Opt-in: when this task's run finishes successfully with an open pull request,
+  // flow it through the Code Review stage (a fresh read-only reviewer session that
+  // grades the branch — see server/reviewer.ts) before it lands in `validation`.
+  // Off by default, since it costs one extra short session per finished run; a task
+  // without it goes straight to `validation`. Never gates the manual
+  // `POST /api/tasks/:id/code-review` — an explicit request always reviews.
+  autoCodeReview: boolean;
   personas: string[];
   // Let the run pick its own expert persona from the catalog before it starts,
   // instead of using the hand-picked `personas` above (which it then ignores).
@@ -338,6 +370,11 @@ export interface Task {
   activeSubagents: number;
   lastOutcome: string | null;
   lastError: string | null;
+  // Verdict from the Code Review stage (server/reviewer.ts). Replaced on each
+  // pass, and reset at the start of a fresh implementation dispatch so a stale
+  // grade never outlives the diff it graded. Optional so old db.json files load
+  // unchanged.
+  codeReview?: TaskCodeReview | null;
   archived: boolean;
   createdAt: string;
   updatedAt: string;
@@ -347,7 +384,7 @@ export interface Task {
   // merge conflict with main. The task's `status` stays 'running' for that resume
   // run (it's a real claude session); this is the separate "Resolving Conflicts"
   // label the board renders on top of it. Cleared once that run lands back in
-  // review/failed/ready, same as the runner would for any other resume.
+  // validation/failed/ready, same as the runner would for any other resume.
   resolvingConflicts: boolean;
   // Annotated onto GET /api/state responses so a reconnecting board rebuilds any
   // live tool-approval prompts. Never persisted to db.json.
@@ -564,7 +601,7 @@ export interface AutonomousStatus {
   repoName: string | null;
   budgetUsd: number | null;
   spentUsd: number;
-  // Whether this session also actively reviews + finishes tasks parked in `review`
+  // Whether this session also actively reviews + finishes tasks parked in `validation`
   // (resume with a review pass, then green-merge → done), not just merge green PRs.
   reviewMode: boolean;
   startedAt: string | null;

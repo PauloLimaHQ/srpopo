@@ -2,8 +2,9 @@
  * Tolerant recovery of the single JSON payload a read-only session emits at the
  * end of a turn, delimited by a pair of unique sentinels.
  *
- * Both the grooming flow (server/groomer.ts) and the orchestrator
- * (server/orchestrator.ts) end every turn the same way: one JSON object between two
+ * The grooming flow (server/groomer.ts), the orchestrator (server/orchestrator.ts)
+ * and the code reviewer (server/reviewer.ts) all end every turn the same way: one
+ * JSON object between two
  * markers, chosen so the payload survives the markdown, braces and code fences
  * the session's own prose contains. The extraction is deliberately forgiving —
  * a model that drops the markers but still fences its JSON should not cost the

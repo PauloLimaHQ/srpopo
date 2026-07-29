@@ -429,13 +429,13 @@ test('conflicts: resolveConflicts is a no-op for a task with no session to resum
   assert.strictEqual(task.resolvingConflicts, false, 'the label is never set for a run that never started');
 });
 
-test('conflicts: sweep is a no-op when the setting is off, even with a conflicting task in review', async () => {
+test('conflicts: sweep is a no-op when the setting is off, even with a conflicting task in validation', async () => {
   const store = require('../server/store');
   const conflicts = require('../server/conflicts');
   const prev = store.db.settings.autoResolveConflicts;
   store.db.settings.autoResolveConflicts = false;
   const task = {
-    id: 'sweep-off-task', archived: false, status: 'review', resolvingConflicts: false,
+    id: 'sweep-off-task', archived: false, status: 'validation', resolvingConflicts: false,
     branch: 'feature/x', sessionId: 'sess-1',
   };
   store.db.tasks.push(task);
@@ -454,12 +454,12 @@ test('pr-refresh: module exports sweep and start', () => {
   assert.strictEqual(typeof prRefresh.start, 'function', 'start is exported');
 });
 
-test('pr-refresh: sweep ignores tasks with no branch, archived tasks, and non-review tasks', async () => {
+test('pr-refresh: sweep ignores tasks with no branch, archived tasks, and non-validation tasks', async () => {
   const bus = require('../server/bus');
   const prRefresh = require('../server/pr-refresh');
   const tasks = [
-    mkTask('pr-nb', 'review', 'repoA'), // no branch resolved yet
-    mkTask('pr-ar', 'review', 'repoA', { branch: 'feature/x', archived: true }),
+    mkTask('pr-nb', 'validation', 'repoA'), // no branch resolved yet
+    mkTask('pr-ar', 'validation', 'repoA', { branch: 'feature/x', archived: true }),
     mkTask('pr-rd', 'ready', 'repoA', { branch: 'feature/y' }),
   ];
   const restore = withStore(tasks, 10);
@@ -480,7 +480,7 @@ test('pr-refresh: sweep broadcasts a pr event once per change, keyed off a nonex
   // A cwd that can't exist makes the `gh` spawn fail immediately with ENOENT
   // regardless of whether this machine has `gh` installed/authenticated —
   // deterministic and fast, same trick as the module's own no-branch tests.
-  const task = mkTask('pr-1', 'review', 'repoA', { branch: 'feature/x', repoPath: '/tmp/srpopo-test-does-not-exist' });
+  const task = mkTask('pr-1', 'validation', 'repoA', { branch: 'feature/x', repoPath: '/tmp/srpopo-test-does-not-exist' });
   const restore = withStore([task], 10);
   const seen: Array<{ type?: string; taskId?: string; result?: unknown }> = [];
   const unsubscribe = bus.subscribe((msg: { type?: string; taskId?: string; result?: unknown }) => seen.push(msg));
@@ -1372,7 +1372,7 @@ test('groomer: deriveTitle takes the first non-empty line and caps length', () =
 function mkTask(id: string, status: string, repoId: string, extra: Record<string, unknown> = {}) {
   return {
     id, title: id, prompt: 'do it', repoId, repoName: 'R', repoPath: '/tmp/r',
-    addons: [], personas: [], attachments: [], useWorktree: false, worktreePath: null,
+    addons: [], personas: [], attachments: [], autoCodeReview: false, useWorktree: false, worktreePath: null,
     branchName: null, branch: null, model: 'default', permissionMode: 'acceptEdits',
     allowedTools: '', promptPermissions: true, status, sessionId: null, resolvedModel: null,
     costUsd: 0, numTurns: null, durationMs: null, runCount: 0, activeSubagents: 0,
@@ -1432,6 +1432,7 @@ test('autonomous: forces the unattended lifecycle config on dispatched tasks', a
     await autonomous.start({ repoId: 'repoA', budgetUsd: 100 });
     assert.strictEqual(task.useWorktree, true, 'worktree is forced on');
     assert.strictEqual(task.promptPermissions, false, 'interactive prompting is forced off for unattended runs');
+    assert.strictEqual(task.autoCodeReview, true, 'grading is forced on — the engine can only merge graded work');
     assert.deepStrictEqual(task.addons, ['pull_request', 'code_review'], 'lifecycle add-ons are ensured, in catalog order');
     assert.deepStrictEqual(autonomous.REQUIRED_ADDONS, ['pull_request', 'code_review'], 'required add-ons are exported');
   } finally {
@@ -1574,10 +1575,16 @@ function tick() {
   return new Promise((r) => setTimeout(r, 5));
 }
 
+// A passing Code Review verdict, so a fixture exercises the review/merge loop
+// rather than the code-review gate in front of it (which has its own tests).
+function passingVerdict(grade = 5) {
+  return { grade, summary: 'looks good', blockers: [], commentUrl: null, reviewedAt: '2026-01-01T00:00:00.000Z' };
+}
+
 test('autonomous review: re-reviews while a pass commits fixes, then merges when clean', async () => {
   const autonomous = require('../server/autonomous');
   const bus = require('../server/bus');
-  const review = mkTask('rv1', 'review', 'repoA', { sessionId: 'sess-rv1', worktreePath: '/tmp/wt/rv1' });
+  const review = mkTask('rv1', 'validation', 'repoA', { sessionId: 'sess-rv1', worktreePath: '/tmp/wt/rv1', codeReview: passingVerdict() });
   const restore = withStore([review], 10);
 
   let sha = 'sha0';
@@ -1595,7 +1602,7 @@ test('autonomous review: re-reviews while a pass commits fixes, then merges when
   // Complete an in-flight review pass, optionally advancing HEAD first (a "fix").
   async function completePass(newSha?: string) {
     if (newSha) sha = newSha; // the pass committed a change
-    review.status = 'review';
+    review.status = 'validation';
     bus.broadcast({ type: 'task', task: review });
     await tick();
   }
@@ -1625,7 +1632,7 @@ test('autonomous review: re-reviews while a pass commits fixes, then merges when
 test('autonomous review: a clean first pass merges without any extra rounds', async () => {
   const autonomous = require('../server/autonomous');
   const bus = require('../server/bus');
-  const review = mkTask('rv2', 'review', 'repoA', { sessionId: 'sess-rv2', worktreePath: '/tmp/wt/rv2' });
+  const review = mkTask('rv2', 'validation', 'repoA', { sessionId: 'sess-rv2', worktreePath: '/tmp/wt/rv2', codeReview: passingVerdict() });
   const restore = withStore([review], 10);
 
   let merged = 0;
@@ -1640,7 +1647,7 @@ test('autonomous review: a clean first pass merges without any extra rounds', as
 
   try {
     await autonomous.start({ repoId: 'repoA', budgetUsd: 100, reviewMode: true });
-    review.status = 'review';
+    review.status = 'validation';
     bus.broadcast({ type: 'task', task: review });
     await tick();
     assert.strictEqual(passes.length, 1, 'exactly one review pass runs when nothing changes');
@@ -1656,7 +1663,7 @@ test('autonomous review: a clean first pass merges without any extra rounds', as
 test('autonomous review: a non-green PR is left in review for the human, not merged', async () => {
   const autonomous = require('../server/autonomous');
   const bus = require('../server/bus');
-  const review = mkTask('rv3', 'review', 'repoA', { sessionId: 'sess-rv3', worktreePath: '/tmp/wt/rv3' });
+  const review = mkTask('rv3', 'validation', 'repoA', { sessionId: 'sess-rv3', worktreePath: '/tmp/wt/rv3', codeReview: passingVerdict() });
   const restore = withStore([review], 10);
 
   let merged = 0;
@@ -1671,11 +1678,11 @@ test('autonomous review: a non-green PR is left in review for the human, not mer
   try {
     const started = await autonomous.start({ repoId: 'repoA', budgetUsd: 100, reviewMode: true });
     assert.strictEqual(started.reviewMode, true, 'status reports review mode is on');
-    review.status = 'review';
+    review.status = 'validation';
     bus.broadcast({ type: 'task', task: review });
     await tick();
     assert.strictEqual(merged, 0, 'a failing PR is never merged');
-    assert.strictEqual(review.status, 'review', 'the task is left in review for the human');
+    assert.strictEqual(review.status, 'validation', 'the task is left in validation for the human');
     assert.strictEqual(autonomous.isActive(), true, 'the session stands by (it settled the task, nothing left to do)');
   } finally {
     autonomous._reset();
@@ -1687,7 +1694,7 @@ test('autonomous review: a non-green PR is left in review for the human, not mer
 test('autonomous review: the per-task round cap stops an endless fix loop and forces a merge', async () => {
   const autonomous = require('../server/autonomous');
   const bus = require('../server/bus');
-  const review = mkTask('rv4', 'review', 'repoA', { sessionId: 'sess-rv4', worktreePath: '/tmp/wt/rv4' });
+  const review = mkTask('rv4', 'validation', 'repoA', { sessionId: 'sess-rv4', worktreePath: '/tmp/wt/rv4', codeReview: passingVerdict() });
   const restore = withStore([review], 10);
 
   let sha = 0;
@@ -1708,13 +1715,322 @@ test('autonomous review: the per-task round cap stops an endless fix loop and fo
     // regression that never converges fails the test instead of hanging.
     for (let i = 0; i < 6 && review.status !== 'done'; i += 1) {
       sha += 1;
-      review.status = 'review';
+      review.status = 'validation';
       bus.broadcast({ type: 'task', task: review });
       await tick();
     }
     assert.strictEqual(passes.length, autonomous.MAX_REVIEW_ROUNDS, 'the loop is capped at MAX_REVIEW_ROUNDS passes');
     assert.strictEqual(merged, 1, 'once capped it falls through to a single merge');
     assert.strictEqual(review.status, 'done', 'the task is finished rather than looping');
+  } finally {
+    autonomous._reset();
+    autonomous._setDeps(null);
+    restore();
+  }
+});
+
+// ---------- Code Review: the stage between a finished run and validation ----------
+
+test('store: a task persisted with the legacy "review" status migrates to "validation"', () => {
+  const store = require('../server/store');
+  // The same migration the boot loop applies to every task in db.json.
+  const legacy = mkTask('legacy-1', 'review', 'repoA') as unknown as { status: string; agent?: string };
+  store.migrateTask(legacy);
+  assert.strictEqual(legacy.status, 'validation', 'the legacy review column is what validation is now');
+  assert.strictEqual(legacy.agent, 'claude', 'and the older-schema backfills still run');
+
+  // An orphaned code review is not a failed task — the implementation succeeded.
+  const orphan = mkTask('legacy-2', 'code_review', 'repoA') as unknown as { status: string; lastOutcome: string };
+  store.migrateTask(orphan);
+  assert.strictEqual(orphan.status, 'validation', 'a dead code-review run parks in validation');
+  assert.strictEqual(orphan.lastOutcome, 'review-error', 'with the reason recorded');
+
+  // A running task is still failed on boot, exactly as before.
+  const running = mkTask('legacy-3', 'running', 'repoA') as unknown as { status: string };
+  store.migrateTask(running);
+  assert.strictEqual(running.status, 'failed', 'an orphaned run still fails');
+
+  assert.strictEqual(store.DEFAULT_SETTINGS.minMergeGrade, 4, 'the merge-grade gate defaults to 4');
+  assert.strictEqual(store.db.settings.minMergeGrade, 4, 'and is backfilled onto older db.json files');
+});
+
+test('index: PATCH /api/tasks/:id refuses the runner-owned code_review status but accepts validation', async () => {
+  const store = require('../server/store');
+  const index = require('../server/index');
+  const repo = { id: store.id(), path: '/tmp/cr-repo', name: 'cr/repo', branch: null, addedAt: store.now() };
+  store.db.repos.push(repo);
+  const { server, port } = await index.start(0);
+  const base = `http://127.0.0.1:${port}`;
+  const patch = (id: string, body: unknown) => fetch(`${base}/api/tasks/${id}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  try {
+    const created = await (await fetch(`${base}/api/tasks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repoId: repo.id, title: 'grade me', prompt: 'do it' }),
+    })).json();
+
+    let res = await patch(created.id, { status: 'code_review' });
+    assert.strictEqual(res.status, 400, 'code_review is runner-owned, like running');
+    assert.match((await res.json()).error, /\/code-review/, 'and the error points at the endpoint that starts it');
+    assert.strictEqual(store.getTask(created.id).status, 'backlog', 'the task is untouched');
+
+    res = await patch(created.id, { status: 'validation' });
+    assert.strictEqual(res.status, 200, 'validation is still settable by hand');
+    assert.strictEqual((await res.json()).status, 'validation');
+
+    // The route that does own it needs an open PR (this task has no branch at all).
+    res = await fetch(`${base}/api/tasks/${created.id}/code-review`, { method: 'POST' });
+    assert.strictEqual(res.status, 409, 'code review needs a pull request to comment on');
+    assert.match((await res.json()).error, /open pull request/);
+    assert.strictEqual((await fetch(`${base}/api/tasks/nope/code-review`, { method: 'POST' })).status, 404, 'unknown ids 404');
+  } finally {
+    store.db.tasks = store.db.tasks.filter((t: { repoId: string }) => t.repoId !== repo.id);
+    store.db.repos.splice(store.db.repos.indexOf(repo), 1);
+    await new Promise<void>((r) => server.close(() => r()));
+  }
+});
+
+test('tasks: the Code Review stage is opt-in per task, off by default, and PATCH toggles it', async () => {
+  const store = require('../server/store');
+  const tasks = require('../server/tasks');
+  const index = require('../server/index');
+  const repo = { id: store.id(), path: '/tmp/acr-repo', name: 'acr/repo', branch: null, addedAt: store.now() };
+  store.db.repos.push(repo);
+  const { server, port } = await index.start(0);
+  const base = `http://127.0.0.1:${port}`;
+  try {
+    const off = tasks.createTask({ repoId: repo.id, title: 'plain', prompt: 'p' });
+    assert.strictEqual(off.autoCodeReview, false, 'a task is NOT graded automatically unless configured');
+
+    const on = tasks.createTask({ repoId: repo.id, title: 'graded', prompt: 'p', autoCodeReview: true });
+    assert.strictEqual(on.autoCodeReview, true, 'and honors the opt-in at creation');
+
+    const patched = await (await fetch(`${base}/api/tasks/${off.id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ autoCodeReview: true }),
+    })).json();
+    assert.strictEqual(patched.autoCodeReview, true, 'the flag is editable after creation');
+  } finally {
+    store.db.tasks = store.db.tasks.filter((t: { repoId: string }) => t.repoId !== repo.id);
+    store.db.repos.splice(store.db.repos.indexOf(repo), 1);
+    await new Promise<void>((r) => server.close(() => r()));
+  }
+});
+
+test('runner: maybeCodeReview only looks for a PR when the task opted in', () => {
+  const store = require('../server/store');
+  const runner = require('../server/runner');
+  // A cwd that can't exist makes the `gh` lookup fail immediately (same trick the
+  // pr-refresh cases use), so the opted-in path is deterministic and spawns nothing.
+  const extra = { branch: 'srpopo/x', repoPath: '/tmp/srpopo-test-does-not-exist' };
+  const off = mkTask('mcr-off', 'validation', 'repoA', extra);
+  const on = mkTask('mcr-on', 'validation', 'repoA', { ...extra, autoCodeReview: true });
+  const restore = withStore([off, on], 10);
+  try {
+    runner.maybeCodeReview(off);
+    assert.strictEqual(store.readLog('mcr-off').length, 0, 'an un-configured task is left alone entirely');
+    assert.strictEqual(runner.isRunning('mcr-off'), false, 'and nothing is spawned for it');
+
+    runner.maybeCodeReview(on);
+    return new Promise<void>((resolve) => setTimeout(() => {
+      const lines = store.readLog('mcr-on') as Array<{ type: string; text?: string }>;
+      assert.ok(lines.length > 0, 'the opted-in task does look for its pull request');
+      assert.match(String(lines[lines.length - 1].text), /Skipped code review: no open pull request/, 'and says why it skipped');
+      assert.strictEqual(on.status, 'validation', 'a task with no open PR stays in validation');
+      assert.strictEqual(runner.isRunning('mcr-on'), false, 'no reviewer session was spawned');
+      store.removeLog('mcr-on');
+      restore();
+      resolve();
+    }, 200));
+  } catch (e) {
+    restore();
+    throw e;
+  }
+});
+
+test('reviewer: parseVerdict recovers the sentinel payload, falls back to a fence, and clamps the grade', () => {
+  const reviewer = require('../server/reviewer');
+
+  const sentinel = `blah blah\n${reviewer.REVIEW_START}\n` +
+    '{ "grade": 4, "summary": "solid", "blockers": ["fix the null check"], "commentUrl": "https://github.com/x/y/pull/1#c" }\n' +
+    `${reviewer.REVIEW_END}\ntrailing prose`;
+  const v = reviewer.parseVerdict(sentinel);
+  assert.strictEqual(v.grade, 4);
+  assert.strictEqual(v.summary, 'solid');
+  assert.deepStrictEqual(v.blockers, ['fix the null check']);
+  assert.strictEqual(v.commentUrl, 'https://github.com/x/y/pull/1#c');
+
+  // No markers, but a fenced payload — recovered rather than losing the review.
+  const fenced = reviewer.parseVerdict('here it is\n```json\n{"grade":2,"summary":"needs work"}\n```');
+  assert.strictEqual(fenced.grade, 2, 'a ```json fence is the fallback');
+  assert.deepStrictEqual(fenced.blockers, [], 'a missing blockers array reads as none');
+  assert.strictEqual(fenced.commentUrl, null, 'a missing comment url is null, never undefined');
+
+  // Grade coercion + clamping to 1..5.
+  const grade = (raw: string) => {
+    const parsed = reviewer.parseVerdict(`${reviewer.REVIEW_START}{"grade":${raw}}${reviewer.REVIEW_END}`);
+    return parsed && parsed.grade;
+  };
+  assert.strictEqual(grade('0'), 1, 'below the scale clamps to 1');
+  assert.strictEqual(grade('9'), 5, 'above the scale clamps to 5');
+  assert.strictEqual(grade('"3"'), 3, 'a stringified grade is coerced');
+  assert.strictEqual(grade('4.6'), 5, 'a fractional grade rounds');
+  assert.strictEqual(grade('null'), null, 'no usable grade means no verdict');
+  assert.strictEqual(grade('"nope"'), null, 'and neither does a non-numeric one');
+
+  assert.strictEqual(reviewer.parseVerdict('just prose, no json at all'), null, 'garbage parses to null');
+  assert.strictEqual(reviewer.parseVerdict(''), null, 'so does an empty turn');
+  assert.strictEqual(reviewer.parseVerdict(undefined), null, 'and a missing one, without throwing');
+
+  // The rubric wording is in the prompt verbatim, so the scale is used consistently.
+  const prompt = reviewer.metaPrompt(mkTask('pr-task', 'validation', 'repoA', { branch: 'srpopo/x' }), { number: 7, title: 'Add it' });
+  for (const g of [1, 2, 3, 4, 5]) {
+    assert.ok(prompt.includes(`${g} = ${reviewer.GRADE_MEANINGS[g]}`), `the prompt states grade ${g}'s meaning`);
+  }
+  assert.ok(prompt.includes('gh pr comment 7'), 'it is told to comment on the right PR');
+  assert.ok(prompt.includes(reviewer.REVIEW_START), 'and to close the turn with the sentinel payload');
+  assert.ok(!prompt.includes('gh pr edit'), 'the label is the server\'s job, never the reviewer\'s');
+});
+
+test('claude adapter: reviewArgs is read-only + gh-comment only, never resumed and never bridged', () => {
+  const claude = require('../server/agents/claude');
+  const args: string[] = claude.reviewArgs({ model: 'sonnet', agent: 'claude' });
+  const allow = args[args.indexOf('--allowedTools') + 1];
+  assert.ok(args.includes('-p') && args.includes('stream-json'), 'a headless streaming run like every other session');
+  assert.strictEqual(args[args.indexOf('--model') + 1], 'sonnet', 'the task model is used');
+  for (const tool of ['Read', 'Grep', 'Glob', 'Bash(git diff:*)', 'Bash(git status:*)', 'Bash(gh pr view:*)', 'Bash(gh pr diff:*)', 'Bash(gh pr comment:*)']) {
+    assert.ok(allow.split(',').includes(tool), `${tool} is allowed`);
+  }
+  for (const forbidden of ['Write', 'Edit', 'Bash(gh pr edit:*)', 'Bash(gh label:*)', 'Bash(git commit:*)', 'Bash(git push:*)']) {
+    assert.ok(!allow.split(',').includes(forbidden), `${forbidden} is NOT allowed — the run auto-denies it`);
+  }
+  assert.ok(!args.includes('--resume'), 'a code review is always a fresh, unbiased session');
+  assert.ok(!args.includes('--permission-prompt-tool'), 'no interactive bridge — the allow-list is the boundary');
+  assert.ok(!args.includes('--mcp-config'), 'and no MCP servers at all');
+  // A Codex task is still reviewed by Claude, so its model name must not leak into
+  // `claude --model`.
+  assert.ok(!claude.reviewArgs({ model: 'gpt-5.6-sol', agent: 'codex' }).includes('--model'), 'a codex model falls back to the CLI default');
+});
+
+test('reviewer: applyVerdict writes a well-formed codeReview onto the task', () => {
+  const reviewer = require('../server/reviewer');
+  const task = mkTask('av-1', 'validation', 'repoA') as unknown as { codeReview?: unknown };
+  const written = reviewer.applyVerdict(task, { grade: 3, summary: 'ok-ish', blockers: ['a'], commentUrl: null });
+  assert.deepStrictEqual(task.codeReview, written, 'the written verdict is returned');
+  assert.strictEqual(written.grade, 3);
+  assert.strictEqual(written.summary, 'ok-ish');
+  assert.deepStrictEqual(written.blockers, ['a']);
+  assert.strictEqual(written.commentUrl, null);
+  assert.match(written.reviewedAt, /^\d{4}-\d{2}-\d{2}T/, 'stamped with an ISO timestamp');
+
+  // Each pass replaces the previous verdict — it graded a different diff.
+  reviewer.applyVerdict(task, { grade: 5, summary: 'clean now', blockers: [], commentUrl: 'https://x/1' });
+  assert.strictEqual((task.codeReview as { grade: number }).grade, 5, 'the newer grade wins');
+});
+
+test('github: the mergeable grade label is one deterministic name per grade', () => {
+  const github = require('../server/github');
+  for (const g of [1, 2, 3, 4, 5]) {
+    assert.strictEqual(github.mergeableLabel(g), `mergeable/${g}`);
+    assert.match(github.MERGEABLE_LABEL_COLORS[g], /^[0-9a-f]{6}$/, 'each grade has a hex color for gh label create');
+  }
+  assert.deepStrictEqual(
+    github.MERGEABLE_LABELS,
+    ['mergeable/1', 'mergeable/2', 'mergeable/3', 'mergeable/4', 'mergeable/5'],
+    'every grade label is listed so the other four can be removed in one edit',
+  );
+  assert.strictEqual(github.MERGEABLE_LABELS.length, 5, 'exactly five grades');
+});
+
+test('github: setMergeableLabel refuses an out-of-range grade without touching gh', async () => {
+  const github = require('../server/github');
+  for (const bad of [0, 6, NaN, 'x' as unknown as number]) {
+    assert.deepStrictEqual(await github.setMergeableLabel({ branch: 'b' }, bad), { ok: false, reason: 'bad-grade' });
+  }
+  // A task with no branch can't have a PR, so it short-circuits on the lookup.
+  assert.deepStrictEqual(await github.setMergeableLabel({}, 4), { ok: false, reason: 'no-branch' });
+});
+
+test('autonomous: the code-review gate merges a passing grade, parks a low one, and reviews an ungraded one once', async () => {
+  const autonomous = require('../server/autonomous');
+  const bus = require('../server/bus');
+  const store = require('../server/store');
+  const pass = mkTask('cg1', 'ready', 'repoA', { codeReview: passingVerdict(5) });
+  const low = mkTask('cg2', 'ready', 'repoA', { codeReview: passingVerdict(2) });
+  // Ungraded on purpose: this is the task the gate has to review before merging.
+  const none = mkTask('cg3', 'ready', 'repoA', { codeReview: null }) as ReturnType<typeof mkTask> & { codeReview: unknown };
+  const restore = withStore([pass, low, none], 10);
+  const prevGrade = store.db.settings.minMergeGrade;
+  store.db.settings.minMergeGrade = 4;
+  const merged: string[] = [];
+  const reviewed: string[] = [];
+  autonomous._setDeps({
+    dispatch: async (t: { status: string }) => { t.status = 'running'; },
+    codeReview: async (t: { id: string; status: string }) => { reviewed.push(t.id); t.status = 'code_review'; },
+    checkPr: async () => ({ status: 'green', pr: { number: 1 } }),
+    merge: async (t: { id: string }) => { merged.push(t.id); return { ok: true }; },
+    removeWorktree: async () => {},
+  });
+  // Land an owned run the way runner.dispatch's terminal event does.
+  async function land(task: { status: string }) {
+    task.status = 'validation';
+    bus.broadcast({ type: 'task', task });
+    await tick();
+  }
+  try {
+    await autonomous.start({ repoId: 'repoA', budgetUsd: 100 });
+
+    await land(pass);
+    assert.deepStrictEqual(merged, ['cg1'], 'grade 5 clears the gate and merges');
+    assert.strictEqual(pass.status, 'done', 'and the task finishes');
+    assert.deepStrictEqual(reviewed, [], 'an already-graded task is never re-reviewed');
+
+    await land(low);
+    assert.ok(!merged.includes('cg2'), 'grade 2 is below minMergeGrade, so it is never merged');
+    assert.strictEqual(low.status, 'validation', 'it is left for the human to decide');
+    assert.strictEqual(autonomous.status().reason, 'left-in-validation:grade-2', 'with the grade in the reason');
+
+    // An ungraded task is reviewed first — and only ever once.
+    await land(none);
+    assert.deepStrictEqual(reviewed, ['cg3'], 'the ungraded task is handed to a code review');
+    assert.ok(!merged.includes('cg3'), 'nothing is merged while that review is in flight');
+    assert.strictEqual(none.status, 'code_review', 'the reviewer owns the card meanwhile');
+
+    // The review lands with a passing verdict: the merge decision resumes.
+    none.codeReview = passingVerdict(4);
+    await land(none);
+    assert.deepStrictEqual(reviewed, ['cg3'], 'exactly one code review per task per session');
+    assert.ok(merged.includes('cg3'), 'and now it merges');
+    assert.strictEqual(none.status, 'done');
+  } finally {
+    autonomous._reset();
+    autonomous._setDeps(null);
+    store.db.settings.minMergeGrade = prevGrade;
+    restore();
+  }
+});
+
+test('autonomous: a task still in code_review is in flight — the engine keeps owning it', async () => {
+  const autonomous = require('../server/autonomous');
+  const bus = require('../server/bus');
+  const task = mkTask('cf1', 'ready', 'repoA');
+  const restore = withStore([task], 10);
+  const merged: string[] = [];
+  autonomous._setDeps({
+    dispatch: async (t: { status: string }) => { t.status = 'running'; },
+    codeReview: async (t: { status: string }) => { t.status = 'code_review'; },
+    checkPr: async () => ({ status: 'green', pr: { number: 1 } }),
+    merge: async (t: { id: string }) => { merged.push(t.id); return { ok: true }; },
+  });
+  try {
+    await autonomous.start({ repoId: 'repoA', budgetUsd: 100 });
+    // The runner's own auto-flow into code review, arriving as a bus event.
+    task.status = 'code_review';
+    bus.broadcast({ type: 'task', task });
+    await tick();
+    assert.deepStrictEqual(merged, [], 'a code_review event is not a landing');
+    assert.strictEqual(autonomous.status().tasks[0].running, true, 'the engine still owns the run');
   } finally {
     autonomous._reset();
     autonomous._setDeps(null);
@@ -2063,12 +2379,12 @@ test('orchestrator: parseStatus recovers all four turn states, and rejects anyth
 test('orchestrator: statusPrompt digests every watched worker and flags ones that vanished', () => {
   const orchestrator = require('../server/orchestrator');
   const tasks = [
-    mkTask('w1', 'review', 'repoA', { title: 'Add the parser', lastOutcome: 'success', branch: 'srpopo/parser', runCount: 1 }),
+    mkTask('w1', 'validation', 'repoA', { title: 'Add the parser', lastOutcome: 'success', branch: 'srpopo/parser', runCount: 1 }),
     mkTask('w2', 'failed', 'repoA', { title: 'Wire the UI', lastOutcome: 'error', lastError: 'tsc: type error in app.ts' }),
   ];
   const prompt = orchestrator.statusPrompt({ watch: ['w1', 'w2', 'gone'], mode: 'manual' }, tasks);
   assert.ok(prompt.includes('w1') && prompt.includes('Add the parser'), 'each watched task is listed');
-  assert.ok(prompt.includes('status=review'), 'its status is reported');
+  assert.ok(prompt.includes('status=validation'), 'its status is reported');
   assert.ok(prompt.includes('tsc: type error in app.ts'), 'a failure reason is carried over');
   assert.ok(prompt.includes('gone'), 'a deleted watched id is called out');
   assert.ok(prompt.includes(orchestrator.ORCH_START), 'the status contract is restated');
@@ -2166,7 +2482,7 @@ test('orchestrator: a watched worker landing resumes the orchestrator exactly on
 
     // The first landing wakes it; the second, arriving in the same debounce
     // window, joins that one wake-up rather than queueing a second turn.
-    w1.status = 'review';
+    w1.status = 'validation';
     bus.broadcast({ type: 'task', task: w1 });
     w2.status = 'failed';
     bus.broadcast({ type: 'task', task: w2 });
@@ -2184,13 +2500,41 @@ test('orchestrator: a watched worker landing resumes the orchestrator exactly on
   }
 });
 
+test('orchestrator: a worker mid-code-review has not landed, so the orchestrator is not woken', async () => {
+  const orchestratorEngine = require('../server/orchestrator-engine');
+  const bus = require('../server/bus');
+  const orch = mkOrchestration('o-cr', 'waiting', ['wcr']);
+  const worker = mkTask('wcr', 'running', 'repoA');
+  const restore = withOrchestratorStore([orch], [worker]);
+  const resumes: string[] = [];
+  orchestratorEngine._setDeps({ resume: (_o: unknown, prompt: string) => { resumes.push(prompt); } });
+  orchestratorEngine._setTiming({ debounceMs: 0 });
+  try {
+    orchestratorEngine.start();
+    // The Code Review stage is a live child, not a terminal state — the worker is
+    // still in flight and lands in `validation` next.
+    worker.status = 'code_review';
+    bus.broadcast({ type: 'task', task: worker });
+    await tick();
+    assert.strictEqual(resumes.length, 0, 'code_review is not terminal, so nothing resumes');
+
+    worker.status = 'validation';
+    bus.broadcast({ type: 'task', task: worker });
+    await tick();
+    assert.strictEqual(resumes.length, 1, 'the validation landing is what wakes the orchestrator');
+  } finally {
+    orchestratorEngine._reset();
+    restore();
+  }
+});
+
 test('orchestrator: only the orchestration watching a task reacts to it', async () => {
   const orchestratorEngine = require('../server/orchestrator-engine');
   const bus = require('../server/bus');
   const mine = mkOrchestration('o-mine', 'waiting', ['t-mine']);
   const other = mkOrchestration('o-other', 'waiting', ['t-other']);
   const draft = mkOrchestration('o-draft', 'draft', ['t-mine']);
-  const task = mkTask('t-mine', 'review', 'repoA');
+  const task = mkTask('t-mine', 'validation', 'repoA');
   const restore = withOrchestratorStore([mine, other, draft], [task, mkTask('t-other', 'ready', 'repoA')]);
   const resumed: string[] = [];
   orchestratorEngine._setDeps({ resume: (o: { id: string }) => { resumed.push(o.id); } });
@@ -2211,7 +2555,7 @@ test('orchestrator: never resumes a session that is already running, and retries
   const orchestratorEngine = require('../server/orchestrator-engine');
   const bus = require('../server/bus');
   const orch = mkOrchestration('o2', 'waiting', ['w3']);
-  const task = mkTask('w3', 'review', 'repoA');
+  const task = mkTask('w3', 'validation', 'repoA');
   const restore = withOrchestratorStore([orch], [task]);
   let live = true;
   const resumed: string[] = [];
@@ -2262,7 +2606,7 @@ test('orchestrator: the turn cap fails the card instead of looping forever', asy
   const orchestratorEngine = require('../server/orchestrator-engine');
   const bus = require('../server/bus');
   const orch = mkOrchestration('o4', 'waiting', ['w5'], { turnCount: orchestratorEngine.MAX_TURNS });
-  const task = mkTask('w5', 'review', 'repoA');
+  const task = mkTask('w5', 'validation', 'repoA');
   const restore = withOrchestratorStore([orch], [task]);
   const resumed: string[] = [];
   orchestratorEngine._setDeps({ resume: (o: { id: string }) => { resumed.push(o.id); } });
@@ -2321,7 +2665,7 @@ test('orchestrator: a worker that landed while the orchestrator was busy still w
   const bus = require('../server/bus');
   const orch = mkOrchestration('o6', 'running', ['w7']);
   // The worker finished mid-turn, while nothing was armed to notice.
-  const task = mkTask('w7', 'review', 'repoA');
+  const task = mkTask('w7', 'validation', 'repoA');
   const restore = withOrchestratorStore([orch], [task]);
   const resumed: string[] = [];
   orchestratorEngine._setDeps({ resume: (o: { id: string }) => { resumed.push(o.id); } });

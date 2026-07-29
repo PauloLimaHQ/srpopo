@@ -559,6 +559,13 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
 /* The agent backend badge (shown for Codex; Claude is the unlabelled default). */
 .chip.agent-chip { color: var(--text-bright); border-color: var(--border-strong); font-weight: 600; }
 .chip.conflict-chip { color: var(--conflict); border-color: var(--conflict-soft); font-weight: 600; }
+/* Code Review grade (1-5), on a red -> green ramp matching the PR label colors. */
+.chip.grade { display: inline-flex; align-items: center; gap: 5px; font-weight: 600; }
+.chip.grade.g1 { color: var(--red); border-color: var(--red-soft); font-weight: 700; }
+.chip.grade.g2 { color: var(--red); border-color: var(--red-soft); }
+.chip.grade.g3 { color: var(--conflict); border-color: var(--conflict-soft); }
+.chip.grade.g4 { color: var(--green); border-color: var(--green-soft); }
+.chip.grade.g5 { color: var(--green); border-color: var(--green-soft); font-weight: 700; }
 /* GitHub PR chip in the drawer head — a link plus a status dot. */
 a.chip.pr { text-decoration: none; display: inline-flex; align-items: center; gap: 5px; }
 a.chip.pr:hover { border-color: currentColor; }
@@ -603,6 +610,16 @@ a.chip.pr:hover { border-color: currentColor; }
   display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px;
 }
 .drawer-meta .chip { font-size: 11px; }
+/* The Code Review verdict for a graded task: grade + summary + any blockers. */
+.drawer-review {
+  margin-top: 12px; padding: 10px 12px;
+  background: var(--prompt-bg); border: 1px solid var(--prompt-border); border-radius: 10px;
+}
+.drawer-review-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.drawer-review-head .tag { font-size: 10px; color: var(--purple); font-weight: 700; letter-spacing: 1px; }
+.drawer-review-summary { font-size: 13px; margin-top: 8px; word-break: break-word; }
+.drawer-review-blockers { margin: 8px 0 0 18px; font-size: 12px; color: var(--red); }
+.drawer-review-blockers li { margin-bottom: 3px; }
 .drawer-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .drawer-prompt {
   margin-top: 12px; padding: 10px 12px; max-height: 180px; overflow-y: auto;

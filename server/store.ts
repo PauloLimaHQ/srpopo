@@ -32,6 +32,9 @@ const DEFAULT_SETTINGS: Settings = {
   mergeStrategy: 'merge',
   // Off by default: auto-resolving conflicts spawns a new `claude` run unattended.
   autoResolveConflicts: false,
+  // Autonomous Mode only merges work the Code Review stage graded 4 ("mergeable,
+  // only nits") or better; anything below is left in `validation` for the human.
+  minMergeGrade: 4,
   // Off by default, like the other opt-in GitHub behaviors here.
   assignPrToSelf: false,
   // Remote access is OFF by default: the server binds 127.0.0.1 only and needs
@@ -78,10 +81,11 @@ if (db.settings.installedPlugins.includes('hive')) {
   db.settings.installedPlugins = db.settings.installedPlugins.map((p) => (p === 'hive' ? 'orchestration' : p));
 }
 
-// Any task marked running when the server starts is an orphan from a previous
-// run — its child claude process died with the server. Older db.json files may
-// still carry the legacy per-task 'grooming' status; treat those the same way.
-for (const t of db.tasks) {
+// Bring one persisted task up to date with the current schema. Any task marked
+// running when the server starts is an orphan from a previous run — its child
+// claude process died with the server. Older db.json files may still carry the
+// legacy per-task 'grooming' status; treat those the same way.
+function migrateTask(t: Task): void {
   // Tasks created before the pluggable-agent backend default to Claude.
   if (!t.agent) t.agent = 'claude';
   if (t.status === 'running' || (t.status as string) === 'grooming') {
@@ -89,8 +93,20 @@ for (const t of db.tasks) {
     t.lastOutcome = 'error';
     t.lastError = 'Server restarted while task was running';
     t.resolvingConflicts = false;
+  } else if (t.status === 'code_review') {
+    // A dead code-review run is not a failed task: the implementation work
+    // already succeeded, so park it where the human validates it (exactly what
+    // runner.codeReview's own exit path does).
+    t.status = 'validation';
+    t.lastOutcome = 'review-error';
+    t.lastError = 'Server restarted while the code review was running';
+  } else if ((t.status as string) === 'review') {
+    // The finished-work phase split into Code Review → Validation; the legacy
+    // `review` column is what `validation` is now.
+    t.status = 'validation';
   }
 }
+for (const t of db.tasks) migrateTask(t);
 // Same for grooming cards: a card can't still be running without its child.
 for (const g of db.groomings) {
   // Older db.json files predate the clarifying-questions field.
@@ -207,6 +223,6 @@ function readUsage(): UsageEntry[] {
 }
 
 export {
-  db, save, id, now, appendLog, readLog, removeLog, logPath, getTask, getRepo, getGrooming, getOrchestration,
+  db, save, id, now, appendLog, readLog, removeLog, logPath, getTask, getRepo, getGrooming, getOrchestration, migrateTask,
   DATA_DIR, DEFAULT_SETTINGS, appendUsage, readUsage, usageLogExists, touchUsageLog,
 };

@@ -49,7 +49,7 @@ const TOOL_DEFS = [
     name: 'list_tasks',
     description:
       'List tasks on the board as compact summaries. Optionally filter by status ' +
-      '(backlog/ready/running/grooming/review/done/failed) and/or repoId. Archived ' +
+      '(backlog/ready/running/code_review/validation/done/failed) and/or repoId. Archived ' +
       'tasks are excluded unless includeArchived is true.',
     inputSchema: {
       type: 'object',
@@ -98,6 +98,7 @@ const TOOL_DEFS = [
         allowedTools: { type: 'string', description: 'Comma/newline list of auto-approved tool patterns.' },
         addons: { type: 'array', items: { type: 'string' }, description: 'Add-on ids (see the board).' },
         prDraft: { type: 'boolean', description: 'When the "pull_request" addon is selected, open the PR as a draft instead of ready for review.' },
+        autoCodeReview: { type: 'boolean', description: 'Grade the branch in the Code Review stage (a fresh read-only reviewer that comments on the PR) when the run finishes, before it lands in validation. Off by default.' },
         personas: { type: 'array', items: { type: 'string' }, description: 'Persona ids (see the board).' },
         autoPersona: { type: 'boolean', description: 'Let the run pick its own expert persona from the catalog before it starts, instead of using "personas".' },
       },
