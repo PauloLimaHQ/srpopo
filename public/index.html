@@ -72,7 +72,7 @@
     <div class="modal-box">
       <h2><span class="i" data-icon="bot"></span> Autonomous Mode</h2>
       <p class="field-hint" id="autonomous-modal-repo"></p>
-      <p class="field-hint">Sr. Popo will drive every <strong>Ready</strong> task in this workspace end-to-end — dispatch each run (which plans, builds, tests, self-reviews, and opens a PR), then merge the PR and move the task to Done once it’s green — until the budget is spent. You can start it with an empty queue: it stands by and picks up each task the moment it lands in Ready. Runs are unattended: tool-permission prompts are turned off for them, so make sure each task is configured to run without a human.</p>
+      <p class="field-hint">Sr. Popo will drive every <strong>Ready</strong> task in this workspace end-to-end — dispatch each run (which plans, builds, tests, self-reviews, and opens a PR), then have a fresh reviewer grade the branch 1–5 in <strong>Code Review</strong> and, once the PR is green and the grade meets the minimum set in Settings → Git, merge it and move the task to Done — until the budget is spent. You can start it with an empty queue: it stands by and picks up each task the moment it lands in Ready. Runs are unattended: tool-permission prompts are turned off for them, so make sure each task is configured to run without a human.</p>
       <label>Budget cap (USD)
         <input id="autonomous-budget" type="number" min="0.5" max="1000" step="0.5" value="10" />
         <span class="field-hint">New tasks stop being picked up once this total spend is reached; in-flight runs still finish.</span>
@@ -80,8 +80,8 @@
       <label class="check addon">
         <input type="checkbox" id="autonomous-review-mode" />
         <span class="addon-text">
-          <span class="addon-label">Review &amp; finish tasks in Review</span>
-          <span class="addon-hint">Also take tasks sitting in <strong>Review</strong>: re-review the branch and, if it needs fixes, resume the session to apply them; once a pass leaves it clean, merge the PR, drop the worktree, and move it to Done.</span>
+          <span class="addon-label">Review &amp; finish tasks in Validation</span>
+          <span class="addon-hint">Also take tasks sitting in <strong>Validation</strong>: re-review the branch and, if it needs fixes, resume the session to apply them; once a pass leaves it clean, grade it in Code Review and — if the grade passes — merge the PR, drop the worktree, and move it to Done.</span>
         </span>
       </label>
       <div class="modal-actions">
@@ -114,6 +114,7 @@
         <button class="btn icon" id="drawer-close" title="Close" aria-label="Close"><span class="i" data-icon="x"></span></button>
       </div>
       <div id="drawer-meta" class="drawer-meta"></div>
+      <div id="drawer-review" class="drawer-review hidden"></div>
       <div id="drawer-actions" class="drawer-actions"></div>
       <div id="drawer-prompt" class="drawer-prompt hidden"></div>
     </div>
@@ -339,8 +340,8 @@
         <label class="check addon">
           <input type="checkbox" id="hive-review-mode" checked />
           <span class="addon-text">
-            <span class="addon-label">Review &amp; finish tasks in Review</span>
-            <span class="addon-hint">Let Autonomous Mode re-review each finished branch and apply fixes before merging.</span>
+            <span class="addon-label">Review &amp; finish tasks in Validation</span>
+            <span class="addon-hint">Let Autonomous Mode re-review each finished branch and apply fixes before it is graded and merged.</span>
           </span>
         </label>
       </div>
@@ -545,7 +546,7 @@
                   <span class="addon-label">Auto-resolve conflicts</span>
                   <span class="addon-hint">When a task's PR has merge conflicts with main, automatically resume its
                     session to resolve them — the card moves back to Running with a "Resolving Conflicts" label,
-                    then follows the normal lifecycle back to Review. Also used by Autonomous Mode.</span>
+                    then follows the normal lifecycle back to Validation. Also used by Autonomous Mode.</span>
                 </span>
               </label>
               <label class="check addon">
@@ -575,6 +576,21 @@
                 </select>
               </label>
               <p class="addon-hint">Applies to the "Merge pull request" wrap-up step and to Autonomous Mode's own merges (<code>gh pr merge</code>).</p>
+            </fieldset>
+            <fieldset class="addons">
+              <legend>Merge grade</legend>
+              <label>Minimum code review grade <span class="field-hint">— Autonomous Mode won't merge below this</span>
+                <select id="setting-min-merge-grade">
+                  <option value="1">1 — must not be merged</option>
+                  <option value="2">2 — still not mergeable, but better than 1</option>
+                  <option value="3">3 — mergeable with reservations</option>
+                  <option value="4">4 — mergeable, only nits</option>
+                  <option value="5">5 — good to go</option>
+                </select>
+              </label>
+              <p class="addon-hint">Every finished branch is graded 1–5 by the <strong>Code Review</strong> stage (a fresh
+                read-only reviewer that comments on the PR and labels it <code>mergeable/&lt;n&gt;</code>). Autonomous Mode
+                merges only at or above this grade; anything lower is left in <strong>Validation</strong> for you.</p>
             </fieldset>
           </section>
 

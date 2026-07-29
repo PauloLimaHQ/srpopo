@@ -182,6 +182,31 @@ function groomArgs(grooming: Pick<Grooming, 'model' | 'sessionId'>, resume = fal
   return args;
 }
 
+// What a Code Review session needs on top of the read-only research set: the
+// branch's own state, the pull request's view/diff, and posting its one review
+// comment. Deliberately NO `gh pr edit` / `gh label` — the grade label is the
+// server's to write (github.setMergeableLabel), not the reviewer's.
+const REVIEW_TOOLS = [
+  'Bash(git status:*)',
+  'Bash(gh pr view:*)',
+  'Bash(gh pr diff:*)',
+  'Bash(gh pr comment:*)',
+];
+
+// Args for a Code Review session (see server/reviewer.ts + runner.codeReview): a
+// fresh, read-only reviewer of the task's branch. Never `--resume` (the whole
+// point is an unbiased second pair of eyes), never a write tool, and never the
+// interactive permission bridge — anything outside the allow-list is auto-denied
+// by the headless run, which is exactly the guarantee we want.
+function reviewArgs(task: Pick<Task, 'model' | 'agent'>): string[] {
+  const args = ['-p', '--output-format', 'stream-json', '--verbose'];
+  // The reviewer always runs on Claude, so a Codex task's model name is not a
+  // valid `--model` here — those fall back to the CLI's default model.
+  if (task.model && task.model !== 'default' && task.agent !== 'codex') args.push('--model', task.model);
+  args.push('--allowedTools', mergeAllowedTools(RESEARCH_TOOLS, REVIEW_TOOLS));
+  return args;
+}
+
 // Sr. Popo's own board MCP server (server/mcp.ts, mounted at POST /mcp) as the
 // orchestrator session sees it. Named distinctly from the per-task permission
 // bridge above ('srpopo') so the two can never be confused: this one drives the
@@ -287,6 +312,7 @@ export {
   BOARD_MCP_SERVER_NAME,
   BOARD_TOOLS,
   RESEARCH_TOOLS,
+  REVIEW_TOOLS,
   setBaseUrl,
   resolvedBaseUrl,
   childEnv,
@@ -294,6 +320,7 @@ export {
   buildArgs,
   groomArgs,
   orchestrateArgs,
+  reviewArgs,
   normalizeAllowedTools,
   mergeAllowedTools,
   effectiveAllowedTools,

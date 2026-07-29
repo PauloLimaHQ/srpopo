@@ -14,7 +14,7 @@
     addons: [],       // catalog of optional task behaviors (from /api/addons)
     personas: [],     // catalog of expert personas (from /api/personas)
     plugins: [],      // marketplace catalog (from /api/plugins)
-    settings: { notifications: true, sounds: true, maxParallelSessions: 3, installedPlugins: [], mergeStrategy: 'merge', remoteAccess: false, remoteAccessConfigured: false, customModels: [] }, // user preferences (from /api/settings)
+    settings: { notifications: true, sounds: true, maxParallelSessions: 3, installedPlugins: [], mergeStrategy: 'merge', minMergeGrade: 4, remoteAccess: false, remoteAccessConfigured: false, customModels: [] }, // user preferences (from /api/settings)
     filters: { search: '' }, // board filters (free-text only — repo scope comes from state.view)
     view: { mode: 'super' }, // { mode: 'super' } | { mode: 'workspace', repoId }
     prByTask: new Map(), // taskId -> 'loading' | { pr, reason } from /api/tasks/:id/pr
@@ -57,7 +57,8 @@
     { key: 'backlog', label: 'Backlog', dot: '#94897a' },
     { key: 'ready', label: 'Ready', dot: '#5b8cbe' },
     { key: 'running', label: 'Running', dot: '#d97757' },
-    { key: 'review', label: 'Review', dot: '#8a78d6' },
+    { key: 'code_review', label: 'Code Review', dot: '#3f9d97' },
+    { key: 'validation', label: 'Validation', dot: '#8a78d6' },
     { key: 'done', label: 'Done', dot: '#5aa873' },
   ];
   // The Grooming column is not a task column: it's rendered first, holds only
@@ -67,14 +68,16 @@
   // Same idea for Hive Orchestration: a locked column of orchestration cards,
   // each one a goal an orchestrator agent is planning and coordinating.
   const HIVE_COLUMN = { key: 'hive', label: 'Orchestration', dot: '#d1a03c' };
-  // failed tasks are surfaced in the Review column with a FAILED badge
+  // failed tasks are surfaced in the Validation column with a FAILED badge — that
+  // is where the human is looking for finished work either way.
   const COLUMN_OF_STATUS = {
     backlog: 'backlog', ready: 'ready', running: 'running',
-    review: 'review', failed: 'review', done: 'done',
+    code_review: 'code_review', validation: 'validation', failed: 'validation', done: 'done',
   };
   // A live task runs a claude child process — its card can't be dragged/edited
-  // and shows a spinner + stop button instead.
-  const isLive = (t) => t.status === 'running';
+  // and shows a spinner + stop button instead. A Code Review pass is a live child
+  // too (a fresh read-only reviewer session), so it counts here.
+  const isLive = (t) => t.status === 'running' || t.status === 'code_review';
   const isGroomingLive = (g) => g.status === 'running';
   const isOrchestrationLive = (o) => o.status === 'running';
 
@@ -428,7 +431,9 @@
 
       if (!tasks.length) {
         const hint = filtersActive() ? 'no matches'
-          : col.key === 'running' ? 'drag a card here to dispatch' : 'empty';
+          : col.key === 'running' ? 'drag a card here to dispatch'
+          : col.key === 'code_review' ? 'drop a card with an open PR here'
+          : 'empty';
         body.innerHTML = `<div class="column-empty">${hint}</div>`;
       }
       for (const t of tasks) body.appendChild(renderCard(t));
@@ -895,9 +900,24 @@
     }
   });
 
+  // The 1-5 mergeable grade the Code Review stage assigned (server/reviewer.ts),
+  // in the same wording the reviewer prompt and the PR comment use.
+  const GRADE_MEANINGS = {
+    1: 'must not be merged',
+    2: 'still not mergeable, but better than 1',
+    3: 'mergeable with reservations',
+    4: 'mergeable, only nits',
+    5: 'good to go',
+  };
+
+  function gradeChipHtml(cr) {
+    const g = Math.min(5, Math.max(1, Math.round(Number(cr.grade) || 0)));
+    return `<span class="chip grade g${g}" title="Code review grade ${g}/5 — ${esc(GRADE_MEANINGS[g])}">${icon('search')} mergeable ${g}/5</span>`;
+  }
+
   function renderCard(t) {
     const el = document.createElement('div');
-    el.className = `card ${t.status === 'running' ? 'running' : ''} ${t.status === 'failed' ? 'failed' : ''} ${t.resolvingConflicts ? 'resolving-conflicts' : ''}`;
+    el.className = `card ${isLive(t) ? 'running' : ''} ${t.status === 'failed' ? 'failed' : ''} ${t.resolvingConflicts ? 'resolving-conflicts' : ''}`;
     el.draggable = !isLive(t);
     el.dataset.id = t.id;
 
@@ -925,6 +945,7 @@
       chips.push(`<span class="chip addon-chip" title="${draft ? 'Opens a draft pull request when finished' : 'Opens a pull request when finished'}">${icon('git-pull-request')} PR${draft ? ' (draft)' : ''}</span>`);
     }
     if (t.addons && t.addons.includes('code_review')) chips.push(`<span class="chip addon-chip" title="Self code-reviews and fixes issues before finishing">${icon('search')} review</span>`);
+    if (t.codeReview) chips.push(gradeChipHtml(t.codeReview));
     (t.personas || []).forEach((pid) => {
       const p = state.personas.find((x) => x.id === pid);
       chips.push(`<span class="chip persona-chip" title="${esc(p ? p.hint : 'persona')}">${icon('persona')} ${esc(p ? p.label : pid)}</span>`);
@@ -949,6 +970,7 @@
         <div class="card-status">
           <span class="spinner"></span>
           ${t.status === 'running' && t.resolvingConflicts ? '<span class="live-label">resolving conflicts</span>' : ''}
+          ${t.status === 'code_review' ? '<span class="live-label">code review</span>' : ''}
           <span class="elapsed" data-start="${esc(t.startedAt)}">${elapsedSince(t.startedAt)}</span>
           <button class="btn icon danger card-stop" data-action="stop" title="Stop run" aria-label="Stop run">${icon('square')}</button>
         </div>`;
@@ -1153,9 +1175,13 @@
         } else if (t.sessionId) {
           openFollowupModal(t); // finished tasks continue their session
         }
-      } else if (colKey === 'done' && t.status !== 'running') {
+      } else if (colKey === 'code_review') {
+        // Runner-owned status: a fresh read-only reviewer session grades the
+        // branch and comments on its PR (rejected without an open one).
+        if (!isLive(t)) await api('POST', `/api/tasks/${t.id}/code-review`);
+      } else if (colKey === 'done' && !isLive(t)) {
         await moveToDone(t);
-      } else if (t.status !== 'running') {
+      } else if (!isLive(t)) {
         await api('PATCH', `/api/tasks/${t.id}`, { status: colKey });
       }
     } catch (e) { toast(e.message); }
@@ -1596,6 +1622,13 @@
         actions.push({ id: 'dispatch', label: 'Run', icon: 'play', cls: 'primary',
           run: () => api('POST', `/api/tasks/${t.id}/dispatch`) });
       }
+      // A fresh reviewer session over the branch — needs an open PR to comment on,
+      // which the server enforces (409) rather than the board guessing.
+      if (t.branch) {
+        actions.push({ id: 'code-review', label: 'Code Review', icon: 'search', cls: 'ghost',
+          title: 'Grade this branch with a fresh read-only reviewer and comment on its PR',
+          run: () => api('POST', `/api/tasks/${t.id}/code-review`) });
+      }
       actions.push({ id: 'edit', label: 'Edit', icon: 'pencil', cls: 'ghost',
         run: () => { openTaskModal(t); } });
       actions.push({ id: 'archive', label: 'Archive', cls: 'ghost',
@@ -1745,6 +1778,36 @@
     if (!e.target.closest('.card')) closeContextMenu();
   });
 
+  // The Code Review verdict block under the drawer's meta row: the grade with its
+  // meaning, the reviewer's summary, any blockers, and a link to the review comment
+  // it posted on the PR. Hidden for a task that has never been graded (and for the
+  // grooming/orchestration drawers, which call this with nothing).
+  function renderCodeReview(cr) {
+    const box = $('#drawer-review');
+    if (!box) return;
+    if (!cr) {
+      box.classList.add('hidden');
+      box.innerHTML = '';
+      return;
+    }
+    const g = Math.min(5, Math.max(1, Math.round(Number(cr.grade) || 0)));
+    const blockers = (cr.blockers || []).length
+      ? `<ul class="drawer-review-blockers">${cr.blockers.map((b) => `<li>${esc(b)}</li>`).join('')}</ul>`
+      : '';
+    const link = cr.commentUrl
+      ? `<a class="chip" href="${esc(cr.commentUrl)}" target="_blank" rel="noopener">${icon('git-pull-request')} review comment</a>`
+      : '';
+    box.classList.remove('hidden');
+    box.innerHTML = `
+      <div class="drawer-review-head">
+        <span class="tag">CODE REVIEW</span>
+        <span class="chip grade g${g}" title="Code review grade ${g}/5">${g}/5 — ${esc(GRADE_MEANINGS[g])}</span>
+        ${link}
+      </div>
+      ${cr.summary ? `<div class="drawer-review-summary">${esc(cr.summary)}</div>` : ''}
+      ${blockers}`;
+  }
+
   function renderDrawerHead(t) {
     $('#drawer-title').textContent = t.title;
     const codex = t.agent === 'codex';
@@ -1788,6 +1851,8 @@
     metaEl.onclick = (e) => {
       if (e.target.closest('[data-act="refresh-pr"]')) { e.preventDefault(); refreshPr(t.id, true); }
     };
+
+    renderCodeReview(t.codeReview);
 
     // The prompt block — always visible, even for a task that never ran. Tasks
     // spawned by a grooming show the original idea and the resulting prompt.
@@ -1909,6 +1974,7 @@
     if (g.numTurns != null) meta.push(`<span class="chip">${g.numTurns} turns</span>`);
     $('#drawer-meta').innerHTML = meta.join('');
     $('#drawer-meta').onclick = null;
+    renderCodeReview(null); // task-only block; a card has no code-review verdict
 
     const promptEl = $('#drawer-prompt');
     const isClarify = g.status === 'awaiting' && (g.questions || []).length > 0;
@@ -2024,6 +2090,7 @@
     if (o.turnCount) meta.push(`<span class="chip" title="Orchestrator turns so far">${o.turnCount} turn${o.turnCount === 1 ? '' : 's'}</span>`);
     $('#drawer-meta').innerHTML = meta.join('');
     $('#drawer-meta').onclick = null;
+    renderCodeReview(null); // task-only block; a card has no code-review verdict
 
     const promptEl = $('#drawer-prompt');
     const isAwaiting = o.status === 'awaiting';
@@ -2189,7 +2256,7 @@
   function appendEvent(ev) {
     const type = ev.type;
     if (type === 'prompt') {
-      const tag = ev.groom ? 'GROOMING' : ev.resume ? 'FOLLOW-UP' : 'PROMPT';
+      const tag = ev.groom ? 'GROOMING' : ev.codeReview ? 'CODE REVIEW' : ev.resume ? 'FOLLOW-UP' : 'PROMPT';
       addHtml(containerFor(ev), `
         <div class="ev-prompt">
           <span class="tag">${tag} · run ${ev.run || 1}</span>${esc(ev.text)}
@@ -4068,6 +4135,7 @@
     updateNotifNote();
     $('#setting-max-parallel').value = state.settings.maxParallelSessions || 3;
     $('#setting-merge-strategy').value = state.settings.mergeStrategy || 'merge';
+    $('#setting-min-merge-grade').value = String(state.settings.minMergeGrade || 4);
     $('#setting-auto-resolve-conflicts').checked = !!state.settings.autoResolveConflicts;
     $('#setting-assign-pr-to-self').checked = !!state.settings.assignPrToSelf;
     $('#setting-memory').checked = !!state.settings.memory;
@@ -4200,6 +4268,9 @@
   });
   $('#setting-merge-strategy').addEventListener('change', async (e) => {
     await saveSettings({ mergeStrategy: e.target.value });
+  });
+  $('#setting-min-merge-grade').addEventListener('change', async (e) => {
+    await saveSettings({ minMergeGrade: Number(e.target.value) });
   });
   $('#setting-auto-resolve-conflicts').addEventListener('change', async (e) => {
     await saveSettings({ autoResolveConflicts: e.target.checked });
@@ -4645,6 +4716,7 @@
           $('#setting-sounds').checked = soundsOn();
           $('#setting-max-parallel').value = state.settings.maxParallelSessions || 3;
           $('#setting-merge-strategy').value = state.settings.mergeStrategy || 'merge';
+          $('#setting-min-merge-grade').value = String(state.settings.minMergeGrade || 4);
           $('#setting-auto-resolve-conflicts').checked = !!state.settings.autoResolveConflicts;
           $('#setting-assign-pr-to-self').checked = !!state.settings.assignPrToSelf;
           $('#setting-memory').checked = !!state.settings.memory;

@@ -67,8 +67,8 @@ the background when the window is closed.
 
 ## Features
 
-- **Kanban board** — `Backlog → Ready → Running → Review → Done`, drag a card to
-  Running to dispatch.
+- **Kanban board** — `Backlog → Ready → Running → Code Review → Validation → Done`,
+  drag a card to Running to dispatch.
 - **Pick the agent per task** — **Claude Code** (default) or **OpenAI Codex**; each
   task carries its own backend and model, streamed to the same board.
 - **Live session stream** — every prompt, assistant message, and tool call with
@@ -108,10 +108,14 @@ the background when the window is closed.
 3. **Dispatch** — drag the card into **Running** (or hit *Create & Run*). Sr. Popo
    spawns the agent's CLI (`claude -p --output-format stream-json`, or
    `codex exec --json`) in the repo/worktree and streams everything live.
-4. **Review** — successful runs land in **Review**; failures show there with a red
-   badge. Click any card for the full session timeline and final cost/turns.
-5. **Follow-up** — resume a finished task from the composer, or drag it back to Running.
-6. **Done** — when you're happy, drag to Done, then *Remove worktree* / *Archive*. Merge
+4. **Code Review** — a successful run with an open PR flows into **Code Review**: a
+   fresh, read-only reviewer agent grades the branch 1–5, comments on the PR, and the
+   server labels it `mergeable/<n>`.
+5. **Validation** — the card lands in **Validation** with its grade for you to accept;
+   failures show there with a red badge. Click any card for the full session timeline
+   and final cost/turns.
+6. **Follow-up** — resume a finished task from the composer, or drag it back to Running.
+7. **Done** — when you're happy, drag to Done, then *Remove worktree* / *Archive*. Merge
    the `srpopo/*` branch however you normally would.
 
 ## Drive it from another agent (MCP)

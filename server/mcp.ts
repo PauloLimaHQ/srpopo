@@ -49,7 +49,7 @@ const TOOL_DEFS = [
     name: 'list_tasks',
     description:
       'List tasks on the board as compact summaries. Optionally filter by status ' +
-      '(backlog/ready/running/grooming/review/done/failed) and/or repoId. Archived ' +
+      '(backlog/ready/running/code_review/validation/done/failed) and/or repoId. Archived ' +
       'tasks are excluded unless includeArchived is true.',
     inputSchema: {
       type: 'object',

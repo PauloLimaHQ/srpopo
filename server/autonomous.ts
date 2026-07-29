@@ -5,7 +5,10 @@
  * The user queues tasks in `ready`, turns the mode on for a workspace with a
  * dollar budget, and the engine takes over: it dispatches each task (a single
  * `claude -p` run that already plans → builds → tests → self-reviews → opens a
- * PR), then when that PR is green it merges it and moves the task to `done`.
+ * PR), then when that PR is green it merges it and moves the task to `done` — but
+ * only once the Code Review stage has graded the branch at or above the configured
+ * minimum grade (Settings > minMergeGrade). A lower-graded task is left in
+ * `validation` for the human, with its grade on the card.
  *
  * The engine can be started with an empty `ready` queue: instead of ending, it
  * stands by and picks up tasks the moment they land in `ready` (it watches the
@@ -22,15 +25,15 @@
  * the tasks it dispatches (a blocked prompt would hang forever with no human to
  * answer). It does NOT elevate to bypassPermissions — it relies only on each
  * task's own allow-list, the add-on allow-lists, and the package-manager
- * defaults. A task that can't finish unattended simply lands in review/failed for
- * the human; the engine never grants extra privileges.
+ * defaults. A task that can't finish unattended simply lands in validation/failed
+ * for the human; the engine never grants extra privileges.
  *
  * The heavy boundaries (spawning claude, calling `gh`, git worktrees) are behind
  * an injectable `deps` object so the loop's pure logic — selection, budget, and
  * concurrency — is unit-testable without spawning any real process.
  *
  * Review mode (opt-in per session): when enabled, the engine does more than merge
- * a green PR. It also drives tasks that sit in `review` — the ones it dispatched
+ * a green PR. It also drives tasks that sit in `validation` — the ones it dispatched
  * *and* any already parked there — through an active review loop: it resumes the
  * task's session with a review prompt (bouncing it back to `running`), and when
  * that pass finishes it checks whether HEAD advanced. If the pass committed fixes
@@ -65,6 +68,9 @@ interface Deps {
   dispatch(task: Task): Promise<void>;
   // Resume a finished task's session with the review prompt. Sets status = 'running'.
   reviewDispatch(task: Task): Promise<void>;
+  // Start the Code Review stage: a fresh read-only reviewer session that grades
+  // the branch and comments on its PR. Sets status = 'code_review'.
+  codeReview(task: Task): Promise<void>;
   // Current HEAD sha in the task's working dir — how a review pass's change is detected.
   headSha(task: Task): Promise<string | null>;
   // Merge-safety check for the task's PR.
@@ -96,9 +102,24 @@ async function realReviewDispatch(task: Task): Promise<void> {
   runner.dispatch(task, framing.frameReviewPrompt(task), { resume: true });
 }
 
+// Default code review: resolve the task's PR (the reviewer comments on it, so an
+// open one is required) and start a fresh reviewer session over the branch.
+async function realCodeReview(task: Task): Promise<void> {
+  // The runner may already have flowed this task into its own code review the
+  // moment its run landed (see runner.maybeCodeReview) — both paths look the PR up
+  // asynchronously, so either can win. That run is exactly the one we wanted, so
+  // adopt it: the task stays tracked and onBus re-enters the merge decision when it
+  // lands in `validation`.
+  if (runner.isRunning(task.id)) return;
+  const { pr } = await github.prForTask(task);
+  if (!pr || pr.state !== 'open') throw new Error('Code review needs an open pull request');
+  runner.codeReview(task, pr);
+}
+
 const defaultDeps: Deps = {
   dispatch: realDispatch,
   reviewDispatch: realReviewDispatch,
+  codeReview: realCodeReview,
   headSha: (task) => git.headSha(task.worktreePath || task.repoPath),
   checkPr: (task) => github.prCheckForTask(task),
   merge: (task) => github.mergePrForTask(task, db.settings.mergeStrategy),
@@ -119,6 +140,12 @@ interface Session {
   running: Set<string>;
   // Subset of `running` whose live run is a review pass (a resume), not a build run.
   reviewing: Set<string>;
+  // Subset of `running` whose live run is a Code Review pass, so onBus knows to
+  // re-enter the merge decision (now with a grade) once it lands in `validation`.
+  codeReviewing: Set<string>;
+  // Every task this session started a code review for, so a task whose review
+  // produced no readable grade is handed to the human instead of reviewed forever.
+  codeReviewed: Set<string>;
   // Subset of `running` whose live run is a conflicts.resolveConflicts resume, so
   // onBus can re-run the merge decision (not a review pass or a fresh build) once
   // it lands.
@@ -165,17 +192,17 @@ function eligible(): Task[] {
   );
 }
 
-// The `review`, non-archived tasks in the session's repo that still want a review
-// pass (review mode only): resumable (they have a session to continue), not already
-// running, not yet settled or queued to merge, and under the per-task round cap.
-// Covers both tasks the engine dispatched and ones a human already parked in review.
+// The `validation`, non-archived tasks in the session's repo that still want a
+// review pass (review mode only): resumable (they have a session to continue), not
+// already running, not yet settled or queued to merge, and under the per-task round
+// cap. Covers tasks the engine dispatched and ones a human parked in validation.
 function eligibleReviews(): Task[] {
   if (!session || !session.reviewMode) return [];
   return db.tasks.filter(
     (t) =>
       !t.archived &&
       t.repoId === session!.repoId &&
-      t.status === 'review' &&
+      t.status === 'validation' &&
       !!t.sessionId &&
       !session!.running.has(t.id) &&
       !session!.settled.has(t.id) &&
@@ -322,6 +349,37 @@ async function startReviewPass(task: Task): Promise<void> {
   }
 }
 
+// Start the Code Review stage for a task on its way to a merge: a fresh read-only
+// reviewer session that grades the branch (see server/reviewer.ts). Ownership is
+// recorded first so budget/concurrency count it and onBus can re-enter the merge
+// decision when it lands; all of it is rolled back if the spawn throws, mirroring
+// startReviewPass.
+async function startCodeReview(task: Task): Promise<void> {
+  if (!session) return;
+  session.owned.add(task.id);
+  session.running.add(task.id);
+  session.codeReviewing.add(task.id);
+  session.codeReviewed.add(task.id);
+  try {
+    await deps.codeReview(task);
+    emit('code-reviewing');
+  } catch (e) {
+    // Couldn't review it — hand it back to the human, still parked in validation.
+    session.running.delete(task.id);
+    session.codeReviewing.delete(task.id);
+    session.settled.add(task.id);
+    task.lastError = (e as Error).message;
+    task.updatedAt = now();
+    save();
+    emit('code-review-error');
+  }
+}
+
+// The Code Review grade this session requires before it merges anything.
+function minMergeGrade(): number {
+  return db.settings.minMergeGrade || 4;
+}
+
 // Dispatch as much work — fresh runs and review passes — as budget + concurrency
 // allow, merging any approved reviews first (a merge needs no concurrency slot),
 // then settle. The re-entrancy guard collapses overlapping calls (e.g. two
@@ -338,7 +396,7 @@ async function pump(): Promise<void> {
       for (const id of [...session.toMerge]) {
         session.toMerge.delete(id);
         const t = getTask(id);
-        if (t && t.status === 'review' && !session.settled.has(id)) await mergeFlow(t);
+        if (t && t.status === 'validation' && !session.settled.has(id)) await mergeFlow(t);
         if (!session) return;
       }
       // Then start new runs up to budget + concurrency.
@@ -374,16 +432,37 @@ async function resolveReviewPass(task: Task): Promise<void> {
   await pump();
 }
 
-// A task is ready for its merge decision: only if the PR is green, merge it and
-// move to `done` (dropping the worktree, mirroring the existing move-to-done flow).
-// A conflicting PR is auto-resumed to fix itself when the user opted into that
-// (Settings > autoResolveConflicts) — the task stays owned and goes back to
-// `running`; onBus re-enters this same check once that resume run lands. Anything
-// else short of green is left in review for the human with a recorded reason.
-// Either way (merged, resolving, or left for the human) the task is settled or
-// re-tracked so the engine never picks it up twice for the same decision.
+// A task is ready for its merge decision. First the Code Review gate: an ungraded
+// task gets a fresh reviewer session (onBus comes back here once it lands in
+// `validation` with a grade), and a task graded below Settings > minMergeGrade is
+// never merged — it's left for the human with the grade on its card. Past the gate,
+// only a green PR is merged and moved to `done` (dropping the worktree, mirroring
+// the existing move-to-done flow). A conflicting PR is auto-resumed to fix itself
+// when the user opted into that (Settings > autoResolveConflicts) — the task stays
+// owned and goes back to `running`; onBus re-enters this same check once that
+// resume run lands. Anything else short of green is left in validation for the
+// human with a recorded reason. Either way (merged, reviewing, resolving, or left
+// for the human) the task is settled or re-tracked so the engine never picks it up
+// twice for the same decision.
 async function mergeFlow(task: Task): Promise<void> {
   if (!session) return;
+  if (!task.codeReview) {
+    if (!session.codeReviewed.has(task.id)) {
+      // Not graded yet — review it, then come back through onBus.
+      await startCodeReview(task);
+      return;
+    }
+    // Already reviewed once this session and still no readable grade: merging
+    // ungraded work is exactly what this gate exists to prevent.
+    session.settled.add(task.id);
+    emit('left-in-validation:no-grade');
+    return;
+  }
+  if (task.codeReview.grade < minMergeGrade()) {
+    session.settled.add(task.id);
+    emit(`left-in-validation:grade-${task.codeReview.grade}`);
+    return;
+  }
   const check = await deps.checkPr(task);
   if (!session) return;
   if (check.status === 'green') {
@@ -415,24 +494,26 @@ async function mergeFlow(task: Task): Promise<void> {
     session.resolvingConflicts.add(task.id);
     emit('resolving-conflicts');
   } else {
-    // Not safe to merge — leave it in review for the human. It stays owned so the
-    // engine won't redispatch it, and its cost still counts toward the budget.
+    // Not safe to merge — leave it in validation for the human. It stays owned so
+    // the engine won't redispatch it, and its cost still counts toward the budget.
     session.settled.add(task.id);
-    emit(`left-in-review:${check.status}`);
+    emit(`left-in-validation:${check.status}`);
   }
 }
 
-// A dispatched (non-review-mode) run reached `review`: grade its merge and pump.
-// The legacy path — a single green-only merge, no active review loop.
+// A dispatched (non-review-mode) run reached `validation`: grade its merge and
+// pump. The legacy path — a single green-only merge, no active review loop.
 async function handleReview(task: Task): Promise<void> {
   await mergeFlow(task);
   await pump();
 }
 
 // React to task events on the SSE bus. Two jobs:
-//  - owned runs reaching a terminal state — review (success), failed, or back to
-//    ready (a user stop) — acted on once per task by keying on session.running,
-//    which we clear on the first terminal event.
+//  - owned runs reaching a terminal state — validation (success), failed, or back
+//    to ready (a user stop) — acted on once per task by keying on session.running,
+//    which we clear on the first terminal event. A run mid-`code_review` is still
+//    in flight (the Code Review stage is a live child), so it is skipped like
+//    `running` and only acted on once it lands in `validation`.
 //  - any *other* task freshly sitting in `ready` for our repo — fresh work to pick
 //    up while we stand by, so we re-pump (pump is a no-op if nothing's eligible).
 function onBus(msg: unknown): void {
@@ -442,24 +523,30 @@ function onBus(msg: unknown): void {
   const task = m.task;
   if (!session.running.has(task.id)) {
     // Not one of our in-flight runs. If it's fresh work for our repo — a task that
-    // just entered `ready`, or (in review mode) one a human parked in `review` — it's
+    // just entered `ready`, or (in review mode) one a human parked in `validation` — it's
     // ours to grab while standing by, so re-pump. pump/eligibleReviews do the real
     // filtering, so this is just the wake-up (a no-op when nothing's eligible).
     const freshWork =
-      task.status === 'ready' || (session.reviewMode && task.status === 'review');
+      task.status === 'ready' || (session.reviewMode && task.status === 'validation');
     if (!session.stopping && task.repoId === session.repoId && freshWork && !session.owned.has(task.id)) {
       void pump();
     }
     return; // otherwise not ours, or already handled
   }
 
-  if (task.status === 'running') return; // still in flight — many events fire mid-run
+  // Still in flight — many events fire mid-run, and a task being graded by the
+  // Code Review stage is just as live as a `running` one.
+  if (task.status === 'running' || task.status === 'code_review') return;
   session.running.delete(task.id);
   const wasReviewPass = session.reviewing.delete(task.id);
   const wasConflictResolve = session.resolvingConflicts.delete(task.id);
+  const wasCodeReview = session.codeReviewing.delete(task.id);
 
-  if (task.status === 'review') {
-    if (wasConflictResolve || !session.reviewMode) {
+  if (task.status === 'validation') {
+    if (wasCodeReview) {
+      // A code review landed — re-enter the merge decision, now with a grade.
+      void handleReview(task);
+    } else if (wasConflictResolve || !session.reviewMode) {
       // A conflict-resolution resume landed, or legacy (non-review-mode): grade
       // the merge decision once — mergeFlow will notice if it's still conflicting
       // and, if so, resume it again itself.
@@ -468,7 +555,7 @@ function onBus(msg: unknown): void {
       // A review pass finished — decide clean-vs-changed and merge or re-review.
       void resolveReviewPass(task);
     } else {
-      // A build run reached review — a pump will pick it up for its first pass.
+      // A build run reached validation — a pump picks it up for its first pass.
       emit('review-queued');
       void pump();
     }
@@ -532,6 +619,8 @@ async function start(
     owned: new Set(),
     running: new Set(),
     reviewing: new Set(),
+    codeReviewing: new Set(),
+    codeReviewed: new Set(),
     resolvingConflicts: new Set(),
     reviewRounds: new Map(),
     reviewBase: new Map(),

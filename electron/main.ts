@@ -303,8 +303,10 @@ function formatElapsed(startedAt: string | null): string {
   return `${hrs}h ${mins % 60}m`;
 }
 
+// Tasks with a live agent child: a dispatched run, or a Code Review pass grading
+// the branch (see runner.codeReview) — both own the card while they last.
 function runningTasks() {
-  return store.db.tasks.filter((t) => t.status === 'running' && !t.archived);
+  return store.db.tasks.filter((t) => (t.status === 'running' || t.status === 'code_review') && !t.archived);
 }
 
 // ── desktop notifications ──

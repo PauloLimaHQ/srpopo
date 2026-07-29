@@ -53,7 +53,7 @@ const MAX_WATCH = 40;
 function statusContract(mode: OrchestrationMode): string[] {
   const watchWhen = mode === 'autonomous'
     ? 'reach "done" (merged by Autonomous Mode) or "failed"'
-    : 'reach "review" (finished, waiting on a human) or "failed"';
+    : 'reach "validation" (code-reviewed and waiting on a human) or "failed"';
   return [
     'HOW TO END EVERY TURN (non-negotiable):',
     'Finish each turn with exactly ONE JSON object between the two markers below, and NOTHING after it.',
@@ -101,8 +101,8 @@ function executionSection(mode: OrchestrationMode): string[] {
     '  2. call mcp__board__dispatch_task on each task you want running now.',
     'Respect the parallel-session cap: if dispatch_task fails with a capacity error, leave that task queued,',
     'say so in your note, and dispatch it on a later turn once the running ones land.',
-    'A worker that reaches "review" has finished and is waiting on a human to merge its PR; one that reaches',
-    '"failed" needs your judgment.',
+    'A worker that finishes is graded by a Code Review pass first, then parks in "validation" waiting on a',
+    'human to merge its PR; one that reaches "failed" needs your judgment.',
   ];
 }
 

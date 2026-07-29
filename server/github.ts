@@ -100,6 +100,67 @@ async function mergePrForTask(
   return { ok: true };
 }
 
+// ---------- the mergeable grade label ----------
+
+// The PR label that carries a task's Code Review grade (see server/reviewer.ts).
+// The server owns this label — it is derived from the parsed grade, never written
+// by the reviewer agent (which only posts the review comment).
+function mergeableLabel(grade: number): string {
+  return `mergeable/${grade}`;
+}
+
+// Every grade label, so a new grade can remove the other four in one `gh pr edit`.
+const MERGEABLE_LABELS: string[] = [1, 2, 3, 4, 5].map(mergeableLabel);
+
+// Red → green ramp for `gh label create --color` (hex, no leading '#').
+const MERGEABLE_LABEL_COLORS: Record<number, string> = {
+  1: 'b60205', // red — must not be merged
+  2: 'd93f0b', // orange-red — not mergeable yet
+  3: 'fbca04', // amber — mergeable with reservations
+  4: '4ac26b', // light green — only nits
+  5: '0e8a16', // green — good to go
+};
+
+/**
+ * Stamp a task's PR with its Code Review grade as the single `mergeable/<n>`
+ * label. Best-effort and non-throwing like its neighbors: it resolves the PR,
+ * creates the label if the repo doesn't have it yet (ignoring an "already exists"
+ * failure), then adds it while removing the other four grades so exactly one
+ * sticks. If that combined edit fails, the add is retried on its own so a grade
+ * still lands even when a removal is what `gh` objected to.
+ */
+async function setMergeableLabel(
+  task: Partial<Task>,
+  grade: number,
+): Promise<{ ok: boolean; reason?: string; message?: string }> {
+  const g = Math.trunc(Number(grade));
+  if (!Number.isFinite(g) || g < 1 || g > 5) return { ok: false, reason: 'bad-grade' };
+
+  const found = await prForTask(task);
+  if (!found.pr) return { ok: false, reason: found.reason || 'no-pr' };
+
+  const cwd = (task && (task.worktreePath || task.repoPath)) || undefined;
+  const name = mergeableLabel(g);
+
+  // Best-effort creation: the common case is that it already exists, which `gh`
+  // reports as a failure we deliberately ignore. A repo where we may not create
+  // labels also falls through here — the edit below is what actually reports.
+  await gh(cwd, [
+    'label', 'create', name,
+    '--color', MERGEABLE_LABEL_COLORS[g],
+    '--description', `Sr. Popo code review grade ${g}/5`,
+  ]);
+
+  const args = ['pr', 'edit', String(found.pr.number), '--add-label', name];
+  for (const other of MERGEABLE_LABELS) {
+    if (other !== name) args.push('--remove-label', other);
+  }
+  let res = await gh(cwd, args);
+  if (res.err) res = await gh(cwd, ['pr', 'edit', String(found.pr.number), '--add-label', name]);
+  if (res.err) return { ok: false, reason: classifyError(res), message: res.stderr.trim() || undefined };
+  return { ok: true };
+}
+
 // Resolve the PR (if any) associated with a task's head branch. Returns a typed,
 // non-throwing result: { pr: {...} } on success, otherwise { pr: null, reason }.
 async function prForTask(task: Partial<Task>): Promise<{ pr: PrInfo | null; reason?: string }> {
@@ -203,6 +264,10 @@ export {
   prForTask,
   mergePrForTask,
   prCheckForTask,
+  setMergeableLabel,
+  mergeableLabel,
+  MERGEABLE_LABELS,
+  MERGEABLE_LABEL_COLORS,
   parsePrList,
   classifyPrCheck,
   summarizeChecks,
