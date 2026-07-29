@@ -5,7 +5,7 @@ import readline from 'readline';
 import { db, save, now, appendLog } from './store';
 import { broadcast } from './bus';
 import * as groomer from './groomer';
-import * as queen from './queen';
+import * as orchestrator from './orchestrator';
 import { askPrompt } from './ask';
 import * as memory from './memory';
 import * as permissions from './permissions';
@@ -451,15 +451,16 @@ function groom(
 }
 
 /**
- * Run one turn of a hive orchestration's "queen" session: a read-only Claude
+ * Run one turn of a goal orchestration's orchestrator session: a read-only Claude
  * session that plans the goal and drives the board through Sr. Popo's own MCP
  * server (see orchestrateArgs in server/agents/claude.ts — research tools plus
  * the board tools, never a write tool and never a worktree).
  *
- * Every turn must end with one status object between the HIVE sentinels (see
- * server/queen.ts), which decides where the card lands:
- *   waiting  → `waiting`, with the watched task ids kept on the card so the hive
- *              engine (server/hive.ts) can resume this same session when they land
+ * Every turn must end with one status object between the ORCH sentinels (see
+ * server/orchestrator.ts), which decides where the card lands:
+ *   waiting  → `waiting`, with the watched task ids kept on the card so the
+ *              orchestrator engine (server/orchestrator-engine.ts) can resume this
+ *              same session when they land
  *   question → `awaiting`, paused on a question for the developer
  *   done     → `finished`
  *   blocked  → `failed`
@@ -486,8 +487,8 @@ function orchestrate(
     orchestration.sessionId = null;
     orchestration.watch = [];
     orchestration.note = null;
-    // The turn cap (hive.MAX_TURNS) counts turns of ONE queen session, so a
-    // fresh run of the goal starts the count over.
+    // The turn cap (orchestratorEngine.MAX_TURNS) counts turns of ONE orchestrator
+    // session, so a fresh run of the goal starts the count over.
     orchestration.turnCount = 0;
   }
   orchestration.runCount = (orchestration.runCount || 0) + 1;
@@ -497,7 +498,7 @@ function orchestrate(
 
   const prompt = resume
     ? resumePrompt!
-    : queen.metaPrompt(orchestration, memory.readMemory(orchestration.repoId));
+    : orchestrator.metaPrompt(orchestration, memory.readMemory(orchestration.repoId));
 
   return launch(orchestration, {
     adapter,
@@ -521,7 +522,7 @@ function orchestrate(
         return;
       }
       const succeeded = sawResult && !sawResult.isError;
-      const status = succeeded ? queen.parseStatus(sawResult.text) : null;
+      const status = succeeded ? orchestrator.parseStatus(sawResult.text) : null;
       if (!status) {
         orchestration.sessionId = null;
         orchestration.watch = [];

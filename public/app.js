@@ -25,6 +25,9 @@
     autoApprove: new Set(), // taskIds whose live run is in auto-approve ("AUTO MODE")
     autonomous: null, // live autonomous-session snapshot (from /api/state + `autonomous` SSE)
     usage: { period: '30d', repoId: '', summary: null }, // Settings → Usage panel (from /api/usage)
+    // Desktop hand-offs for the workspace quick actions (from /api/desktop): what
+    // this OS calls its file manager, and which IDEs are installed here.
+    desktop: { fileManager: 'file manager', editors: [] },
     askId: null, // the in-flight "Ask Sr. Popo" session id (see modal-ask), or null
     askText: '', // assistant text streamed so far for the open ask session
   };
@@ -64,9 +67,9 @@
   // grooming cards (their own draft/running/finished lifecycle), and is locked —
   // nothing is ever dragged into or out of it.
   const GROOMING_COLUMN = { key: 'grooming', label: 'Grooming', dot: '#c06fce' };
-  // Same idea for Hive Orchestration: a locked column of orchestration cards,
+  // Same idea for Goal Orchestration: a locked column of orchestration cards,
   // each one a goal an orchestrator agent is planning and coordinating.
-  const HIVE_COLUMN = { key: 'hive', label: 'Orchestration', dot: '#d1a03c' };
+  const ORCH_COLUMN = { key: 'orchestration', label: 'Orchestration', dot: '#d1a03c' };
   // failed tasks are surfaced in the Review column with a FAILED badge
   const COLUMN_OF_STATUS = {
     backlog: 'backlog', ready: 'ready', running: 'running',
@@ -96,7 +99,13 @@
       body: body ? JSON.stringify(body) : undefined,
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || `${method} ${url} failed (${res.status})`);
+    if (!res.ok) {
+      // Carry the status so a caller can branch on it (e.g. "no editor picked
+      // yet" → open the picker instead of toasting); most just read .message.
+      const e = new Error(data.error || `${method} ${url} failed (${res.status})`);
+      e.status = res.status;
+      throw e;
+    }
     return data;
   }
 
@@ -374,19 +383,19 @@
     }
 
     // Orchestration sits next to Grooming: also part of the process, also its
-    // own lifecycle, also locked (no drag in, no drag out). Shown when the Hive
+    // own lifecycle, also locked (no drag in, no drag out). Shown when the Goal
     // Orchestration plugin is installed, or when cards already exist.
-    if (pluginInstalled('hive') || repoOrchestrations.length) {
+    if (pluginInstalled('orchestration') || repoOrchestrations.length) {
       const orchestrations = repoOrchestrations
         .filter(orchestrationMatchesFilters)
         .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
       const colEl = document.createElement('div');
-      colEl.className = 'column hive-column';
-      colEl.dataset.col = HIVE_COLUMN.key;
+      colEl.className = 'column orch-column';
+      colEl.dataset.col = ORCH_COLUMN.key;
       colEl.innerHTML = `
         <div class="column-head">
-          <span class="dot" style="background:${HIVE_COLUMN.dot}"></span>
-          ${HIVE_COLUMN.label}
+          <span class="dot" style="background:${ORCH_COLUMN.dot}"></span>
+          ${ORCH_COLUMN.label}
           <span class="count">${orchestrations.length}</span>
         </div>
         <div class="column-body"></div>`;
@@ -517,10 +526,10 @@
       const col = COLUMN_OF_STATUS[t.status];
       counts.set(col, (counts.get(col) || 0) + 1);
     }
-    const segs = [GROOMING_COLUMN, HIVE_COLUMN, ...COLUMNS]
+    const segs = [GROOMING_COLUMN, ORCH_COLUMN, ...COLUMNS]
       .map((c) => ({
         c,
-        n: c.key === 'grooming' ? groomings.length : c.key === 'hive' ? orchestrations.length : counts.get(c.key),
+        n: c.key === 'grooming' ? groomings.length : c.key === 'orchestration' ? orchestrations.length : counts.get(c.key),
       }))
       .filter(({ n }) => n)
       .map(({ c, n }) =>
@@ -598,7 +607,9 @@
         ${w.taskId
           ? `<span class="chip worktree-task-link" data-task-link="${esc(w.taskId)}">${esc(w.taskTitle)} · ${esc(w.taskStatus)}</span>`
           : '<span class="muted">no task</span>'}
-        <button class="btn ghost icon" data-term-wt="${esc(w.path)}" title="Open a terminal here">${icon('terminal')}</button>
+        <button class="btn ghost icon" data-term-wt="${esc(w.path)}" title="Open a terminal here" aria-label="Open a terminal here">${icon('terminal')}</button>
+        <button class="btn ghost icon" data-reveal-wt="${esc(w.path)}" title="Reveal in ${esc(state.desktop.fileManager || 'file manager')}" aria-label="Reveal this worktree in your file manager">${icon('folder-open')}</button>
+        <button class="btn ghost icon" data-ide-wt="${esc(w.path)}" title="${esc(defaultEditor() ? `Open in ${defaultEditor().label}` : 'Open in IDE')}" aria-label="Open this worktree in your IDE" aria-haspopup="menu">${icon('code')}</button>
         ${live ? '' : `<button class="btn ghost danger" data-rm-wt="${esc(w.path)}" title="${w.dirty ? 'Has uncommitted changes' : 'Remove this worktree'}">Remove</button>`}
       </div>`;
     }).join('');
@@ -822,6 +833,149 @@
 
   $('#terminal-close').addEventListener('click', closeTerminal);
 
+  // ---- desktop quick actions (reveal in the file manager, open in an IDE) ----
+  // The way back out of the board into the developer's own tools. Both act on a
+  // checkout — the repo root, or a live worktree row in the workspace details
+  // modal — and are handled server-side (see server/desktop.ts), so they behave
+  // the same in the desktop app and in a browser tab.
+
+  const editors = () => state.desktop.editors || [];
+  const editorById = (id) => editors().find((e) => e.id === id) || null;
+  const defaultEditor = () => editorById(state.settings.defaultEditor || '');
+
+  // Pulled once at boot, and again after a rescan. Detection can't fail in a way
+  // worth surfacing — an empty catalog just means "no IDE found", which the
+  // picker says in words.
+  async function loadDesktop(refresh) {
+    try {
+      state.desktop = await api('GET', `/api/desktop${refresh ? '?refresh=1' : ''}`);
+    } catch { /* keep the previous (or default) catalog */ }
+    syncDesktopLabels();
+    renderEditorSetting();
+  }
+
+  // Keep every affordance naming the file manager or the chosen IDE honest —
+  // "Reveal in Finder" on a Mac, "Open in WebStorm" once WebStorm is the default.
+  function syncDesktopLabels() {
+    const fm = state.desktop.fileManager || 'file manager';
+    const ide = defaultEditor();
+    const ideTitle = ide ? `Open in ${ide.label}` : 'Open in IDE — pick an editor';
+    for (const [id, title] of [
+      ['#workspace-reveal', `Reveal in ${fm}`],
+      ['#workspace-ide', ideTitle],
+      ['#workspace-open-folder', `Reveal the repository in ${fm}`],
+      ['#workspace-open-ide', ideTitle],
+    ]) {
+      const el = $(id);
+      if (!el) continue;
+      el.title = title;
+      if (el.classList.contains('icon')) el.setAttribute('aria-label', title);
+    }
+    const folderLabel = $('#workspace-open-folder-label');
+    if (folderLabel) folderLabel.textContent = `Reveal in ${fm}`;
+    const ideLabel = $('#workspace-open-ide-label');
+    if (ideLabel) ideLabel.textContent = ide ? `Open in ${ide.label}` : 'Open in IDE';
+  }
+
+  async function revealPath(repoId, wtPath) {
+    try {
+      await api('POST', `/api/repos/${repoId}/reveal`, { path: wtPath || undefined });
+    } catch (e) {
+      toast(e.message || 'Failed to open the folder');
+    }
+  }
+
+  // Opens a checkout in the default IDE. With no default configured yet the
+  // picker opens under `anchor` instead, and the pick becomes the default — so
+  // the button works on first click without a detour through Settings.
+  async function openInIde(repoId, wtPath, anchor, editorId) {
+    const chosen = editorId || state.settings.defaultEditor || '';
+    if (!chosen) { openIdeMenu(anchor, repoId, wtPath); return; }
+    try {
+      await api('POST', `/api/repos/${repoId}/editor`, { path: wtPath || undefined, editor: chosen });
+    } catch (e) {
+      if (e.status === 409) { openIdeMenu(anchor, repoId, wtPath); return; }
+      toast(e.message || 'Failed to open the IDE');
+    }
+  }
+
+  // ---- IDE picker (anchored menu) ----
+  let idePick = null; // { repoId, wtPath, anchor } while the menu is open
+
+  function ideMenuOpen() {
+    return !$('#ide-menu').classList.contains('hidden');
+  }
+
+  function ideMenuHtml() {
+    const ready = editors().filter((e) => e.available);
+    const missing = editors().filter((e) => !e.available);
+    if (!ready.length) {
+      return `<div class="quick-menu-empty">
+        <p>No supported IDE found on this machine.</p>
+        <p class="field-hint">Sr. Popo looks for VS Code's <code>code</code> command and the JetBrains
+          launchers (<code>idea</code>, <code>webstorm</code>, …). Install one, then rescan from Settings.</p>
+      </div>`;
+    }
+    const rows = ready.map((e) => `
+      <button class="quick-menu-item" role="menuitem" data-editor="${esc(e.id)}">
+        ${icon('code')}<span class="quick-menu-label">${esc(e.label)}</span>
+      </button>`).join('');
+    const unavailable = missing.length
+      ? `<div class="quick-menu-note">Not found here: ${missing.map((e) => esc(e.label)).join(', ')}</div>`
+      : '';
+    return `<div class="quick-menu-title">Open in…</div>${rows}${unavailable}
+      <div class="quick-menu-note">Your pick becomes the default — change it in Settings → General.</div>`;
+  }
+
+  function openIdeMenu(anchor, repoId, wtPath) {
+    const menu = $('#ide-menu');
+    idePick = { repoId, wtPath, anchor: anchor || null };
+    menu.innerHTML = ideMenuHtml();
+    menu.classList.remove('hidden');
+    // Anchor under the button, clamped into the viewport (the menu is fixed, so
+    // it can sit over a modal without being clipped by it).
+    const rect = anchor ? anchor.getBoundingClientRect() : { bottom: 64, right: window.innerWidth - 16 };
+    const width = menu.offsetWidth;
+    menu.style.top = `${Math.round(rect.bottom + 6)}px`;
+    menu.style.left = `${Math.round(Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8)))}px`;
+    anchor?.setAttribute('aria-expanded', 'true');
+    menu.querySelector('.quick-menu-item')?.focus();
+  }
+
+  function closeIdeMenu() {
+    $('#ide-menu').classList.add('hidden');
+    idePick?.anchor?.setAttribute('aria-expanded', 'false');
+    idePick = null;
+  }
+
+  $('#ide-menu').addEventListener('click', async (e) => {
+    const id = e.target.closest('[data-editor]')?.dataset.editor;
+    if (!id || !idePick) return;
+    const { repoId, wtPath } = idePick;
+    closeIdeMenu();
+    await saveSettings({ defaultEditor: id });
+    syncDesktopLabels();
+    renderEditorSetting();
+    openInIde(repoId, wtPath, null, id);
+  });
+  // Arrow-key navigation, matching the workspace switcher's popover behavior.
+  $('#ide-menu').addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    const items = [...$('#ide-menu').querySelectorAll('.quick-menu-item')];
+    if (!items.length) return;
+    e.preventDefault();
+    const at = items.indexOf(document.activeElement);
+    const down = e.key === 'ArrowDown';
+    // With focus still on the menu itself, Down starts at the top and Up at the bottom.
+    const next = at === -1 ? (down ? 0 : items.length - 1) : at + (down ? 1 : -1);
+    items[(next + items.length) % items.length].focus();
+  });
+  document.addEventListener('click', (e) => {
+    if (!ideMenuOpen()) return;
+    if (e.target.closest('#ide-menu') || e.target === idePick?.anchor || idePick?.anchor?.contains(e.target)) return;
+    closeIdeMenu();
+  });
+
   // ---------- project memory ----------
   // A private, per-repo markdown document (see server/memory.ts) distilled in
   // the background after each finished task. Pull-based — fetched fresh each
@@ -866,6 +1020,15 @@
     const repoId = state.view.repoId;
     if (repoId) openTerminalAt(repoId);
   });
+  $('#workspace-reveal').addEventListener('click', () => {
+    const repoId = state.view.repoId;
+    if (repoId) revealPath(repoId);
+  });
+  $('#workspace-ide').addEventListener('click', (e) => {
+    if (ideMenuOpen()) { closeIdeMenu(); return; }
+    const repoId = state.view.repoId;
+    if (repoId) openInIde(repoId, null, e.currentTarget);
+  });
   $('#workspace-info').addEventListener('click', openWorkspacePopover);
   // Autonomous Mode: the header button starts a session (opens the budget modal)
   // or stops the one running for this workspace.
@@ -877,11 +1040,32 @@
     const repoId = state.view.repoId;
     if (repoId) openTerminalAt(repoId);
   });
+  $('#workspace-open-folder').addEventListener('click', () => {
+    const repoId = state.view.repoId;
+    if (repoId) revealPath(repoId);
+  });
+  $('#workspace-open-ide').addEventListener('click', (e) => {
+    if (ideMenuOpen()) { closeIdeMenu(); return; }
+    const repoId = state.view.repoId;
+    if (repoId) openInIde(repoId, null, e.currentTarget);
+  });
+  $('#workspace-copy-path').addEventListener('click', async () => {
+    const path = $('#workspace-info-path').textContent;
+    if (!path) return;
+    try {
+      await navigator.clipboard.writeText(path);
+      toast('Path copied', 'info');
+    } catch { toast('Could not copy the path'); }
+  });
   $('#workspace-worktree-list').addEventListener('click', async (e) => {
     const id = e.target.closest('[data-task-link]')?.dataset.taskLink;
     if (id) { $('#modal-workspace').classList.add('hidden'); openDrawer(id); return; }
     const termPath = e.target.closest('[data-term-wt]')?.dataset.termWt;
     if (termPath) { $('#modal-workspace').classList.add('hidden'); openTerminalAt(state.view.repoId, termPath); return; }
+    const revealBtn = e.target.closest('[data-reveal-wt]');
+    if (revealBtn) { revealPath(state.view.repoId, revealBtn.dataset.revealWt); return; }
+    const ideBtn = e.target.closest('[data-ide-wt]');
+    if (ideBtn) { openInIde(state.view.repoId, ideBtn.dataset.ideWt, ideBtn); return; }
     const wtPath = e.target.closest('[data-rm-wt]')?.dataset.rmWt;
     if (!wtPath) return;
     if (!confirm(`Remove worktree?\n${wtPath}\n\nThis discards any uncommitted changes in it.`)) return;
@@ -925,10 +1109,16 @@
       chips.push(`<span class="chip addon-chip" title="${draft ? 'Opens a draft pull request when finished' : 'Opens a pull request when finished'}">${icon('git-pull-request')} PR${draft ? ' (draft)' : ''}</span>`);
     }
     if (t.addons && t.addons.includes('code_review')) chips.push(`<span class="chip addon-chip" title="Self code-reviews and fixes issues before finishing">${icon('search')} review</span>`);
-    (t.personas || []).forEach((pid) => {
-      const p = state.personas.find((x) => x.id === pid);
-      chips.push(`<span class="chip persona-chip" title="${esc(p ? p.hint : 'persona')}">${icon('persona')} ${esc(p ? p.label : pid)}</span>`);
-    });
+    // Auto-detection replaces the hand-picked personas at dispatch, so show one
+    // or the other — never both, which would misdescribe what actually runs.
+    if (t.autoPersona) {
+      chips.push(`<span class="chip persona-chip" title="Picks its own expert persona before starting">${icon('sparkles')} auto persona</span>`);
+    } else {
+      (t.personas || []).forEach((pid) => {
+        const p = state.personas.find((x) => x.id === pid);
+        chips.push(`<span class="chip persona-chip" title="${esc(p ? p.hint : 'persona')}">${icon('persona')} ${esc(p ? p.label : pid)}</span>`);
+      });
+    }
     if (t.costUsd > 0) chips.push(`<span class="chip cost">$${t.costUsd.toFixed(2)}</span>`);
     if (t.status === 'failed') chips.push(`<span class="chip badge-failed">FAILED</span>`);
     if (t.lastOutcome === 'stopped') chips.push(`<span class="chip badge-stopped">stopped</span>`);
@@ -1064,7 +1254,7 @@
     return `<div class="groom-tasks">` + o.taskIds.map((id) => {
       const t = state.tasks.get(id);
       const watching = (o.watch || []).includes(id);
-      return `<button type="button" class="groom-task-link${watching ? ' hive-watching' : ''}" data-task-link="${esc(id)}" ${t ? '' : 'disabled'}
+      return `<button type="button" class="groom-task-link${watching ? ' orch-watching' : ''}" data-task-link="${esc(id)}" ${t ? '' : 'disabled'}
           ${watching ? 'title="The orchestrator is waiting on this task"' : ''}>
           ${icon('chevron-right')} <span class="groom-task-title">${esc(t ? t.title : 'task (removed)')}</span>${t ? `<span class="chip">${esc(t.status)}</span>` : ''}
         </button>`;
@@ -1076,7 +1266,7 @@
   // on workers (blue), needs input (amber), finished (green), failed (red).
   function renderOrchestrationCard(o) {
     const el = document.createElement('div');
-    el.className = `card hive hive-${o.status}`;
+    el.className = `card orch orch-${o.status}`;
     el.draggable = false;
     el.dataset.id = o.id;
 
@@ -1084,7 +1274,7 @@
       `<span class="chip model">${esc(o.model === 'default' ? (o.resolvedModel || 'default') : o.model)}</span>`,
     ];
     if (o.mode === 'autonomous') {
-      chips.push(`<span class="chip hive-mode" title="Worker tasks are dispatched and merged by Autonomous Mode">${icon('bot')} autonomous</span>`);
+      chips.push(`<span class="chip orch-mode" title="Worker tasks are dispatched and merged by Autonomous Mode">${icon('bot')} autonomous</span>`);
     }
     if (o.status === 'draft') chips.push(`<span class="chip badge-draft">DRAFT</span>`);
     if (o.status === 'waiting') chips.push(`<span class="chip badge-waiting">${icon('loader')} WATCHING</span>`);
@@ -1099,16 +1289,16 @@
       statusRow = `
         <div class="card-status">
           <span class="spinner"></span>
-          <span class="live-label hive-live-label">orchestrating</span>
+          <span class="live-label orch-live-label">orchestrating</span>
           <span class="elapsed" data-start="${esc(o.startedAt)}">${elapsedSince(o.startedAt)}</span>
           <button class="btn icon danger card-stop" data-action="stop" title="Stop orchestration" aria-label="Stop orchestration">${icon('square')}</button>
         </div>`;
     }
 
-    // The queen's latest word — what it's waiting on, its question, or its
+    // The orchestrator's latest word — what it's waiting on, its question, or its
     // closing summary — is the single most useful line on the card.
     const note = o.note
-      ? `<div class="hive-note${o.status === 'awaiting' ? ' hive-note-awaiting' : ''}">${o.status === 'awaiting' ? icon('circle-help') : ''}${esc(String(o.note).slice(0, 200))}</div>`
+      ? `<div class="orch-note${o.status === 'awaiting' ? ' orch-note-awaiting' : ''}">${o.status === 'awaiting' ? icon('circle-help') : ''}${esc(String(o.note).slice(0, 200))}</div>`
       : '';
 
     el.innerHTML = `
@@ -1423,7 +1613,7 @@
     } catch (e) { toast(e.message); }
   }
 
-  // The same drawer again, showing an orchestration card: its goal, the queen
+  // The same drawer again, showing an orchestration card: its goal, the orchestrator
   // session's timeline, the worker tasks it spawned, and (when it asked
   // something) a reply box.
   async function openOrchestrationDrawer(orchestrationId) {
@@ -1677,9 +1867,9 @@
     }
     if (o.status === 'draft' || o.status === 'failed') {
       actions.push({ id: 'run', label: 'Orchestrate', icon: 'crown', cls: 'primary',
-        run: () => openHiveModal(o) });
+        run: () => openOrchestrateModal(o) });
       actions.push({ id: 'edit', label: 'Edit', icon: 'pencil', cls: 'ghost',
-        run: () => { openHiveModal(o); } });
+        run: () => { openOrchestrateModal(o); } });
     }
     // An awaiting card answers via the drawer form; this is the escape hatch to
     // discard the question and re-plan the goal from scratch.
@@ -1970,12 +2160,12 @@
   // Send the developer's free-text answer to a paused (awaiting) orchestration
   // and resume its session.
   async function submitOrchestrationReply(o) {
-    const form = $('#hive-reply-form');
+    const form = $('#orchestrate-reply-form');
     if (!form) return;
-    const input = form.querySelector('.hive-reply-input');
+    const input = form.querySelector('.orch-reply-input');
     const reply = input ? input.value.trim() : '';
     if (!reply) { toast('Type an answer first'); return; }
-    const btn = form.querySelector('.hive-reply-send');
+    const btn = form.querySelector('.orch-reply-send');
     if (btn) btn.disabled = true;
     try {
       await api('POST', `/api/orchestrations/${o.id}/reply`, { reply });
@@ -1993,14 +2183,14 @@
     return `
       <div class="tag">NEEDS INPUT</div>
       <p class="groom-clarify-hint">The orchestrator is paused on this question — answer below to continue.</p>
-      <div class="hive-question">${esc(o.note || 'It asked for input but recorded no question.')}</div>
-      <form class="hive-reply" id="hive-reply-form">
-        <textarea class="hive-reply-input groom-q-textinput" rows="3" placeholder="Type your answer…"></textarea>
-        <button type="submit" class="btn primary hive-reply-send">${icon('crown')} Answer &amp; continue</button>
+      <div class="orch-question">${esc(o.note || 'It asked for input but recorded no question.')}</div>
+      <form class="orch-reply" id="orchestrate-reply-form">
+        <textarea class="orch-reply-input groom-q-textinput" rows="3" placeholder="Type your answer…"></textarea>
+        <button type="submit" class="btn primary orch-reply-send">${icon('crown')} Answer &amp; continue</button>
       </form>`;
   }
 
-  const HIVE_STATUS_LABEL = {
+  const ORCH_STATUS_LABEL = {
     draft: 'draft',
     running: 'orchestrating…',
     waiting: 'watching workers',
@@ -2014,10 +2204,10 @@
     const meta = [
       `<span class="chip repo">${esc(o.repoName)}</span>`,
       `<span class="chip model">${esc(o.resolvedModel || o.model)}</span>`,
-      `<span class="chip hive-status hive-status-${esc(o.status)}">${esc(HIVE_STATUS_LABEL[o.status] || o.status)}</span>`,
+      `<span class="chip orch-status orch-status-${esc(o.status)}">${esc(ORCH_STATUS_LABEL[o.status] || o.status)}</span>`,
     ];
     if (o.mode === 'autonomous') {
-      meta.push(`<span class="chip hive-mode" title="Worker tasks are dispatched and merged by Autonomous Mode">${icon('bot')} autonomous</span>`);
+      meta.push(`<span class="chip orch-mode" title="Worker tasks are dispatched and merged by Autonomous Mode">${icon('bot')} autonomous</span>`);
     }
     if (o.sessionId) meta.push(`<span class="chip" title="session id">${esc(o.sessionId.slice(0, 8))}…</span>`);
     if (o.costUsd > 0) meta.push(`<span class="chip cost">$${o.costUsd.toFixed(2)} total</span>`);
@@ -2043,14 +2233,14 @@
       const link = e.target.closest('[data-task-link]');
       if (link && !link.disabled) openDrawer(link.dataset.taskLink);
     };
-    const replyForm = promptEl.querySelector('#hive-reply-form');
+    const replyForm = promptEl.querySelector('#orchestrate-reply-form');
     if (replyForm) {
       replyForm.onsubmit = (e) => { e.preventDefault(); submitOrchestrationReply(o); };
       // Same rule as the grooming clarify form: focus the answer box, but never
       // yank focus away from someone already typing on an unrelated re-render.
       if (!promptEl.contains(document.activeElement)) {
         promptEl.scrollTop = 0;
-        const field = promptEl.querySelector('.hive-reply-input');
+        const field = promptEl.querySelector('.orch-reply-input');
         if (field) field.focus({ preventScroll: true });
       }
     }
@@ -2437,34 +2627,31 @@
     selectEl.disabled = !branches.length;
   }
 
-  // Optional task behaviors — checkboxes derived from the /api/addons catalog.
-  // These render below the worktree toggle inside the "Extra behavior" section.
-  // The `pull_request` addon gets an extra sibling control (like the branch-name
-  // field under the worktree toggle) so both PR modes — ready for review or
-  // draft — are one click away instead of needing a second setting elsewhere.
+  // Optional task behaviors — icon toggle chips derived from the /api/addons
+  // catalog, sitting in the same row as the worktree toggle so the whole set of
+  // "extra behavior" costs one line instead of a stack of labelled checkboxes.
+  // The `pull_request` addon gets a sibling segmented control so both PR modes —
+  // ready for review or draft — are one click away; it stays inert until the
+  // addon itself is on.
   function renderAddonOptions(selected = [], prDraft = false) {
     const chosen = new Set(selected);
     $('#task-addon-list').innerHTML = state.addons.map((a) => {
       const checked = chosen.has(a.id);
-      const prMode = a.id !== 'pull_request' ? '' : `
-        <div class="pr-mode ${checked ? '' : 'pr-mode-disabled'}" role="radiogroup" aria-label="Pull request mode">
-          <label class="pr-mode-option">
-            <input type="radio" name="task-pr-mode" value="ready" ${prDraft ? '' : 'checked'} ${checked ? '' : 'disabled'} />
-            Ready for review
+      const chip = `
+        <label class="opt-chip" title="${esc(a.hint || a.label)}">
+          <input type="checkbox" data-addon="${esc(a.id)}" ${checked ? 'checked' : ''} />
+          ${icon(a.icon || 'sparkles')}${esc(a.short || a.label)}
+        </label>`;
+      if (a.id !== 'pull_request') return chip;
+      return chip + `
+        <span class="seg pr-mode ${checked ? '' : 'pr-mode-disabled'}" role="radiogroup" aria-label="Pull request mode">
+          <label class="seg-opt" title="Open the pull request ready for review">
+            <input type="radio" name="task-pr-mode" value="ready" ${prDraft ? '' : 'checked'} ${checked ? '' : 'disabled'} />Ready
           </label>
-          <label class="pr-mode-option">
-            <input type="radio" name="task-pr-mode" value="draft" ${prDraft ? 'checked' : ''} ${checked ? '' : 'disabled'} />
-            Draft
+          <label class="seg-opt" title="Open the pull request as a draft">
+            <input type="radio" name="task-pr-mode" value="draft" ${prDraft ? 'checked' : ''} ${checked ? '' : 'disabled'} />Draft
           </label>
-        </div>`;
-      return `
-      <label class="check addon">
-        <input type="checkbox" data-addon="${esc(a.id)}" ${checked ? 'checked' : ''} />
-        <span class="addon-text">
-          <span class="addon-label">${esc(a.label)}</span>
-          ${a.hint ? `<span class="addon-hint">${esc(a.hint)}</span>` : ''}
-        </span>
-      </label>${prMode}`;
+        </span>`;
     }).join('');
     // Enable/disable the ready-vs-draft radios as the PR checkbox is toggled —
     // the choice only means something once "Create a Pull Request" is checked.
@@ -2524,8 +2711,10 @@
   function renderPersonaChips() {
     const box = $('#task-persona-chips');
     const ids = selectedPersonas();
+    // No placeholder text when nothing is picked — the "Persona" button next to
+    // it already says what the control is, and the row stays one line tall.
     if (!ids.length) {
-      box.innerHTML = '<span class="persona-empty">No persona — the agent works as itself.</span>';
+      box.innerHTML = '';
       return;
     }
     box.innerHTML = ids.map((id) => {
@@ -2590,7 +2779,6 @@
     personaPicker.activeIndex = 0;
     renderPersonaMenu();
     $('#task-persona-search').focus();
-    $('#task-persona-menu').scrollIntoView({ block: 'nearest' });
   }
 
   function closePersonaMenu() {
@@ -2647,6 +2835,23 @@
     if (personaMenuOpen() && !e.target.closest('.persona-picker')) closePersonaMenu();
   });
 
+  // "Auto persona" hands the choice to the run itself (it picks an expert hat
+  // from the same catalog before it starts), so the manual picker is hidden
+  // while it's on. The selection is kept, not cleared — turning it back off
+  // restores whatever was chosen.
+  function syncAutoPersona() {
+    const auto = $('#task-auto-persona').checked;
+    $('#task-persona-menu').closest('.persona-picker').classList.toggle('hidden', auto);
+    if (auto) closePersonaMenu();
+  }
+  $('#task-auto-persona').addEventListener('change', syncAutoPersona);
+
+  // The branch-name override only means anything for a worktree run.
+  function syncWorktreeFields() {
+    $('#task-branch-field').classList.toggle('hidden', !$('#task-worktree').checked);
+  }
+  $('#task-worktree').addEventListener('change', syncWorktreeFields);
+
   // Remember the settings used on the last created task so a new task defaults
   // to them instead of the hardcoded defaults — no need to re-pick every time.
   const LAST_USED_KEY = 'srpopo.lastTaskSettings';
@@ -2665,6 +2870,7 @@
         addons: fields.addons,
         prDraft: fields.prDraft,
         personas: fields.personas,
+        autoPersona: fields.autoPersona,
         repoId,
       }));
     } catch { /* storage unavailable — non-fatal */ }
@@ -2678,27 +2884,57 @@
   let stagedFiles = [];
   let savedAttachments = [];
 
+  // Extensions the server will hand back through the attachment preview route
+  // (server/index.ts PREVIEW_TYPES). Anything else gets a file glyph instead.
+  const PREVIEWABLE = /\.(png|jpe?g|gif|webp|avif|bmp)$/i;
+
+  // Object URLs for staged image files, so a dropped screenshot shows a real
+  // thumbnail before the task (and therefore the upload route) exists. Revoked
+  // when the file is removed or the modal is reopened, so nothing leaks.
+  const stagedPreviews = new Map(); // File -> object URL
+
+  function releaseStagedPreviews() {
+    stagedPreviews.forEach((url) => URL.revokeObjectURL(url));
+    stagedPreviews.clear();
+  }
+
+  function stagedPreviewUrl(file) {
+    if (!PREVIEWABLE.test(file.name)) return '';
+    if (!stagedPreviews.has(file)) stagedPreviews.set(file, URL.createObjectURL(file));
+    return stagedPreviews.get(file);
+  }
+
+  // One attachment as a compact card with a thumbnail — the "mini preview" a
+  // modern prompt input shows for whatever you dropped on it.
+  function attachmentCard(removeAttr, key, name, size, url) {
+    const thumb = url
+      ? `<img class="att-thumb" src="${esc(url)}" alt="" />`
+      : `<span class="att-thumb att-glyph">${icon(PREVIEWABLE.test(name) ? 'image' : 'file')}</span>`;
+    return `<div class="att-card" title="${esc(name)} · ${esc(fmtBytes(size))}">
+        ${thumb}
+        <span class="att-meta">
+          <span class="att-name">${esc(name)}</span>
+          <span class="att-size">${esc(fmtBytes(size))}</span>
+        </span>
+        <button type="button" class="att-x" ${removeAttr}="${esc(key)}"
+                title="Remove" aria-label="Remove ${esc(name)}">${icon('x')}</button>
+      </div>`;
+  }
+
   function renderAttachments() {
-    const rows = [];
-    savedAttachments.forEach((a) => {
-      rows.push(`<div class="attachment-row" data-saved="${esc(a.name)}">` +
-        `<span class="i" data-icon="paperclip"></span>` +
-        `<span class="attachment-name">${esc(a.name)}</span>` +
-        `<span class="attachment-size">${fmtBytes(a.size)}</span>` +
-        `<button type="button" class="icon-btn attachment-remove" data-remove-saved="${esc(a.name)}" ` +
-        `title="Remove" aria-label="Remove ${esc(a.name)}">${icon('x')}</button></div>`);
-    });
-    stagedFiles.forEach((f, i) => {
-      rows.push(`<div class="attachment-row" data-staged="${i}">` +
-        `<span class="i" data-icon="paperclip"></span>` +
-        `<span class="attachment-name">${esc(f.name)}</span>` +
-        `<span class="attachment-size">${fmtBytes(f.size)}</span>` +
-        `<button type="button" class="icon-btn attachment-remove" data-remove-staged="${i}" ` +
-        `title="Remove" aria-label="Remove ${esc(f.name)}">${icon('x')}</button></div>`);
-    });
+    const cards = [
+      ...savedAttachments.map((a) => attachmentCard(
+        'data-remove-saved', a.name, a.name, a.size,
+        editingTaskId && PREVIEWABLE.test(a.name)
+          ? `/api/tasks/${editingTaskId}/attachments/${encodeURIComponent(a.name)}/preview`
+          : '')),
+      ...stagedFiles.map((f, i) => attachmentCard(
+        'data-remove-staged', String(i), f.name, f.size, stagedPreviewUrl(f))),
+    ];
     const el = $('#task-attachment-list');
-    el.innerHTML = rows.join('');
-    if (window.srpopoIcons) window.srpopoIcons.hydrate(el);
+    el.innerHTML = cards.join('');
+    // Collapse the tray entirely when there's nothing attached.
+    el.classList.toggle('hidden', !cards.length);
   }
 
   function fmtBytes(n) {
@@ -2744,6 +2980,7 @@
 
   function openTaskModal(task = null) {
     editingTaskId = task ? task.id : null;
+    releaseStagedPreviews();
     stagedFiles = [];
     savedAttachments = task ? (task.attachments || []).slice() : [];
     renderAttachments();
@@ -2766,8 +3003,13 @@
     $('#task-branch').value = task ? (task.branchName || '') : '';
     // The branch is fixed once the worktree is materialized.
     $('#task-branch').disabled = !!(task && task.worktreePath);
+    syncWorktreeFields();
     renderAddonOptions(task ? (task.addons || []) : (last.addons || []), task ? !!task.prDraft : !!last.prDraft);
     initPersonaPicker(task ? (task.personas || []) : (last.personas || []));
+    $('#task-auto-persona').checked = task ? !!task.autoPersona : !!last.autoPersona;
+    syncAutoPersona();
+    // Advanced starts folded away, and only unfolds when it has something to show.
+    $('#task-advanced').open = !!($('#task-branch').value || $('#task-allowed-tools').value);
     $('#task-repo-field').classList.toggle('hidden', !!task);
     if (task) $('#task-repo').value = task.repoId;
     else if (currentWorkspaceRepoId()) $('#task-repo').value = currentWorkspaceRepoId();
@@ -2780,9 +3022,9 @@
     refreshBaseBranchPicker($('#task-repo').value, $('#task-base-branch'), task ? task.baseBranch : null)
       .then(() => { if (baseLocked) $('#task-base-branch').disabled = true; });
 
-    $('#task-modal-title').textContent = task ? 'Edit Task' : 'New Task';
-    $('#task-create').textContent = task ? 'Save' : 'Create in Backlog';
-    $('#task-create-run').innerHTML = `${task ? 'Save & Run' : 'Create & Run'} ${icon('play')}`;
+    $('#task-modal-title').innerHTML = `${icon(task ? 'pencil' : 'sparkles')}${task ? 'Edit Task' : 'New Task'}`;
+    $('#task-create').innerHTML = `${icon('inbox')}${task ? 'Save' : 'Create in Backlog'}`;
+    $('#task-create-run').innerHTML = `${icon('play')}${task ? 'Save & Run' : 'Create & Run'}`;
 
     $('#modal-task').classList.remove('hidden');
     $('#task-title').focus();
@@ -2807,6 +3049,9 @@
       addons: selectedAddons(),
       prDraft: selectedPrDraft(),
       personas: selectedPersonas(),
+      // When on, the run picks its own hat and `personas` is ignored server-side
+      // — but we still send the selection so toggling it back off restores it.
+      autoPersona: $('#task-auto-persona').checked,
     };
     try {
       let task;
@@ -2820,6 +3065,7 @@
         // Uploads are keyed by task id, so they wait until the task exists.
         for (const f of stagedFiles) task = await uploadAttachment(task.id, f);
         stagedFiles = [];
+        releaseStagedPreviews();
       }
       state.tasks.set(task.id, task);
       $('#modal-task').classList.add('hidden');
@@ -2877,28 +3123,58 @@
     } catch (e) { toast(e.message); }
   });
 
-  // ---------- attachments (picker + drag-and-drop) ----------
+  // ---------- attachments (picker + drop-on-the-prompt + paste) ----------
   $('#task-add-files').addEventListener('click', () => $('#task-file-input').click());
   $('#task-file-input').addEventListener('change', (e) => {
     addFiles(e.target.files);
     e.target.value = ''; // let the same file be re-picked later
   });
-  const dropzone = $('#task-dropzone');
-  ['dragover', 'dragenter'].forEach((ev) => dropzone.addEventListener(ev, (e) => {
+
+  // Files can be dropped anywhere on the modal — the composer lights up to show
+  // where they land. Only file drags count, so dragging text around the prompt
+  // doesn't flash the overlay. The depth counter survives dragenter/dragleave
+  // firing once per nested child element.
+  function dragHasFiles(e) {
+    return !!e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files');
+  }
+  const taskComposer = $('#task-composer');
+  let taskDragDepth = 0;
+  function stopDropping() {
+    taskDragDepth = 0;
+    taskComposer.classList.remove('dropping');
+  }
+  $('#modal-task').addEventListener('dragenter', (e) => {
+    if (!dragHasFiles(e)) return;
     e.preventDefault();
-    dropzone.classList.add('dragging');
-  }));
-  ['dragleave', 'dragend'].forEach((ev) => dropzone.addEventListener(ev, () => dropzone.classList.remove('dragging')));
-  dropzone.addEventListener('drop', (e) => {
-    e.preventDefault();
-    dropzone.classList.remove('dragging');
-    if (e.dataTransfer && e.dataTransfer.files) addFiles(e.dataTransfer.files);
+    taskDragDepth++;
+    taskComposer.classList.add('dropping');
   });
+  // Without a preventDefault on dragover the browser refuses the drop (and a
+  // miss would navigate the whole window to the dropped file).
+  $('#modal-task').addEventListener('dragover', (e) => { if (dragHasFiles(e)) e.preventDefault(); });
+  $('#modal-task').addEventListener('dragleave', () => { if (--taskDragDepth <= 0) stopDropping(); });
+  $('#modal-task').addEventListener('drop', (e) => {
+    if (!dragHasFiles(e)) return;
+    e.preventDefault();
+    stopDropping();
+    addFiles(e.dataTransfer.files);
+  });
+  // Paste a screenshot straight into the prompt: attach it instead of letting
+  // the textarea swallow the paste.
+  $('#task-prompt').addEventListener('paste', (e) => {
+    const files = Array.from((e.clipboardData && e.clipboardData.files) || []);
+    if (!files.length) return;
+    e.preventDefault();
+    addFiles(files);
+  });
+
   // Remove an attachment: staged files drop from the list; saved ones hit the delete route.
   $('#task-attachment-list').addEventListener('click', async (e) => {
     const staged = e.target.closest('[data-remove-staged]');
     if (staged) {
-      stagedFiles.splice(Number(staged.dataset.removeStaged), 1);
+      const [file] = stagedFiles.splice(Number(staged.dataset.removeStaged), 1);
+      const url = stagedPreviews.get(file);
+      if (url) { URL.revokeObjectURL(url); stagedPreviews.delete(file); }
       renderAttachments();
       return;
     }
@@ -3087,9 +3363,9 @@
     refreshRepoBranchHint($('#brief-repo').value, $('#brief-repo-branch'));
   });
 
-  // ---------- orchestrate a goal (hive) ----------
-  function refreshHiveRepoSelect() {
-    const sel = $('#hive-repo');
+  // ---------- orchestrate a goal ----------
+  function refreshOrchRepoSelect() {
+    const sel = $('#orchestrate-repo');
     if (!sel) return;
     sel.innerHTML = state.repos.length
       ? state.repos.map((r) => `<option value="${r.id}">${esc(r.name)} — ${esc(r.path)}</option>`).join('')
@@ -3097,71 +3373,71 @@
   }
 
   // null => new orchestration; a card => edit that draft (or failed card).
-  let hiveEditingId = null;
+  let orchEditingId = null;
 
-  function syncHiveAutonomousFields() {
-    $('#hive-autonomous-fields').classList.toggle('hidden', !$('#hive-autonomous').checked);
+  function syncOrchAutonomousFields() {
+    $('#orchestrate-autonomous-fields').classList.toggle('hidden', !$('#orchestrate-autonomous').checked);
   }
 
   // Running an existing card goes through this modal too (rather than firing a
   // bare POST like grooming's "Groom" action): a run has to decide whether to
   // hand execution to Autonomous Mode, and that choice belongs to the user.
-  function openHiveModal(orchestration = null) {
+  function openOrchestrateModal(orchestration = null) {
     // Guard: the header button passes its click event here — treat it as "new".
     if (!orchestration || !orchestration.id) orchestration = null;
-    hiveEditingId = orchestration ? orchestration.id : null;
-    refreshHiveRepoSelect();
+    orchEditingId = orchestration ? orchestration.id : null;
+    refreshOrchRepoSelect();
     const last = loadLastUsed();
-    $('#hive-text').value = orchestration ? orchestration.goal : '';
-    $('#hive-model').value = orchestration ? (orchestration.model || 'default') : (last.model || 'default');
+    $('#orchestrate-text').value = orchestration ? orchestration.goal : '';
+    $('#orchestrate-model').value = orchestration ? (orchestration.model || 'default') : (last.model || 'default');
     // The Autonomous hand-off needs its own plugin; without it, offer manual mode only.
     const canAuto = pluginInstalled('autonomous');
-    $('#hive-autonomous').closest('.check').classList.toggle('hidden', !canAuto);
-    $('#hive-autonomous').checked = canAuto && !!orchestration && orchestration.mode === 'autonomous';
-    syncHiveAutonomousFields();
+    $('#orchestrate-autonomous').closest('.check').classList.toggle('hidden', !canAuto);
+    $('#orchestrate-autonomous').checked = canAuto && !!orchestration && orchestration.mode === 'autonomous';
+    syncOrchAutonomousFields();
     // The repo is fixed once the card exists — hide the picker in edit mode.
-    $('#hive-repo-field').classList.toggle('hidden', !!orchestration);
-    if (orchestration) $('#hive-repo').value = orchestration.repoId;
-    else if (currentWorkspaceRepoId()) $('#hive-repo').value = currentWorkspaceRepoId();
-    else if (last.repoId && state.repos.some((r) => r.id === last.repoId)) $('#hive-repo').value = last.repoId;
-    refreshRepoBranchHint($('#hive-repo').value, $('#hive-repo-branch'));
-    $('#hive-modal-title').innerHTML = `${icon('crown')}${orchestration ? 'Edit Goal' : 'Orchestrate a Goal'}`;
-    $('#hive-draft').textContent = orchestration ? 'Save Draft' : 'Save as Draft';
-    $('#modal-hive').classList.remove('hidden');
-    $('#hive-text').focus();
+    $('#orchestrate-repo-field').classList.toggle('hidden', !!orchestration);
+    if (orchestration) $('#orchestrate-repo').value = orchestration.repoId;
+    else if (currentWorkspaceRepoId()) $('#orchestrate-repo').value = currentWorkspaceRepoId();
+    else if (last.repoId && state.repos.some((r) => r.id === last.repoId)) $('#orchestrate-repo').value = last.repoId;
+    refreshRepoBranchHint($('#orchestrate-repo').value, $('#orchestrate-repo-branch'));
+    $('#orchestrate-modal-title').innerHTML = `${icon('crown')}${orchestration ? 'Edit Goal' : 'Orchestrate a Goal'}`;
+    $('#orchestrate-draft').textContent = orchestration ? 'Save Draft' : 'Save as Draft';
+    $('#modal-orchestrate').classList.remove('hidden');
+    $('#orchestrate-text').focus();
   }
 
   // The Autonomous hand-off config to send along with a run, or undefined for
   // plain manual mode (the orchestrator dispatches its own tasks).
-  function hiveAutonomousPayload() {
-    if (!$('#hive-autonomous').checked) return undefined;
-    const budgetUsd = Number($('#hive-budget').value);
+  function orchAutonomousPayload() {
+    if (!$('#orchestrate-autonomous').checked) return undefined;
+    const budgetUsd = Number($('#orchestrate-budget').value);
     if (!Number.isFinite(budgetUsd) || budgetUsd <= 0) throw new Error('Enter an autonomous budget greater than 0');
-    return { budgetUsd, reviewMode: $('#hive-review-mode').checked };
+    return { budgetUsd, reviewMode: $('#orchestrate-review-mode').checked };
   }
 
   // Create (or update) an orchestration card. `run` starts the orchestrator
   // session right away; otherwise the card is parked as a gray draft.
-  async function submitHive(run) {
-    const goal = $('#hive-text').value.trim();
-    const repoId = $('#hive-repo').value;
+  async function submitOrchestrate(run) {
+    const goal = $('#orchestrate-text').value.trim();
+    const repoId = $('#orchestrate-repo').value;
     if (!goal) { toast('Describe your goal first'); return; }
-    if (!hiveEditingId && !repoId) { toast('Add a repository first'); return; }
+    if (!orchEditingId && !repoId) { toast('Add a repository first'); return; }
     let autonomousOpts;
-    try { autonomousOpts = run ? hiveAutonomousPayload() : undefined; }
+    try { autonomousOpts = run ? orchAutonomousPayload() : undefined; }
     catch (e) { toast(e.message); return; }
-    const fields = { goal, model: $('#hive-model').value };
+    const fields = { goal, model: $('#orchestrate-model').value };
     try {
       let orchestration;
-      if (hiveEditingId) {
-        orchestration = await api('PATCH', `/api/orchestrations/${hiveEditingId}`, fields);
+      if (orchEditingId) {
+        orchestration = await api('PATCH', `/api/orchestrations/${orchEditingId}`, fields);
         if (run) orchestration = await api('POST', `/api/orchestrations/${orchestration.id}/run`, { autonomous: autonomousOpts });
       } else {
         orchestration = await api('POST', '/api/orchestrations', { ...fields, repoId, run: !!run, autonomous: autonomousOpts });
       }
       state.orchestrations.set(orchestration.id, orchestration);
-      $('#modal-hive').classList.add('hidden');
-      hiveEditingId = null;
+      $('#modal-orchestrate').classList.add('hidden');
+      orchEditingId = null;
       renderBoard();
       if (run) {
         toast('Planning your goal into worker tasks…', 'info');
@@ -3170,20 +3446,20 @@
     } catch (e) { toast(e.message); }
   }
 
-  $('#btn-hive').addEventListener('click', () => openHiveModal());
-  $('#hive-cancel').addEventListener('click', () => $('#modal-hive').classList.add('hidden'));
-  $('#hive-submit').addEventListener('click', () => submitHive(true));
-  $('#hive-draft').addEventListener('click', () => submitHive(false));
-  $('#hive-autonomous').addEventListener('change', syncHiveAutonomousFields);
-  $('#hive-text').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submitHive(true);
+  $('#btn-orchestrate').addEventListener('click', () => openOrchestrateModal());
+  $('#orchestrate-cancel').addEventListener('click', () => $('#modal-orchestrate').classList.add('hidden'));
+  $('#orchestrate-submit').addEventListener('click', () => submitOrchestrate(true));
+  $('#orchestrate-draft').addEventListener('click', () => submitOrchestrate(false));
+  $('#orchestrate-autonomous').addEventListener('change', syncOrchAutonomousFields);
+  $('#orchestrate-text').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submitOrchestrate(true);
   });
-  $('#hive-add-repo').addEventListener('click', () => {
-    $('#modal-hive').classList.add('hidden');
+  $('#orchestrate-add-repo').addEventListener('click', () => {
+    $('#modal-orchestrate').classList.add('hidden');
     openReposModal();
   });
-  $('#hive-repo').addEventListener('change', () => {
-    refreshRepoBranchHint($('#hive-repo').value, $('#hive-repo-branch'));
+  $('#orchestrate-repo').addEventListener('change', () => {
+    refreshRepoBranchHint($('#orchestrate-repo').value, $('#orchestrate-repo-branch'));
   });
 
   // ---------- create task from linear ----------
@@ -3687,11 +3963,11 @@
   // Orchestration cards notify/chime only on the states that actually want the
   // developer's attention — a turn ending in `waiting` is the engine doing its
   // job, and announcing every one of those would be noise.
-  const HIVE_NOTIFY_STATES = ['awaiting', 'finished', 'failed'];
+  const ORCH_NOTIFY_STATES = ['awaiting', 'finished', 'failed'];
 
   function maybeNotifyOrchestrationBrowser(prev, o) {
     if (isElectron || !notificationsOn()) return;
-    if (!prev || prev.status !== 'running' || !HIVE_NOTIFY_STATES.includes(o.status)) return;
+    if (!prev || prev.status !== 'running' || !ORCH_NOTIFY_STATES.includes(o.status)) return;
     if (o.lastOutcome === 'stopped') return;
     let title, body;
     if (o.status === 'awaiting') {
@@ -3709,7 +3985,7 @@
   }
 
   function maybePlayOrchestrationSound(prev, o) {
-    if (!prev || prev.status !== 'running' || !HIVE_NOTIFY_STATES.includes(o.status)) return;
+    if (!prev || prev.status !== 'running' || !ORCH_NOTIFY_STATES.includes(o.status)) return;
     if (o.lastOutcome === 'stopped') return;
     playSound(o.status === 'failed' ? 'failed' : 'finish');
   }
@@ -3734,7 +4010,7 @@
   // Autonomous control. (The Grooming column itself is gated in renderBoard.)
   function renderPluginState() {
     $('#btn-brief').classList.toggle('hidden', !pluginInstalled('grooming'));
-    $('#btn-hive').classList.toggle('hidden', !pluginInstalled('hive'));
+    $('#btn-orchestrate').classList.toggle('hidden', !pluginInstalled('orchestration'));
     $('#btn-linear').classList.toggle('hidden', !pluginInstalled('linear'));
     $('#btn-specs').classList.toggle('hidden', !pluginInstalled('repo-specs'));
     renderAutonomous();
@@ -3763,8 +4039,10 @@
     const sess = autonomousForWorkspace();
     if (installed && inWorkspace) {
       btn.innerHTML = sess
-        ? `${icon('square')} Stop Autonomous`
-        : `${icon('bot')} Autonomous`;
+        ? `${icon('square')} <span class="btn-label">Stop Autonomous</span>`
+        : `${icon('bot')} <span class="btn-label">Autonomous</span>`;
+      btn.title = sess ? 'Stop Autonomous Mode' : 'Autonomous Mode';
+      btn.setAttribute('aria-label', btn.title);
       btn.classList.toggle('danger', !!sess);
     }
 
@@ -4071,6 +4349,7 @@
     $('#setting-auto-resolve-conflicts').checked = !!state.settings.autoResolveConflicts;
     $('#setting-assign-pr-to-self').checked = !!state.settings.assignPrToSelf;
     $('#setting-memory').checked = !!state.settings.memory;
+    renderEditorSetting();
     renderPlugins();
     renderCustomModels();
     renderRemoteAccess();
@@ -4083,6 +4362,45 @@
       state.settings = await api('PATCH', '/api/settings', patch);
     } catch (e) { toast(e.message); }
   }
+
+  // ---------- default IDE (Settings → General → External tools) ----------
+  // The <select> lists every editor Sr. Popo knows how to launch; the ones it
+  // can't find on this machine stay selectable but are marked, so choosing one
+  // (e.g. before installing its launcher) is possible without being a trap.
+  function renderEditorSetting() {
+    const sel = $('#setting-default-editor');
+    if (!sel) return;
+    const current = state.settings.defaultEditor || '';
+    const options = editors().map((e) => `<option value="${esc(e.id)}"${e.available ? '' : ' data-missing="1"'}>${esc(e.label)}${e.available ? '' : ' — not found'}</option>`).join('');
+    sel.innerHTML = `<option value="">Ask me each time</option>${options}`;
+    // A default naming an editor this machine doesn't have would silently fail on
+    // click; keep it selected anyway (it may be a shared db.json / a pending
+    // install) — the note below spells out why nothing happens.
+    if (current && !editors().some((e) => e.id === current)) {
+      sel.insertAdjacentHTML('beforeend', `<option value="${esc(current)}">${esc(current)} — unknown</option>`);
+    }
+    sel.value = current;
+    // Warn when the chosen editor isn't installed here — otherwise clicking
+    // "Open in IDE" would just toast an error with no hint of why. The note goes
+    // after the <label>, not inside it (a <p> isn't valid label content).
+    $('#setting-editor-missing')?.remove();
+    const chosen = editorById(current);
+    if (chosen && !chosen.available) {
+      sel.closest('label').insertAdjacentHTML('afterend',
+        `<p class="addon-hint warn" id="setting-editor-missing">${icon('triangle-alert')} <span>${esc(chosen.label)} isn't on this machine yet. ${esc(chosen.hint)}</span></p>`);
+    }
+  }
+
+  $('#setting-default-editor').addEventListener('change', async (e) => {
+    await saveSettings({ defaultEditor: e.target.value });
+    syncDesktopLabels();
+    renderEditorSetting();
+  });
+  $('#setting-editor-rescan').addEventListener('click', async () => {
+    await loadDesktop(true);
+    const found = editors().filter((x) => x.available).length;
+    toast(found ? `Found ${found} editor${found === 1 ? '' : 's'}` : 'No supported editor found', 'info');
+  });
 
   // ---------- custom models ----------
   const customModels = () => state.settings.customModels || [];
@@ -4380,8 +4698,8 @@
       ...(pluginInstalled('grooming')
         ? [{ label: 'Brief an Idea', hint: 'Groom a rough idea into tasks', icon: 'lightbulb', run: () => openBriefModal() }]
         : []),
-      ...(pluginInstalled('hive')
-        ? [{ label: 'Orchestrate a Goal', hint: 'Let an orchestrator agent plan and drive it', icon: 'crown', run: () => openHiveModal() }]
+      ...(pluginInstalled('orchestration')
+        ? [{ label: 'Orchestrate a Goal', hint: 'Let an orchestrator agent plan and drive it', icon: 'crown', run: () => openOrchestrateModal() }]
         : []),
       ...(pluginInstalled('linear')
         ? [{ label: 'Create Task from Linear', hint: 'Import an assigned issue', icon: 'linear', run: () => openLinearModal() }]
@@ -4602,6 +4920,14 @@
   $('#drawer-overlay').addEventListener('click', closeDrawer);
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
+      // The IDE picker can float over the workspace modal, so it gets Escape
+      // first: dismiss just the menu and hand focus back to its button.
+      if (ideMenuOpen()) {
+        const anchor = idePick?.anchor;
+        closeIdeMenu();
+        anchor?.focus();
+        return;
+      }
       closeDrawer();
       closeContextMenu();
       closeWorkspacePicker();
@@ -4649,11 +4975,14 @@
           $('#setting-assign-pr-to-self').checked = !!state.settings.assignPrToSelf;
           $('#setting-memory').checked = !!state.settings.memory;
           updateNotifNote();
+          renderEditorSetting();
           renderPlugins();
           renderCustomModels();
           renderRemoteAccess();
         }
         syncCustomModelOptions();
+        // The default IDE names the header/modal buttons, so re-label on change.
+        syncDesktopLabels();
         if (!$('#modal-linear').classList.contains('hidden')) renderLinearConfigState();
         renderBoard();
       } else if (msg.type === 'task-removed') {
@@ -4686,7 +5015,7 @@
         renderRepoList();
         refreshRepoSelect();
         refreshBriefRepoSelect();
-        refreshHiveRepoSelect();
+        refreshOrchRepoSelect();
         refreshLinearRepoSelect();
         // Fall back to the Super View if the workspace's own repo was just removed.
         if (state.view.mode === 'workspace' && !state.repos.some((r) => r.id === state.view.repoId)) exitWorkspace();
@@ -4802,6 +5131,9 @@
       state.plugins = (await api('GET', '/api/plugins')).plugins || [];
     } catch { state.plugins = []; }
     renderPluginState();
+
+    // Labels the Finder/IDE quick actions ("Reveal in Finder", "Open in WebStorm").
+    await loadDesktop();
 
     try {
       const h = await api('GET', '/api/health');

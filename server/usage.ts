@@ -108,8 +108,8 @@ function applyGroomResult(grooming: Grooming, event: Record<string, unknown>): v
   for (const e of entries) store.appendUsage(e);
 }
 
-// Called from runner.ts's `result` handler for every hive orchestrator ("queen")
-// turn. Ledgered like a grooming session — it is the same kind of read-only
+// Called from runner.ts's `result` handler for every orchestrator turn.
+// Ledgered like a grooming session — it is the same kind of read-only
 // planning session — so an orchestration's own spend shows up in the Usage panel
 // alongside the worker runs it spawned.
 function applyOrchestrationResult(orchestration: Orchestration, event: Record<string, unknown>): void {

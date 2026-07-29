@@ -1,8 +1,8 @@
 /*
- * Hive orchestration — the "queen" session's prompts and status parser.
+ * Goal Orchestration — the orchestrator session's prompts and status parser.
  *
- * A queen is a read-only `claude -p` session that owns ONE high-level goal for
- * ONE repo. It plans the goal, spawns worker tasks onto the Kanban board through
+ * The orchestrator is a read-only `claude -p` session that owns ONE high-level goal
+ * for ONE repo. It plans the goal, spawns worker tasks onto the Kanban board through
  * Sr. Popo's own MCP server (server/mcp.ts, registered as `board` — see
  * orchestrateArgs in server/agents/claude.ts), watches what those workers do,
  * and coordinates follow-ups until the goal is met. It never edits the repo
@@ -16,7 +16,7 @@
  *   - `nudgePrompt()`     — the "you asked to wait on nothing" self-heal,
  *   - `parseStatus(text)` — recovers the one status object each turn must end with.
  *
- * Every turn ends with exactly one JSON object between the HIVE sentinels, in
+ * Every turn ends with exactly one JSON object between the ORCH sentinels, in
  * one of four states:
  *   { "state": "waiting",  "watch": [taskIds], "note": "…" }  → watch those workers
  *   { "state": "question", "note": "…" }                      → ask the developer
@@ -26,23 +26,23 @@
 import * as sentinels from './sentinels';
 import type { Orchestration, OrchestrationMode, Task } from './types';
 
-const HIVE_START = '@@SRPOPO_HIVE_START@@';
-const HIVE_END = '@@SRPOPO_HIVE_END@@';
+const ORCH_START = '@@SRPOPO_ORCH_START@@';
+const ORCH_END = '@@SRPOPO_ORCH_END@@';
 
-// The four ways a queen turn can end. They map onto the orchestration's own
+// The four ways an orchestrator turn can end. They map onto the orchestration's own
 // lifecycle: waiting → 'waiting', question → 'awaiting', done → 'finished',
 // blocked → 'failed'.
-export type QueenState = 'waiting' | 'question' | 'done' | 'blocked';
+export type OrchestratorState = 'waiting' | 'question' | 'done' | 'blocked';
 
-export interface QueenStatus {
-  state: QueenState;
+export interface OrchestratorStatus {
+  state: OrchestratorState;
   // Worker task ids to watch — only meaningful for 'waiting'.
   watch: string[];
   // What it's waiting on / the question it asks / the closing summary.
   note: string;
 }
 
-const STATES: QueenState[] = ['waiting', 'question', 'done', 'blocked'];
+const STATES: OrchestratorState[] = ['waiting', 'question', 'done', 'blocked'];
 
 // How many watched task ids we accept from one turn. Generous, but bounded so a
 // runaway answer can't bloat the record or the next status prompt.
@@ -70,15 +70,15 @@ function statusContract(mode: OrchestrationMode): string[] {
     '      — something is genuinely wrong and no further worker task would help.',
     '',
     'Emit the object between these exact markers:',
-    HIVE_START,
+    ORCH_START,
     '{ "state": "waiting", "watch": ["abc123"], "note": "…" }',
-    HIVE_END,
+    ORCH_END,
   ];
 }
 
-// How the queen must create work, given how it will be executed. In autonomous
+// How the orchestrator must create work, given how it will be executed. In autonomous
 // hand-off the engine dispatches/reviews/merges (so tasks are created `ready`
-// with the lifecycle add-ons); in manual mode the queen dispatches them itself.
+// with the lifecycle add-ons); in manual mode the orchestrator dispatches them itself.
 function executionSection(mode: OrchestrationMode): string[] {
   if (mode === 'autonomous') {
     return [
@@ -106,7 +106,7 @@ function executionSection(mode: OrchestrationMode): string[] {
   ];
 }
 
-// The brief that opens a queen session. `repoId` is handed over explicitly
+// The brief that opens an orchestrator session. `repoId` is handed over explicitly
 // because every mcp__board__create_task call needs it, and the session has no
 // other way to know which registered repo it is standing in.
 function metaPrompt(
@@ -196,9 +196,9 @@ function taskLine(task: Task): string {
   return line;
 }
 
-// The follow-up that resumes a waiting queen once its watched workers landed.
+// The follow-up that resumes a waiting orchestrator once its watched workers landed.
 // `tasks` are the watched tasks as they stand right now (missing ones — deleted
-// on the board — are reported so the queen doesn't keep waiting on a ghost).
+// on the board — are reported so the orchestrator doesn't keep waiting on a ghost).
 function statusPrompt(orchestration: Pick<Orchestration, 'watch' | 'mode'>, tasks: Task[]): string {
   const found = new Set(tasks.map((t) => t.id));
   const missing = (orchestration.watch || []).filter((id) => !found.has(id));
@@ -223,7 +223,7 @@ function statusPrompt(orchestration: Pick<Orchestration, 'watch' | 'mode'>, task
   return lines.join('\n');
 }
 
-// The follow-up that resumes a queen paused on a question, carrying the
+// The follow-up that resumes an orchestrator paused on a question, carrying the
 // developer's free-text answer.
 function replyPrompt(question: string | null, reply: string, mode: OrchestrationMode): string {
   return [
@@ -262,9 +262,9 @@ function deriveTitle(goal: unknown): string {
 
 // Recover the status object a turn ends with. Returns null when the payload is
 // missing, unparseable, or carries no recognized state — the caller then treats
-// the turn as a failure rather than silently guessing what the queen meant.
-function parseStatus(text: unknown): QueenStatus | null {
-  const obj = sentinels.parseObject(text, HIVE_START, HIVE_END);
+// the turn as a failure rather than silently guessing what the orchestrator meant.
+function parseStatus(text: unknown): OrchestratorStatus | null {
+  const obj = sentinels.parseObject(text, ORCH_START, ORCH_END);
   if (!obj) return null;
   const raw = typeof obj.state === 'string' ? obj.state.trim().toLowerCase() : '';
   const state = STATES.find((s) => s === raw);
@@ -285,6 +285,6 @@ export {
   nudgePrompt,
   parseStatus,
   deriveTitle,
-  HIVE_START,
-  HIVE_END,
+  ORCH_START,
+  ORCH_END,
 };

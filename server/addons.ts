@@ -22,12 +22,23 @@ import { db } from './store';
 interface Addon {
   id: string;
   label: string;
+  // Compact name for the New Task modal's chip row. `label` stays the long,
+  // self-explanatory form — it doubles as the heading of the injected prompt
+  // block — so the chip needs its own two-word version. Falls back to `label`.
+  short?: string;
   hint: string;
   instruction: string;
+  // Glyph name from public/icons.js, so the board can render the add-on as an
+  // icon chip instead of a bare checkbox. Unknown/missing falls back client-side.
+  icon?: string;
   // Alternate instruction used instead of `instruction` when the caller asks
   // for the draft variant (currently only `pull_request` sets this — see
   // `instructionsFor`'s `prDraft` option).
   draftInstruction?: string;
+  // Kept out of `catalog()`, so it never shows up as a checkbox in the New Task
+  // modal, while `instructionsFor`/`allowedToolsFor` still honor it for the
+  // internal callers that apply it themselves (see `code_review`).
+  hidden?: boolean;
   allow?: string[];
 }
 
@@ -35,7 +46,9 @@ const ADDONS: Addon[] = [
   {
     id: 'pull_request',
     label: 'Create a Pull Request at the end',
+    short: 'Pull Request',
     hint: 'Commit the work and open a PR when the task is finished.',
+    icon: 'git-pull-request',
     instruction: [
       'When you have finished the task, commit your changes and open a pull request:',
       '- Stage and commit all changes with a clear, conventional commit message.',
@@ -70,7 +83,15 @@ const ADDONS: Addon[] = [
   {
     id: 'code_review',
     label: 'Always do a code review after finish and fix issues',
+    short: 'Self review',
     hint: 'Review your own diff, then fix anything you find before wrapping up.',
+    icon: 'search',
+    // Not offered as a per-task checkbox any more — the New Task modal is a
+    // composer, not a settings sheet, and a self-review is a wrap-up policy
+    // rather than a per-prompt decision. It stays defined because the unattended
+    // paths still apply it by id: Autonomous Mode's REQUIRED_ADDONS
+    // (server/autonomous.ts) and the orchestrator's worker recipe (server/orchestrator.ts).
+    hidden: true,
     instruction: [
       'After you believe the task is complete, do a thorough self code review before finishing:',
       '- Review the full diff of your changes for correctness bugs, edge cases,',
@@ -91,8 +112,10 @@ const ADDONS: Addon[] = [
 const byId = new Map(ADDONS.map((a) => [a.id, a]));
 
 // Lightweight catalog for the UI — the full instruction text stays server-side.
-function catalog(): Array<Pick<Addon, 'id' | 'label' | 'hint'>> {
-  return ADDONS.map(({ id, label, hint }) => ({ id, label, hint }));
+// Hidden add-ons are omitted: they're applied programmatically, not chosen.
+function catalog(): Array<Pick<Addon, 'id' | 'label' | 'short' | 'hint' | 'icon'>> {
+  return ADDONS.filter((a) => !a.hidden)
+    .map(({ id, label, short, hint, icon }) => ({ id, label, short, hint, icon }));
 }
 
 // Keep only known ids, deduped, in catalog order.

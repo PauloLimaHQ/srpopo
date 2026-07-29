@@ -38,6 +38,7 @@ export interface CreateTaskInput {
   addons?: unknown;
   prDraft?: unknown;
   personas?: unknown;
+  autoPersona?: unknown;
   allowedTools?: unknown;
   branchName?: unknown;
   baseBranch?: unknown;
@@ -78,6 +79,7 @@ export function createTask(input: CreateTaskInput): Task {
     addons: addons.sanitize(input.addons),
     prDraft: !!input.prDraft,
     personas: personas.sanitize(input.personas),
+    autoPersona: !!input.autoPersona,
     attachments: [],
     useWorktree: !!input.useWorktree,
     worktreePath: null,

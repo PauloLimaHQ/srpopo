@@ -21,8 +21,8 @@ import * as addons from './addons';
 import * as permissions from './permissions';
 import * as personas from './personas';
 import * as groomer from './groomer';
-import * as queen from './queen';
-import * as hive from './hive';
+import * as orchestrator from './orchestrator';
+import * as orchestratorEngine from './orchestrator-engine';
 import { readMemory } from './ask';
 import * as github from './github';
 import * as linear from './linear';
@@ -33,6 +33,7 @@ import * as conflicts from './conflicts';
 import * as prRefresh from './pr-refresh';
 import * as framing from './framing';
 import * as terminal from './terminal';
+import * as desktop from './desktop';
 import * as usage from './usage';
 import * as taskService from './tasks';
 import * as mcp from './mcp';
@@ -234,6 +235,7 @@ function publicSettings(): PublicSettings {
     remoteAccessConfigured: !!(db.settings.remoteAccessToken && db.settings.remoteAccessToken.trim()),
     customModels: db.settings.customModels || [],
     memory: !!db.settings.memory,
+    defaultEditor: db.settings.defaultEditor || '',
   };
 }
 
@@ -362,6 +364,7 @@ function spawnGroomedTasks(grooming: Grooming, specs: GroomSpec[]): string[] {
       addons: ['pull_request'],
       prDraft: false,
       personas: [],
+      autoPersona: false,
       attachments: [],
       useWorktree: true,
       worktreePath: null,
@@ -525,6 +528,12 @@ app.patch('/api/settings', (req: Request, res: Response) => {
   if ('autoResolveConflicts' in req.body) db.settings.autoResolveConflicts = !!req.body.autoResolveConflicts;
   if ('assignPrToSelf' in req.body) db.settings.assignPrToSelf = !!req.body.assignPrToSelf;
   if ('memory' in req.body) db.settings.memory = !!req.body.memory;
+  // The "Open in IDE" quick action's editor. Only a known catalog id sticks;
+  // an empty string clears it (back to the button asking which editor to use).
+  if ('defaultEditor' in req.body) {
+    const id = String(req.body.defaultEditor || '').trim();
+    if (!id || desktop.EDITORS.some((e) => e.id === id)) db.settings.defaultEditor = id;
+  }
   // Custom models (e.g. Amazon Bedrock): the board sends the full desired list;
   // we sanitize it into clean entries (invalid rows dropped, API key stripped).
   if ('customModels' in req.body) db.settings.customModels = sanitizeCustomModels(req.body.customModels);
@@ -734,20 +743,27 @@ app.post('/api/repos/:id/worktrees/remove', async (req: Request, res: Response) 
   }
 });
 
+// Resolves the checkout a "work on this here" action targets: the repo root by
+// default, or one of its live worktrees. Anything else is rejected — the board
+// only ever sends a path it got from `git worktree list`, and re-checking it here
+// keeps these routes from being pointed at an arbitrary filesystem location.
+// Returns null when the path isn't a checkout of this repo.
+async function resolveRepoTarget(repo: Repo, rawPath: unknown): Promise<string | null> {
+  const target = rawPath ? String(rawPath) : repo.path;
+  if (target === repo.path) return target;
+  const live = await git.listWorktrees(repo.path);
+  return live.some((w) => w.path === target) ? target : null;
+}
+
 // Opens an in-app shell session rooted at the repo root or one of its live
 // worktrees, so the user can drop into a terminal on the checkout they're
-// viewing without leaving Sr. Popo. The starting path is validated against the
-// repo root and `git worktree list` first so it can't be pointed at an
-// arbitrary filesystem location. Returns the new session id; the board then
+// viewing without leaving Sr. Popo. Returns the new session id; the board then
 // streams it via GET /api/terminal/:id/stream.
 app.post('/api/repos/:id/terminal', async (req: Request, res: Response) => {
   const repo = db.repos.find((r) => r.id === req.params.id);
   if (!repo) return err(res, 404, 'Repo not found');
-  const target = req.body?.path ? String(req.body.path) : repo.path;
-  if (target !== repo.path) {
-    const live = await git.listWorktrees(repo.path);
-    if (!live.some((w) => w.path === target)) return err(res, 404, 'Path not found');
-  }
+  const target = await resolveRepoTarget(repo, req.body?.path);
+  if (!target) return err(res, 404, 'Path not found');
   const cols = Number(req.body?.cols) || 80;
   const rows = Number(req.body?.rows) || 24;
   try {
@@ -755,6 +771,50 @@ app.post('/api/repos/:id/terminal', async (req: Request, res: Response) => {
     res.json({ id: tid, cwd: target });
   } catch (e) {
     err(res, 500, (e as Error).message);
+  }
+});
+
+// ---------- desktop hand-offs (Finder / IDE quick actions) ----------
+
+// What the board needs to label and populate the quick actions: the OS file
+// manager's name, and which editors are actually installed on this machine.
+app.get('/api/desktop', (req: Request, res: Response) => {
+  res.json({
+    fileManager: desktop.FILE_MANAGER_LABEL,
+    editors: desktop.detect(req.query.refresh === '1'),
+    defaultEditor: db.settings.defaultEditor || '',
+  });
+});
+
+// Reveals a checkout in the OS file manager (Finder / File Explorer / xdg-open).
+app.post('/api/repos/:id/reveal', async (req: Request, res: Response) => {
+  const repo = db.repos.find((r) => r.id === req.params.id);
+  if (!repo) return err(res, 404, 'Repo not found');
+  const target = await resolveRepoTarget(repo, req.body?.path);
+  if (!target) return err(res, 404, 'Path not found');
+  try {
+    desktop.reveal(target);
+    res.json({ ok: true, path: target });
+  } catch (e) {
+    err(res, 500, (e as Error).message);
+  }
+});
+
+// Opens a checkout in the user's IDE — the one named in the request, else the
+// configured default. 409 (not 400) when no editor is chosen yet, so the board
+// can tell "pick one first" apart from a real failure and open its picker.
+app.post('/api/repos/:id/editor', async (req: Request, res: Response) => {
+  const repo = db.repos.find((r) => r.id === req.params.id);
+  if (!repo) return err(res, 404, 'Repo not found');
+  const target = await resolveRepoTarget(repo, req.body?.path);
+  if (!target) return err(res, 404, 'Path not found');
+  const editorId = String(req.body?.editor || db.settings.defaultEditor || '').trim();
+  if (!editorId) return err(res, 409, 'No editor configured');
+  try {
+    desktop.openInEditor(editorId, target);
+    res.json({ ok: true, path: target, editor: editorId });
+  } catch (e) {
+    err(res, 400, (e as Error).message);
   }
 });
 
@@ -1011,7 +1071,7 @@ app.get('/api/groomings/:id/logs', (req: Request, res: Response) => {
   res.json({ grooming, events: readLog(grooming.id) });
 });
 
-// ---------- orchestrations (hive orchestration) ----------
+// ---------- orchestrations (goal orchestration) ----------
 
 // Build an orchestration card (draft) for a goal. Mirrors createGrooming: the
 // single source of truth for the record's shape, so every entry point (today
@@ -1019,7 +1079,7 @@ app.get('/api/groomings/:id/logs', (req: Request, res: Response) => {
 function createOrchestration(repo: Repo, goal: string, body: Record<string, unknown>): Orchestration {
   const orchestration: Orchestration = {
     id: id(),
-    title: queen.deriveTitle(goal),
+    title: orchestrator.deriveTitle(goal),
     goal,
     repoId: repo.id,
     repoName: repo.name,
@@ -1054,7 +1114,7 @@ function createOrchestration(repo: Repo, goal: string, body: Record<string, unkn
   return orchestration;
 }
 
-// Kick off (or resume) the queen session for an orchestration. On a launch
+// Kick off (or resume) the orchestrator session for an orchestration. On a launch
 // failure the card rolls back to draft and the error is rethrown for the route
 // to report — same contract as runGrooming.
 function runOrchestration(orchestration: Orchestration, resumePrompt?: string): Orchestration {
@@ -1072,14 +1132,14 @@ function runOrchestration(orchestration: Orchestration, resumePrompt?: string): 
 }
 
 // Whether Autonomous Mode is currently driving this repo — which is exactly the
-// question "does the queen hand execution off, or dispatch tasks itself?".
+// question "does the orchestrator hand execution off, or dispatch tasks itself?".
 function autonomousOwnsRepo(repoId: string): boolean {
   const status = autonomous.status();
   return !!status.active && status.repoId === repoId;
 }
 
 // Optionally start an Autonomous Mode session for the orchestration's repo
-// before the queen plans anything, so the queen knows to create `ready` tasks
+// before the orchestrator plans anything, so the orchestrator knows to create `ready` tasks
 // and let the engine dispatch/review/merge them. Throws (with the same messages
 // the /api/autonomous/start route uses) so the caller can surface a 4xx/409.
 async function maybeStartAutonomous(orchestration: Orchestration, raw: unknown): Promise<void> {
@@ -1099,11 +1159,11 @@ async function maybeStartAutonomous(orchestration: Orchestration, raw: unknown):
 
 // "Orchestrate a Goal": create an orchestration card for a high-level goal. The
 // card has its own lifecycle (draft → running → waiting/awaiting → finished or
-// failed) and never becomes a task — its queen session plans the goal and
+// failed) and never becomes a task — its orchestrator session plans the goal and
 // spawns worker tasks on the board. Pass `run: false` to keep it as a draft; by
-// default the session starts right away. Gated on the Hive Orchestration plugin.
+// default the session starts right away. Gated on the Goal Orchestration plugin.
 app.post('/api/orchestrations', async (req: Request, res: Response) => {
-  if (!pluginInstalled('hive')) return err(res, 400, 'Install the Hive Orchestration plugin first');
+  if (!pluginInstalled('orchestration')) return err(res, 400, 'Install the Goal Orchestration plugin first');
   const goal = String(req.body.goal || '').trim();
   if (!goal) return err(res, 400, 'goal is required');
   const repo = getRepo(req.body.repoId);
@@ -1126,7 +1186,7 @@ app.post('/api/orchestrations', async (req: Request, res: Response) => {
   }
 });
 
-// Start (or re-run) a draft/failed orchestration's queen session. Optionally
+// Start (or re-run) a draft/failed orchestration's orchestrator session. Optionally
 // hands execution to Autonomous Mode first (`autonomous: { budgetUsd, reviewMode }`).
 // Like a task dispatch, `running` is entered only through the runner, never via PATCH.
 app.post('/api/orchestrations/:id/run', async (req: Request, res: Response) => {
@@ -1143,7 +1203,7 @@ app.post('/api/orchestrations/:id/run', async (req: Request, res: Response) => {
   try {
     // A re-run re-plans from scratch, so stop watching whatever the old session
     // was waiting on before the new one takes over.
-    hive.forget(orchestration.id);
+    orchestratorEngine.forget(orchestration.id);
     orchestration.mode = autonomousOwnsRepo(orchestration.repoId) ? 'autonomous' : 'manual';
     res.json(runOrchestration(orchestration));
   } catch (e) {
@@ -1164,20 +1224,20 @@ app.post('/api/orchestrations/:id/reply', (req: Request, res: Response) => {
   if (!reply) return err(res, 400, 'reply is required');
   if (atCapacity()) return err(res, 409, capacityError());
   try {
-    res.json(runOrchestration(orchestration, queen.replyPrompt(orchestration.note, reply, orchestration.mode)));
+    res.json(runOrchestration(orchestration, orchestrator.replyPrompt(orchestration.note, reply, orchestration.mode)));
   } catch (e) {
     err(res, 500, (e as Error).message);
   }
 });
 
-// Stop an orchestration: kill a live queen turn, or — for one merely waiting on
+// Stop an orchestration: kill a live orchestrator turn, or — for one merely waiting on
 // its workers — disarm the watchers and park the card. Either way it lands back
 // in draft with the goal intact; the worker tasks it spawned keep running (they
 // are independent) and a re-run re-plans from scratch.
 app.post('/api/orchestrations/:id/stop', (req: Request, res: Response) => {
   const orchestration = getOrchestration(req.params.id);
   if (!orchestration) return err(res, 404, 'Orchestration not found');
-  hive.forget(orchestration.id);
+  orchestratorEngine.forget(orchestration.id);
   // A live turn: the runner's exit path parks the card (see runner.orchestrate).
   if (runner.stop(orchestration.id)) return res.json({ ok: true });
   if (orchestration.status !== 'waiting' && orchestration.status !== 'awaiting') {
@@ -1206,7 +1266,7 @@ app.patch('/api/orchestrations/:id', (req: Request, res: Response) => {
     const goal = String(req.body.goal || '').trim();
     if (!goal) return err(res, 400, 'goal cannot be empty');
     orchestration.goal = goal;
-    orchestration.title = queen.deriveTitle(goal);
+    orchestration.title = orchestrator.deriveTitle(goal);
   }
   if ('model' in req.body) orchestration.model = String(req.body.model || 'default');
   orchestration.updatedAt = now();
@@ -1221,7 +1281,7 @@ app.post('/api/orchestrations/:id/archive', (req: Request, res: Response) => {
   if (runner.isRunning(orchestration.id)) return err(res, 409, 'Stop the orchestration before archiving');
   orchestration.archived = true;
   orchestration.updatedAt = now();
-  hive.forget(orchestration.id);
+  orchestratorEngine.forget(orchestration.id);
   save();
   broadcast({ type: 'orchestration-removed', orchestrationId: orchestration.id });
   res.json({ ok: true });
@@ -1236,7 +1296,7 @@ app.delete('/api/orchestrations/:id', (req: Request, res: Response) => {
   if (runner.isRunning(req.params.id)) return err(res, 409, 'Stop the orchestration before deleting');
   db.orchestrations.splice(idx, 1);
   removeLog(req.params.id);
-  hive.forget(req.params.id);
+  orchestratorEngine.forget(req.params.id);
   save();
   broadcast({ type: 'orchestration-removed', orchestrationId: req.params.id });
   res.json({ ok: true });
@@ -1375,6 +1435,7 @@ app.post('/api/repos/:id/specs/import', async (req: Request, res: Response) => {
       addons: [],
       prDraft: false,
       personas: [],
+      autoPersona: false,
       attachments: [],
       useWorktree,
       worktreePath: null,
@@ -1416,7 +1477,7 @@ app.patch('/api/tasks/:id', (req: Request, res: Response) => {
   if (!task) return err(res, 404, 'Task not found');
   if (runner.isRunning(task.id)) return err(res, 409, 'Task is running; stop it first');
 
-  const allowed = ['title', 'prompt', 'agent', 'model', 'permissionMode', 'allowedTools', 'promptPermissions', 'useWorktree', 'branchName', 'baseBranch', 'status', 'addons', 'prDraft', 'personas'] as const;
+  const allowed = ['title', 'prompt', 'agent', 'model', 'permissionMode', 'allowedTools', 'promptPermissions', 'useWorktree', 'branchName', 'baseBranch', 'status', 'addons', 'prDraft', 'personas', 'autoPersona'] as const;
   for (const key of allowed) {
     if (key in req.body) {
       if (key === 'agent') {
@@ -1432,6 +1493,8 @@ app.patch('/api/tasks/:id', (req: Request, res: Response) => {
         task.promptPermissions = !!req.body.promptPermissions;
       } else if (key === 'personas') {
         task.personas = personas.sanitize(req.body.personas);
+      } else if (key === 'autoPersona') {
+        task.autoPersona = !!req.body.autoPersona;
       } else if (key === 'status') {
         const target = req.body.status;
         if (!['backlog', 'ready', 'review', 'done', 'failed'].includes(target)) {
@@ -1490,6 +1553,40 @@ app.post(
     res.json(task);
   },
 );
+
+// Image types the preview route will serve back. Deliberately an allow-list of
+// raster formats: SVG (and anything else) is excluded because serving it from
+// this origin would let an attached file run script in the board's context. The
+// composer falls back to a file glyph for everything not listed here.
+const PREVIEW_TYPES: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.avif': 'image/avif',
+  '.bmp': 'image/bmp',
+};
+
+// Serve one attached image back to the board so the task composer can show a
+// thumbnail of it. Read-only, image-only, and locked to files actually recorded
+// on the task — the bytes never leave the machine, same as everything else.
+app.get('/api/tasks/:id/attachments/:name/preview', (req: Request, res: Response) => {
+  const task = getTask(req.params.id);
+  if (!task) return err(res, 404, 'Task not found');
+  const name = attachments.sanitizeName(req.params.name);
+  if (!(task.attachments || []).some((a) => a.name === name)) {
+    return err(res, 404, 'Attachment not found');
+  }
+  const type = PREVIEW_TYPES[path.extname(name).toLowerCase()];
+  if (!type) return err(res, 404, 'No preview for this file type');
+  const file = attachments.filePath(task.id, name);
+  if (!fs.existsSync(file)) return err(res, 404, 'Attachment not found');
+  res.type(type);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+  res.sendFile(file);
+});
 
 // Delete one of a task's attachments. The :name param is re-sanitized so it
 // can't reach outside the task's attachment dir.
@@ -1751,10 +1848,10 @@ function start(port: string | number = process.env.PORT || 7777): Promise<{ serv
       // server/pr-refresh.ts) — always on, so a PR merged/closed outside
       // Sr. Popo is reflected on the board without opening the task first.
       prRefresh.start();
-      // Hive Orchestration engine: subscribes to the bus and re-arms the
+      // Goal Orchestration engine: subscribes to the bus and re-arms the
       // watchers of any orchestration left `waiting` before a restart (see
-      // server/hive.ts). A no-op until an orchestration actually exists.
-      hive.start();
+      // server/orchestrator-engine.ts). A no-op until an orchestration actually exists.
+      orchestratorEngine.start();
       resolve({ server, port: listenPort, url });
       backfillRepoNames();
     });
