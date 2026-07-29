@@ -26,6 +26,8 @@
   /* semantic hues (retuned for light) */
   --groom: #b45cc4;
   --groom-soft: #b45cc433;
+  --hive: #c08a1e;
+  --hive-soft: #c08a1e33;
   --conflict: #b5842a;
   --conflict-soft: #b5842a33;
   --purple: #7c6bd6;
@@ -74,6 +76,8 @@
 
     --groom: #d98fe0;
     --groom-soft: #d98fe033;
+    --hive: #e8bd55;
+    --hive-soft: #e8bd5533;
     --conflict: #e0a94f;
     --conflict-soft: #e0a94f33;
     --purple: #a394e6;
@@ -115,6 +119,8 @@
 
   --groom: #d98fe0;
   --groom-soft: #d98fe033;
+  --hive: #e8bd55;
+  --hive-soft: #e8bd5533;
   --conflict: #e0a94f;
   --conflict-soft: #e0a94f33;
   --purple: #a394e6;
@@ -439,6 +445,47 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
 }
 .groom-q-textinput:focus { outline: none; border-color: var(--conflict); }
 .groom-answers-send { align-self: flex-start; margin-top: 2px; }
+/* Orchestration (hive) cards behave like grooming cards — locked to their own
+   column, recolored in place by status: draft (gray), running (purple),
+   waiting on workers (blue), needs input (amber), done (green), failed (red). */
+.card.hive { cursor: pointer; }
+.card.hive-draft { border-color: var(--border); opacity: .85; }
+.card.hive-running { border-color: var(--groom); box-shadow: 0 0 0 3px var(--groom-soft); }
+.card.hive-waiting { border-color: var(--blue); box-shadow: 0 0 0 2px var(--blue-soft); }
+.card.hive-awaiting { border-color: var(--conflict); box-shadow: 0 0 0 2px var(--conflict-soft); }
+.card.hive-finished { border-color: var(--green); box-shadow: 0 0 0 2px var(--green-soft); }
+.card.hive-failed { border-color: var(--red-soft); }
+.chip.badge-waiting { color: var(--blue); border-color: var(--blue-soft); font-weight: 700; display: inline-flex; align-items: center; gap: 4px; }
+.chip.hive-mode { color: var(--hive); border-color: var(--hive-soft); display: inline-flex; align-items: center; gap: 4px; }
+.chip.hive-status-running { color: var(--groom); border-color: var(--groom-soft); }
+.chip.hive-status-waiting { color: var(--blue); border-color: var(--blue-soft); }
+.chip.hive-status-awaiting { color: var(--conflict); border-color: var(--conflict-soft); }
+.chip.hive-status-finished { color: var(--green); border-color: var(--green-soft); }
+.chip.hive-status-failed { color: var(--red); border-color: var(--red-soft); }
+.card-status .hive-live-label { color: var(--hive); }
+/* The orchestrator's latest word — what it waits on, asks, or concludes. */
+.hive-note {
+  margin-top: 8px; font-size: 11px; line-height: 1.5; color: var(--text-dim);
+  word-break: break-word;
+}
+.hive-note-awaiting {
+  display: flex; align-items: flex-start; gap: 6px;
+  color: var(--conflict); font-weight: 600;
+}
+.hive-note-awaiting svg { flex: none; width: 14px; height: 14px; margin-top: 1px; }
+/* A worker task the orchestrator is actively waiting on. */
+.groom-task-link.hive-watching { border-color: var(--blue-soft); }
+.groom-task-link.hive-watching svg { color: var(--blue); }
+/* The question + reply form in an awaiting orchestration's drawer. */
+.hive-question {
+  padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--bg-raised); font-size: 14px; line-height: 1.5; color: var(--text);
+  white-space: pre-wrap; word-break: break-word;
+}
+.hive-reply { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.hive-reply textarea { resize: vertical; }
+.hive-reply-send { align-self: flex-start; }
+
 /* Links from a finished grooming to the tasks it spawned. */
 .groom-tasks { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
 .groom-task-link {
@@ -475,6 +522,13 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
 /* The agent backend badge (shown for Codex; Claude is the unlabelled default). */
 .chip.agent-chip { color: var(--text-bright); border-color: var(--border-strong); font-weight: 600; }
 .chip.conflict-chip { color: var(--conflict); border-color: var(--conflict-soft); font-weight: 600; }
+/* Code Review grade (1-5), on a red -> green ramp matching the PR label colors. */
+.chip.grade { display: inline-flex; align-items: center; gap: 5px; font-weight: 600; }
+.chip.grade.g1 { color: var(--red); border-color: var(--red-soft); font-weight: 700; }
+.chip.grade.g2 { color: var(--red); border-color: var(--red-soft); }
+.chip.grade.g3 { color: var(--conflict); border-color: var(--conflict-soft); }
+.chip.grade.g4 { color: var(--green); border-color: var(--green-soft); }
+.chip.grade.g5 { color: var(--green); border-color: var(--green-soft); font-weight: 700; }
 /* GitHub PR chip in the drawer head — a link plus a status dot. */
 a.chip.pr { text-decoration: none; display: inline-flex; align-items: center; gap: 5px; }
 a.chip.pr:hover { border-color: currentColor; }
@@ -519,6 +573,16 @@ a.chip.pr:hover { border-color: currentColor; }
   display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px;
 }
 .drawer-meta .chip { font-size: 11px; }
+/* The Code Review verdict for a graded task: grade + summary + any blockers. */
+.drawer-review {
+  margin-top: 12px; padding: 10px 12px;
+  background: var(--prompt-bg); border: 1px solid var(--prompt-border); border-radius: 10px;
+}
+.drawer-review-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.drawer-review-head .tag { font-size: 10px; color: var(--purple); font-weight: 700; letter-spacing: 1px; }
+.drawer-review-summary { font-size: 13px; margin-top: 8px; word-break: break-word; }
+.drawer-review-blockers { margin: 8px 0 0 18px; font-size: 12px; color: var(--red); }
+.drawer-review-blockers li { margin-bottom: 3px; }
 .drawer-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .drawer-prompt {
   margin-top: 12px; padding: 10px 12px; max-height: 180px; overflow-y: auto;

@@ -1,5 +1,5 @@
 /*
- * Background PR-status refresh — keeps each review-column task's GitHub PR
+ * Background PR-status refresh — keeps each validation-column task's GitHub PR
  * status current without requiring a human to open that task's drawer first.
  * Today `GET /api/tasks/:id/pr` (server/github.ts) is only ever called lazily
  * from the client (drawer open, the manual refresh chip, or the move-to-done
@@ -8,7 +8,7 @@
  * opt-in autoResolveConflicts sweep in conflicts.ts, which it otherwise
  * mirrors): staying honest about merge state isn't an opt-in behavior.
  *
- * A periodic, unref'd sweep checks every review-column task with a resolved
+ * A periodic, unref'd sweep checks every validation-column task with a resolved
  * branch and broadcasts a `pr` bus event when the result changes, so every
  * connected board updates its cached PR chip/merge decision live — see
  * public/app.js's SSE handler and state.prByTask.
@@ -30,10 +30,10 @@ function fingerprint(pr: PrInfo | null, reason?: string): string {
   return `${pr.number}:${pr.state}:${pr.isDraft}:${pr.updatedAt}`;
 }
 
-// The review-column tasks worth polling: have a branch to look up and aren't
+// The validation-column tasks worth polling: have a branch to look up and aren't
 // mid-run (a live run's own completion already refreshes the board).
 function candidates(): Task[] {
-  return db.tasks.filter((t) => !t.archived && t.status === 'review' && t.branch && !runner.isRunning(t.id));
+  return db.tasks.filter((t) => !t.archived && t.status === 'validation' && t.branch && !runner.isRunning(t.id));
 }
 
 async function sweep(): Promise<void> {
@@ -45,7 +45,7 @@ async function sweep(): Promise<void> {
     lastSeen.set(task.id, fp);
     broadcast({ type: 'pr', taskId: task.id, result: { pr, reason } });
   }
-  // Drop bookkeeping for tasks that left `review` (moved on, archived, or
+  // Drop bookkeeping for tasks that left `validation` (moved on, archived, or
   // deleted) so this map doesn't grow unbounded over a long-running app.
   const stillEligible = new Set(tasks.map((t) => t.id));
   for (const id of lastSeen.keys()) if (!stillEligible.has(id)) lastSeen.delete(id);

@@ -37,6 +37,7 @@ export interface CreateTaskInput {
   status?: unknown;
   addons?: unknown;
   prDraft?: unknown;
+  autoCodeReview?: unknown;
   personas?: unknown;
   allowedTools?: unknown;
   branchName?: unknown;
@@ -77,6 +78,9 @@ export function createTask(input: CreateTaskInput): Task {
     agent: sanitizeAgent(input.agent),
     addons: addons.sanitize(input.addons),
     prDraft: !!input.prDraft,
+    // Opt-in per task (off by default): grade the branch in the Code Review stage
+    // when the run finishes, instead of going straight to validation.
+    autoCodeReview: !!input.autoCodeReview,
     personas: personas.sanitize(input.personas),
     attachments: [],
     useWorktree: !!input.useWorktree,

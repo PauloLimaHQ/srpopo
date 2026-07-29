@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 
-import type { Db, Grooming, LogEvent, Repo, Settings, Task, UsageEntry } from './types';
+import type { Db, Grooming, LogEvent, Orchestration, Repo, Settings, Task, UsageEntry } from './types';
 
 // When embedded in Electron the packaged app dir is read-only, so the main
 // process points us at a writable per-user location via SRPOPO_DATA_DIR.
@@ -32,6 +32,9 @@ const DEFAULT_SETTINGS: Settings = {
   mergeStrategy: 'merge',
   // Off by default: auto-resolving conflicts spawns a new `claude` run unattended.
   autoResolveConflicts: false,
+  // Autonomous Mode only merges work the Code Review stage graded 4 ("mergeable,
+  // only nits") or better; anything below is left in `validation` for the human.
+  minMergeGrade: 4,
   // Off by default, like the other opt-in GitHub behaviors here.
   assignPrToSelf: false,
   // Remote access is OFF by default: the server binds 127.0.0.1 only and needs
@@ -46,11 +49,11 @@ const DEFAULT_SETTINGS: Settings = {
   memory: true,
 };
 
-let db: Db = { repos: [], tasks: [], groomings: [], settings: { ...DEFAULT_SETTINGS } };
+let db: Db = { repos: [], tasks: [], groomings: [], orchestrations: [], settings: { ...DEFAULT_SETTINGS } };
 if (fs.existsSync(DB_PATH)) {
   try {
     db = Object.assign(
-      { repos: [], tasks: [], groomings: [], settings: {} },
+      { repos: [], tasks: [], groomings: [], orchestrations: [], settings: {} },
       JSON.parse(fs.readFileSync(DB_PATH, 'utf8')),
     ) as Db;
   } catch (err) {
@@ -59,6 +62,8 @@ if (fs.existsSync(DB_PATH)) {
 }
 // Older db.json files predate the groomings collection.
 if (!Array.isArray(db.groomings)) db.groomings = [];
+// …and the orchestrations one (Hive Orchestration, see server/hive.ts).
+if (!Array.isArray(db.orchestrations)) db.orchestrations = [];
 // Backfill any missing setting so the rest of the app can read them directly.
 // Capture pre-backfill hints first so we can migrate older db.json files below.
 const hadInstalledPlugins = Array.isArray(db.settings?.installedPlugins);
@@ -68,10 +73,11 @@ db.settings = Object.assign({ ...DEFAULT_SETTINGS }, db.settings || {});
 // installed, so their "From Linear" button doesn't silently disappear.
 if (!hadInstalledPlugins) db.settings.installedPlugins = hadLinearToken ? ['linear'] : [];
 
-// Any task marked running when the server starts is an orphan from a previous
-// run — its child claude process died with the server. Older db.json files may
-// still carry the legacy per-task 'grooming' status; treat those the same way.
-for (const t of db.tasks) {
+// Bring one persisted task up to date with the current schema. Any task marked
+// running when the server starts is an orphan from a previous run — its child
+// claude process died with the server. Older db.json files may still carry the
+// legacy per-task 'grooming' status; treat those the same way.
+function migrateTask(t: Task): void {
   // Tasks created before the pluggable-agent backend default to Claude.
   if (!t.agent) t.agent = 'claude';
   if (t.status === 'running' || (t.status as string) === 'grooming') {
@@ -79,8 +85,20 @@ for (const t of db.tasks) {
     t.lastOutcome = 'error';
     t.lastError = 'Server restarted while task was running';
     t.resolvingConflicts = false;
+  } else if (t.status === 'code_review') {
+    // A dead code-review run is not a failed task: the implementation work
+    // already succeeded, so park it where the human validates it (exactly what
+    // runner.codeReview's own exit path does).
+    t.status = 'validation';
+    t.lastOutcome = 'review-error';
+    t.lastError = 'Server restarted while the code review was running';
+  } else if ((t.status as string) === 'review') {
+    // The finished-work phase split into Code Review → Validation; the legacy
+    // `review` column is what `validation` is now.
+    t.status = 'validation';
   }
 }
+for (const t of db.tasks) migrateTask(t);
 // Same for grooming cards: a card can't still be running without its child.
 for (const g of db.groomings) {
   // Older db.json files predate the clarifying-questions field.
@@ -89,6 +107,18 @@ for (const g of db.groomings) {
     g.status = 'failed';
     g.lastOutcome = 'error';
     g.lastError = 'Server restarted while grooming was running';
+  }
+}
+// Same for orchestration cards: a live queen session died with the server. A
+// card that was merely `waiting` (or `awaiting` an answer) is left alone — its
+// claude session is resumable, and hive.start() re-arms the watchers on boot.
+for (const o of db.orchestrations) {
+  if (!Array.isArray(o.watch)) o.watch = [];
+  if (!Array.isArray(o.taskIds)) o.taskIds = [];
+  if (o.status === 'running') {
+    o.status = 'failed';
+    o.lastOutcome = 'error';
+    o.lastError = 'Server restarted while the orchestrator was running';
   }
 }
 
@@ -142,6 +172,10 @@ function getGrooming(groomingId: string): Grooming | undefined {
   return db.groomings.find((g) => g.id === groomingId);
 }
 
+function getOrchestration(orchestrationId: string): Orchestration | undefined {
+  return db.orchestrations.find((o) => o.id === orchestrationId);
+}
+
 // Drop a task/grooming session log from disk (e.g. when a grooming is deleted).
 function removeLog(taskId: string): void {
   try { fs.rmSync(logPath(taskId), { force: true }); } catch { /* best effort */ }
@@ -180,6 +214,6 @@ function readUsage(): UsageEntry[] {
 }
 
 export {
-  db, save, id, now, appendLog, readLog, removeLog, logPath, getTask, getRepo, getGrooming,
+  db, save, id, now, appendLog, readLog, removeLog, logPath, getTask, getRepo, getGrooming, getOrchestration, migrateTask,
   DATA_DIR, DEFAULT_SETTINGS, appendUsage, readUsage, usageLogExists, touchUsageLog,
 };

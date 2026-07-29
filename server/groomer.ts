@@ -22,6 +22,8 @@
  *   - `{ "tasks": [ … ] }`     — it has finished and is proposing task specs.
  */
 
+import * as sentinels from './sentinels';
+
 const SPEC_START = '@@SRPOPO_SPEC_START@@';
 const SPEC_END = '@@SRPOPO_SPEC_END@@';
 
@@ -168,33 +170,11 @@ function deriveTitle(idea: unknown): string {
   return line.length > 60 ? line.slice(0, 57).trimEnd() + '…' : line;
 }
 
-// Recover the single JSON payload the session emits at the end of a turn.
-// Prefers the sentinel-delimited span; falls back to a ```json fence, then to a
-// bare {…} span. Shared by parseResult and parseQuestions. Returns null when no
-// candidate span is present.
-function extractSpecJson(text: unknown): string | null {
-  if (typeof text !== 'string' || !text) return null;
-  const start = text.lastIndexOf(SPEC_START);
-  const end = text.lastIndexOf(SPEC_END);
-  if (start !== -1 && end > start) return text.slice(start + SPEC_START.length, end).trim();
-  const fences = [...text.matchAll(/```json\s*([\s\S]*?)```/gi)];
-  if (fences.length) return fences[fences.length - 1][1].trim();
-  const s = text.indexOf('{');
-  const e = text.lastIndexOf('}');
-  if (s !== -1 && e > s) return text.slice(s, e + 1);
-  return null;
-}
-
-// Parse the extracted span into an object, tolerating parse failures.
+// Recover the single JSON payload the session emits at the end of a turn, as a
+// plain object. The tolerant span extraction (sentinels → ```json fence → bare
+// {…}) lives in server/sentinels.ts, shared with the hive orchestrator.
 function parseSpecObject(text: unknown): Record<string, unknown> | null {
-  const json = extractSpecJson(text);
-  if (!json) return null;
-  try {
-    const obj = JSON.parse(json);
-    return obj && typeof obj === 'object' ? (obj as Record<string, unknown>) : null;
-  } catch {
-    return null;
-  }
+  return sentinels.parseObject(text, SPEC_START, SPEC_END);
 }
 
 // Normalize one raw spec entry; null when it has no usable prompt.

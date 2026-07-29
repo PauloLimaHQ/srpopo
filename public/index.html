@@ -35,6 +35,7 @@
       <button class="btn ghost" id="btn-repos"><span class="i" data-icon="folder"></span>Repos</button>
       <button class="btn ghost" id="btn-ask"><span class="i" data-icon="message-circle-question"></span>Ask Sr. Popo</button>
       <button class="btn ghost hidden" id="btn-brief"><span class="i" data-icon="lightbulb"></span>Brief an Idea</button>
+      <button class="btn ghost hidden" id="btn-hive"><span class="i" data-icon="crown"></span>Orchestrate a Goal</button>
       <button class="btn ghost hidden" id="btn-linear"><span class="i" data-icon="linear"></span>From Linear</button>
       <button class="btn ghost hidden" id="btn-specs"><span class="i" data-icon="folder"></span>From Specs</button>
       <button class="btn primary" id="btn-new-task"><span class="i" data-icon="plus"></span>New Task</button>
@@ -71,7 +72,7 @@
     <div class="modal-box">
       <h2><span class="i" data-icon="bot"></span> Autonomous Mode</h2>
       <p class="field-hint" id="autonomous-modal-repo"></p>
-      <p class="field-hint">Sr. Popo will drive every <strong>Ready</strong> task in this workspace end-to-end — dispatch each run (which plans, builds, tests, self-reviews, and opens a PR), then merge the PR and move the task to Done once it’s green — until the budget is spent. You can start it with an empty queue: it stands by and picks up each task the moment it lands in Ready. Runs are unattended: tool-permission prompts are turned off for them, so make sure each task is configured to run without a human.</p>
+      <p class="field-hint">Sr. Popo will drive every <strong>Ready</strong> task in this workspace end-to-end — dispatch each run (which plans, builds, tests, self-reviews, and opens a PR), then have a fresh reviewer grade the branch 1–5 in <strong>Code Review</strong> and, once the PR is green and the grade meets the minimum set in Settings → Git, merge it and move the task to Done — until the budget is spent. You can start it with an empty queue: it stands by and picks up each task the moment it lands in Ready. Runs are unattended: tool-permission prompts are turned off for them, so make sure each task is configured to run without a human.</p>
       <label>Budget cap (USD)
         <input id="autonomous-budget" type="number" min="0.5" max="1000" step="0.5" value="10" />
         <span class="field-hint">New tasks stop being picked up once this total spend is reached; in-flight runs still finish.</span>
@@ -79,8 +80,8 @@
       <label class="check addon">
         <input type="checkbox" id="autonomous-review-mode" />
         <span class="addon-text">
-          <span class="addon-label">Review &amp; finish tasks in Review</span>
-          <span class="addon-hint">Also take tasks sitting in <strong>Review</strong>: re-review the branch and, if it needs fixes, resume the session to apply them; once a pass leaves it clean, merge the PR, drop the worktree, and move it to Done.</span>
+          <span class="addon-label">Review &amp; finish tasks in Validation</span>
+          <span class="addon-hint">Also take tasks sitting in <strong>Validation</strong>: re-review the branch and, if it needs fixes, resume the session to apply them; once a pass leaves it clean, grade it in Code Review and — if the grade passes — merge the PR, drop the worktree, and move it to Done.</span>
         </span>
       </label>
       <div class="modal-actions">
@@ -113,6 +114,7 @@
         <button class="btn icon" id="drawer-close" title="Close" aria-label="Close"><span class="i" data-icon="x"></span></button>
       </div>
       <div id="drawer-meta" class="drawer-meta"></div>
+      <div id="drawer-review" class="drawer-review hidden"></div>
       <div id="drawer-actions" class="drawer-actions"></div>
       <div id="drawer-prompt" class="drawer-prompt hidden"></div>
     </div>
@@ -225,6 +227,16 @@
         <label id="task-branch-field">Branch name <span class="field-hint">— optional, defaults to <code>srpopo/&lt;task&gt;-&lt;id&gt;</code></span>
           <input id="task-branch" type="text" placeholder="e.g. feature/ABC-123, matching your repo's convention" />
         </label>
+        <label class="check addon">
+          <input type="checkbox" id="task-auto-code-review" />
+          <span class="addon-text">
+            <span class="addon-label">Grade the branch in Code Review when it finishes</span>
+            <span class="addon-hint">After the run lands, a separate read-only reviewer session reads the diff,
+              posts one review comment on the pull request, and grades it 1–5 — the card then moves to
+              <strong>Validation</strong> with the grade. Costs one extra short session, and needs an open PR;
+              without this the card goes straight to Validation.</span>
+          </span>
+        </label>
         <div id="task-addon-list"></div>
       </fieldset>
       <div class="modal-actions">
@@ -299,6 +311,63 @@
         <button class="btn ghost" id="brief-cancel">Cancel</button>
         <button class="btn" id="brief-draft">Save as Draft</button>
         <button class="btn primary" id="brief-submit">Groom it <span class="i" data-icon="sparkles"></span></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Orchestrate a Goal modal (hive orchestration) -->
+  <div id="modal-hive" class="modal hidden">
+    <div class="modal-box">
+      <h2 id="hive-modal-title"><span class="i" data-icon="crown"></span>Orchestrate a Goal</h2>
+      <p class="muted">Describe one high-level goal and pick a project. An orchestrator agent explores the repo
+        read-only, breaks the goal into worker tasks on the board, watches what they produce, and keeps
+        coordinating follow-ups until the goal is done. It never edits the repo itself — the workers do.</p>
+      <label id="hive-repo-field">Repository
+        <div class="row">
+          <select id="hive-repo"></select>
+          <button class="btn ghost" id="hive-add-repo" title="Add a repository" aria-label="Add a repository"><span class="i" data-icon="plus"></span></button>
+        </div>
+        <span id="hive-repo-branch" class="field-hint"></span>
+      </label>
+      <label>Your goal
+        <textarea id="hive-text" rows="5"
+                  placeholder="e.g. make the board keyboard-navigable end to end"></textarea>
+      </label>
+      <label class="check addon">
+        <input type="checkbox" id="hive-autonomous" />
+        <span class="addon-text">
+          <span class="addon-label">Hand execution to Autonomous Mode</span>
+          <span class="addon-hint">The orchestrator creates tasks straight into <strong>Ready</strong> and Autonomous
+            Mode dispatches, reviews and merges them — no babysitting. Without this, the orchestrator dispatches
+            each task itself and a human merges.</span>
+        </span>
+      </label>
+      <div id="hive-autonomous-fields" class="hidden">
+        <label>Budget cap (USD)
+          <input id="hive-budget" type="number" min="0.5" max="1000" step="0.5" value="20" />
+          <span class="field-hint">Shared with the Autonomous Mode session this starts; new work stops being picked up once it's spent.</span>
+        </label>
+        <label class="check addon">
+          <input type="checkbox" id="hive-review-mode" checked />
+          <span class="addon-text">
+            <span class="addon-label">Review &amp; finish tasks in Validation</span>
+            <span class="addon-hint">Let Autonomous Mode re-review each finished branch and apply fixes before it is graded and merged.</span>
+          </span>
+        </label>
+      </div>
+      <label>Model <span class="field-hint">— used for the orchestrator session</span>
+        <select id="hive-model">
+          <option value="default">Account default</option>
+          <option value="sonnet">Sonnet</option>
+          <option value="opus">Opus</option>
+          <option value="haiku">Haiku</option>
+          <option value="fable">Fable</option>
+        </select>
+      </label>
+      <div class="modal-actions">
+        <button class="btn ghost" id="hive-cancel">Cancel</button>
+        <button class="btn" id="hive-draft">Save as Draft</button>
+        <button class="btn primary" id="hive-submit">Orchestrate it <span class="i" data-icon="crown"></span></button>
       </div>
     </div>
   </div>
@@ -487,7 +556,7 @@
                   <span class="addon-label">Auto-resolve conflicts</span>
                   <span class="addon-hint">When a task's PR has merge conflicts with main, automatically resume its
                     session to resolve them — the card moves back to Running with a "Resolving Conflicts" label,
-                    then follows the normal lifecycle back to Review. Also used by Autonomous Mode.</span>
+                    then follows the normal lifecycle back to Validation. Also used by Autonomous Mode.</span>
                 </span>
               </label>
               <label class="check addon">
@@ -517,6 +586,21 @@
                 </select>
               </label>
               <p class="addon-hint">Applies to the "Merge pull request" wrap-up step and to Autonomous Mode's own merges (<code>gh pr merge</code>).</p>
+            </fieldset>
+            <fieldset class="addons">
+              <legend>Merge grade</legend>
+              <label>Minimum code review grade <span class="field-hint">— Autonomous Mode won't merge below this</span>
+                <select id="setting-min-merge-grade">
+                  <option value="1">1 — must not be merged</option>
+                  <option value="2">2 — still not mergeable, but better than 1</option>
+                  <option value="3">3 — mergeable with reservations</option>
+                  <option value="4">4 — mergeable, only nits</option>
+                  <option value="5">5 — good to go</option>
+                </select>
+              </label>
+              <p class="addon-hint">Every finished branch is graded 1–5 by the <strong>Code Review</strong> stage (a fresh
+                read-only reviewer that comments on the PR and labels it <code>mergeable/&lt;n&gt;</code>). Autonomous Mode
+                merges only at or above this grade; anything lower is left in <strong>Validation</strong> for you.</p>
             </fieldset>
           </section>
 

@@ -34,6 +34,14 @@ const PLUGINS: PluginInfo[] = [
     requiresApiKey: true,
   },
   {
+    id: 'hive',
+    name: 'Hive Orchestration',
+    description:
+      'Give a repo one high-level goal; an orchestrator agent plans it, spawns worker tasks, watches results, and coordinates follow-ups until it’s done. Adds an "Orchestrate a Goal" button and an Orchestration column to the board.',
+    icon: 'crown',
+    requiresApiKey: false,
+  },
+  {
     id: 'autonomous',
     name: 'Autonomous Mode',
     description:

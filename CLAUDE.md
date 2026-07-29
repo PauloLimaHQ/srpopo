@@ -35,14 +35,18 @@ static with **no build step** (see Conventions).
 | `server/tasks.ts` | Task lifecycle service (`createTask`/`dispatchTask` + capacity gate) shared by the REST API and the MCP server, so both queue/run tasks identically. |
 | `server/mcp.ts` | **Board MCP server** (see "MCP server" below). Streamable-HTTP MCP endpoint mounted on the Express app at `POST /mcp` so outside MCP clients can drive the board while Sr. Popo runs. |
 | `server/git.ts` | Worktree lifecycle (`git worktree add/remove`). |
-| `server/github.ts` | Read-only `gh` CLI lookup of a task's pull request. |
-| `server/pr-refresh.ts` | Background sweep that keeps review-column tasks' PR status current (broadcasts a `pr` bus event on change) so a PR merged/closed outside Sr. Popo shows up without opening the task. |
+| `server/github.ts` | `gh` CLI integration: read-only lookup of a task's pull request, its merge-safety check, the merge itself, and the `mergeable/<n>` grade label. |
+| `server/reviewer.ts` | Meta-prompt + verdict parser for the **Code Review** stage (see "Code Review" below). |
+| `server/pr-refresh.ts` | Background sweep that keeps validation-column tasks' PR status current (broadcasts a `pr` bus event on change) so a PR merged/closed outside Sr. Popo shows up without opening the task. |
 | `server/bus.ts` | Server-Sent Events fan-out for the live board + timeline. |
 | `server/addons.ts` | Catalog of opt-in task behaviors (see "Add-ons" below). |
 | `server/personas.ts` | Catalog of expert-persona role preambles. |
 | `server/permissions.ts` | In-memory registry of pending tool-approval prompts (see "Interactive permissions"). |
 | `server/permission-mcp.js` | **Stays plain JS.** Standalone MCP stdio bridge `claude` spawns to ask before running a tool — kept JS so it runs without a TS loader in both dev and the packaged app. `tsc` copies it into `dist/` untouched (`allowJs`). |
 | `server/groomer.ts` | Meta-prompt + result parser for "Brief an Idea" (see "Grooming" below). |
+| `server/queen.ts` | Meta-prompt + turn-status parser for the hive orchestrator (see "Hive Orchestration"). |
+| `server/hive.ts` | Hive engine: watches the bus and resumes a waiting queen session when its worker tasks land. |
+| `server/sentinels.ts` | Tolerant extraction of the sentinel-delimited JSON `groomer.ts`, `queen.ts` and `reviewer.ts` end a turn with. |
 | `server/types.ts` | Shared interfaces (`Task`, `Repo`, `Db`, `Decision`, …). Typing only. |
 | `server/paths.ts` | Resolves the app root (`public/`, `assets/`, `build/`) from source or `dist/`. |
 | `electron/main.ts` | macOS tray/menu-bar app shell; boots the server on a local port. |
@@ -78,20 +82,86 @@ change is done. `npm run server` / `npm test` run the TypeScript directly with
 A task moves through fixed board columns. Preserve these names and semantics — the
 UI, the API, and `runner.ts` all agree on them:
 
-`backlog` → `ready` → **`running`** → `review` → `done`, with `failed` as a side
-state. (Grooming cards are a separate entity with their own lifecycle — see
-"Grooming" below — and live in their own locked, leftmost column.)
+`backlog` → `ready` → **`running`** → **`code_review`** → `validation` → `done`, with
+`failed` as a side state. (Grooming cards are a separate entity with their own
+lifecycle — see "Grooming" below — and live in their own locked, leftmost column.)
 
 - **backlog / ready** — configured but not dispatched.
 - **running** — a live `claude -p --output-format stream-json` process. Set only by
   `runner.dispatch`, never via `PATCH /api/tasks/:id` (the API rejects that on purpose).
-- **review** — finished successfully; the user inspects the diff/log.
-- **failed** — non-zero exit or `is_error` result; shown in Review with a red badge.
+- **code_review** — a **fresh, read-only reviewer session** grading the branch (see
+  "Code Review" below). Like `running` it is a live child process and is therefore
+  **runner-owned**: set only by `runner.codeReview`, never via `PATCH` (which rejects
+  it and points at `POST /api/tasks/:id/code-review`).
+- **validation** — the human validates and accepts the work: the diff, the log, and
+  the code-review grade. This is the old `review` column, renamed; `store.ts` migrates
+  a legacy `'review'` status to `'validation'` on load.
+- **failed** — non-zero exit or `is_error` result; shown in Validation with a red badge.
 - **done** — accepted by the user.
 
 Dispatch runs the prompt fresh; a follow-up with an existing `sessionId` resumes the
 same session (`claude --resume`). A worktree is materialized lazily on first dispatch
 when `useWorktree` is set.
+
+## Code Review: grading the branch before a human looks at it
+
+The stage is **opt-in per task**: `task.autoCodeReview` (a checkbox in New Task, off
+by default, editable via `PATCH`) is what lets a finished run flow on into
+`code_review`. A task without it goes straight to `validation` — the stage costs one
+extra short read-only session, so nothing pays for it unasked. Autonomous Mode forces
+the flag on for the tasks it dispatches (`dispatchOne`), since it can only merge graded
+work.
+
+When it is on, a successful run parks the task in `validation` and then, **if the task
+has an open pull request**, flows into `code_review` (`runner.maybeCodeReview`, called
+next to `maybeDistill` in `dispatch`'s success branch). Every guard failing — the flag
+off, no branch, no open PR, the parallel-session cap already reached — just leaves the
+task in `validation`, with a `proc` log line when there was something to explain.
+Nothing is ever retried. The manual route below ignores the flag: an explicit request
+always reviews.
+
+- **The run** (`runner.codeReview`) streams into the **same task card**: same NDJSON
+  log, one more `runCount`, cost through `usage.applyResult`. It is a *different*
+  session though, so it passes `trackSession: false` to `launch()` — `task.sessionId`
+  must keep pointing at the implementing session or follow-ups and Autonomous Mode's
+  review pass would resume the reviewer instead.
+- **The prompt + parser** live in `server/reviewer.ts` (the single source of truth,
+  like `groomer.ts` is for grooming): a fresh independent reviewer, read-only on the
+  code, that reads the full diff plus surrounding code, posts **one** PR comment with
+  `gh pr comment`, and closes its turn with `{ grade, summary, blockers, commentUrl }`
+  between the `@@SRPOPO_REVIEW_*@@` sentinels. `reviewArgs` (in
+  `server/agents/claude.ts`) allows only the research tools plus `git status` and
+  `gh pr view/diff/comment` — never `Write`/`Edit`, never `--resume`, never the
+  permission bridge, so anything else is auto-denied by the headless run.
+- **The grade** is `1..5`: **1** must not be merged, **2** still not mergeable but
+  better than 1, **3** mergeable with reservations, **4** mergeable with only nits,
+  **5** good to go. It is recorded in two places — `task.codeReview` (rendered as a
+  chip on the card and a verdict block in the drawer) and a `mergeable/<n>` **PR
+  label** written by the *server* (`github.setMergeableLabel`, which creates the label
+  if missing and removes the other four grades). The agent owns the comment, the
+  server owns the label; the reviewer is deliberately not given `gh pr edit`/`gh label`.
+- **However it ends** — verdict, unparsable output, failure, or a user stop — the card
+  lands in `validation`, never `failed`: the implementation succeeded and the human
+  still has to validate it. A review run never triggers another review.
+- **Any** dispatch (fresh or a resume — follow-up, review pass, conflict fix) clears
+  `task.codeReview`: the verdict describes a diff the run is about to change. It comes
+  back on the next code review. A code-review run doesn't go through `dispatch`, so it
+  never clears its own verdict.
+
+**Starting one by hand.** `POST /api/tasks/:id/code-review` is the manual equivalent
+(the board's `Code Review` action, and dropping a card on the Code Review column):
+`404` unknown task, `409` while a run is live, `409 Code Review needs an open pull
+request`, `409` at the parallel-session cap. There is no way to fake the status —
+`PATCH /api/tasks/:id` accepts only `backlog | ready | validation | done | failed`.
+
+**Autonomous Mode gates its merge on the grade.** Settings > `minMergeGrade`
+(`DEFAULT_SETTINGS`, default **4**, validated as an integer 1..5 in
+`PATCH /api/settings`) is the lowest grade the engine will merge. In `mergeFlow`, before
+the PR check: an ungraded task is sent through `deps.codeReview` once and revisited when
+it lands back in `validation`; a task graded below the minimum is never merged — it is
+settled with the reason `left-in-validation:grade-<n>` and left for the human. The
+engine also treats `code_review` exactly like `running` in `onBus` (still in flight), so
+it never drops ownership of a task while the reviewer holds the card.
 
 ## Agent backends (Claude & Codex)
 
@@ -302,6 +372,46 @@ and **resumes** the same session (`runner.groom` with a `resumePrompt` → `clau
 server restart (the claude session is resumable); `POST /api/groomings/:id/run`
 re-grooms from scratch, discarding the pending questions.
 
+## Hive Orchestration: "Orchestrate a Goal"
+
+Another **installable plugin** (`hive` in `server/plugins.ts`) — the "Orchestrate a Goal"
+button and the board's Orchestration column only surface once it's installed.
+
+An orchestration is its own entity (`db.orchestrations`, `Orchestration` in `types.ts`)
+with its own REST routes (`/api/orchestrations/...`) and lifecycle: **draft** (gray) →
+**running** (purple, set only by `runner.orchestrate`) → **waiting** (blue — watching
+worker tasks) or **awaiting** (amber — it asked the developer something) →
+**finished** (green) or **failed** (red). Like a grooming card it never leaves its
+locked column; the status only recolors it in place.
+
+The **queen** is a read-only `claude -p` session scoped to one repo and one high-level
+goal. It plans, and **workers do all the editing** — it is given the grooming research
+tools plus Sr. Popo's own board tools and nothing else (`orchestrateArgs` in
+`server/agents/claude.ts`), so a write tool is auto-denied by the headless run. It
+reaches the board through the **`/mcp` server** (`server/mcp.ts`), registered via
+`--mcp-config` as an **HTTP** MCP server named `board` pointing at the app's own
+`127.0.0.1` base URL — verified against a live `claude` CLI, so no stdio proxy is
+needed. Never confuse that name with the per-task permission bridge (`srpopo`); the
+queen gets no permission bridge and no worktree.
+
+Every queen turn ends with ONE JSON object between `@@SRPOPO_HIVE_START@@` /
+`@@SRPOPO_HIVE_END@@` (parsed by `queen.parseStatus`): `waiting` (with the worker task
+ids to watch), `question`, `done`, or `blocked`. `server/hive.ts` is the engine: it
+subscribes to the SSE bus and, when a watched worker reaches
+`validation`/`done`/`failed` (the last covering Autonomous Mode's merge → done, and
+`code_review` deliberately not being terminal), debounces a few seconds and
+**resumes the same session** with a status digest from `queen.statusPrompt`. It never
+resumes a session that is already running, re-arms `waiting` orchestrations from the
+store on boot (`hive.start()` in `index.start`), and hard-stops a queen after
+`hive.MAX_TURNS` turns. To change how goals are orchestrated, edit `queen.ts`; to
+change when the queen wakes up, edit `hive.ts`.
+
+**Autonomous hand-off.** `POST /api/orchestrations/:id/run` takes an optional
+`{ autonomous: { budgetUsd, reviewMode } }`: it starts an Autonomous Mode session for
+the repo first, and the queen is told to create `ready` tasks with the engine's
+`REQUIRED_ADDONS` and let it dispatch/review/merge them. Without it the queen runs in
+manual mode — it dispatches its own tasks and a human merges.
+
 ## Maintaining this repo with Claude (the meta-workflow)
 
 Sr. Popo is built to maintain itself. Prefer this loop for non-trivial changes:
@@ -310,8 +420,9 @@ Sr. Popo is built to maintain itself. Prefer this loop for non-trivial changes:
    prompt. Enable **Worktree** so work runs isolated on a `srpopo/<slug>` branch.
 2. Turn on the **"self code review"** add-on for anything non-trivial, and the
    **"open a PR"** add-on when you want the run to finish with a `gh pr create`.
-3. **Dispatch**, then review the streamed session in the **Review** column: read the
-   diff, the tool calls, and the final cost/turns before accepting.
+3. **Dispatch**, then read the streamed session in the **Validation** column: the
+   diff, the tool calls, the Code Review grade, and the final cost/turns before
+   accepting.
 4. Locally, whether the change came from Sr. Popo or a direct session, gate it on:
    ```bash
    npm run typecheck && npm run lint && npm test

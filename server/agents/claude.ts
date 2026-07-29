@@ -14,7 +14,7 @@ import * as addons from '../addons';
 import * as repoSpecs from '../repoSpecs';
 import { baseChildEnv } from './env';
 import type { AgentAdapter, NormalizedEvent } from './types';
-import type { Grooming, Task } from '../types';
+import type { Grooming, Orchestration, Task } from '../types';
 
 const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
 
@@ -166,6 +166,10 @@ function buildArgs(task: Partial<Task>, resume: boolean): string[] {
   return args;
 }
 
+// The read-only research tools a grooming / orchestrator session is allowed to
+// use: enough to explore and understand the repo, never enough to change it.
+const RESEARCH_TOOLS = 'Read,Grep,Glob,Bash(git log:*),Bash(git diff:*),Bash(git show:*)';
+
 // Read-only args for a grooming session: it explores the repo to write better
 // prompts but must never modify it. Only the safe research tools are auto-
 // approved in this headless run, so any write tool is denied. `resume` continues
@@ -173,8 +177,68 @@ function buildArgs(task: Partial<Task>, resume: boolean): string[] {
 function groomArgs(grooming: Pick<Grooming, 'model' | 'sessionId'>, resume = false): string[] {
   const args = ['-p', '--output-format', 'stream-json', '--verbose'];
   if (grooming.model && grooming.model !== 'default') args.push('--model', grooming.model);
-  args.push('--allowedTools', 'Read,Grep,Glob,Bash(git log:*),Bash(git diff:*),Bash(git show:*)');
+  args.push('--allowedTools', RESEARCH_TOOLS);
   if (resume && grooming.sessionId) args.push('--resume', grooming.sessionId);
+  return args;
+}
+
+// What a Code Review session needs on top of the read-only research set: the
+// branch's own state, the pull request's view/diff, and posting its one review
+// comment. Deliberately NO `gh pr edit` / `gh label` — the grade label is the
+// server's to write (github.setMergeableLabel), not the reviewer's.
+const REVIEW_TOOLS = [
+  'Bash(git status:*)',
+  'Bash(gh pr view:*)',
+  'Bash(gh pr diff:*)',
+  'Bash(gh pr comment:*)',
+];
+
+// Args for a Code Review session (see server/reviewer.ts + runner.codeReview): a
+// fresh, read-only reviewer of the task's branch. Never `--resume` (the whole
+// point is an unbiased second pair of eyes), never a write tool, and never the
+// interactive permission bridge — anything outside the allow-list is auto-denied
+// by the headless run, which is exactly the guarantee we want.
+function reviewArgs(task: Pick<Task, 'model' | 'agent'>): string[] {
+  const args = ['-p', '--output-format', 'stream-json', '--verbose'];
+  // The reviewer always runs on Claude, so a Codex task's model name is not a
+  // valid `--model` here — those fall back to the CLI's default model.
+  if (task.model && task.model !== 'default' && task.agent !== 'codex') args.push('--model', task.model);
+  args.push('--allowedTools', mergeAllowedTools(RESEARCH_TOOLS, REVIEW_TOOLS));
+  return args;
+}
+
+// Sr. Popo's own board MCP server (server/mcp.ts, mounted at POST /mcp) as the
+// orchestrator session sees it. Named distinctly from the per-task permission
+// bridge above ('srpopo') so the two can never be confused: this one drives the
+// board, that one asks the user about a tool.
+const BOARD_MCP_SERVER_NAME = 'board';
+const BOARD_TOOLS = ['list_repos', 'list_tasks', 'get_task', 'create_task', 'dispatch_task', 'stop_task']
+  .map((t) => `mcp__${BOARD_MCP_SERVER_NAME}__${t}`);
+
+// The `--mcp-config` JSON registering that board server over MCP's Streamable
+// HTTP transport. It always points at 127.0.0.1 (resolvedBaseUrl), so even with
+// LAN remote access on, the queen talks to the local app and never across the
+// network.
+function boardMcpConfig(): string {
+  return JSON.stringify({
+    mcpServers: {
+      [BOARD_MCP_SERVER_NAME]: { type: 'http', url: `${resolvedBaseUrl()}/mcp` },
+    },
+  });
+}
+
+// Args for a hive orchestrator ("queen") session: the same read-only research
+// set as grooming, plus the board tools it needs to plan work onto the Kanban
+// board. It is never given a write tool, a worktree, or the interactive
+// permission bridge — anything outside this allow-list is auto-denied by the
+// headless run, which is exactly the guarantee we want (workers own every
+// mutation). `resume` continues the same session for the next turn.
+function orchestrateArgs(orchestration: Pick<Orchestration, 'model' | 'sessionId'>, resume = false): string[] {
+  const args = ['-p', '--output-format', 'stream-json', '--verbose'];
+  if (orchestration.model && orchestration.model !== 'default') args.push('--model', orchestration.model);
+  args.push('--allowedTools', mergeAllowedTools(RESEARCH_TOOLS, BOARD_TOOLS));
+  args.push('--mcp-config', boardMcpConfig());
+  if (resume && orchestration.sessionId) args.push('--resume', orchestration.sessionId);
   return args;
 }
 
@@ -245,11 +309,18 @@ export {
   CLAUDE_BIN,
   DEFAULT_ALLOWED_TOOLS,
   PERMISSION_TOOL,
+  BOARD_MCP_SERVER_NAME,
+  BOARD_TOOLS,
+  RESEARCH_TOOLS,
+  REVIEW_TOOLS,
   setBaseUrl,
+  resolvedBaseUrl,
   childEnv,
   buildTaskEnv,
   buildArgs,
   groomArgs,
+  orchestrateArgs,
+  reviewArgs,
   normalizeAllowedTools,
   mergeAllowedTools,
   effectiveAllowedTools,

@@ -5,6 +5,9 @@ import readline from 'readline';
 import { db, save, now, appendLog } from './store';
 import { broadcast } from './bus';
 import * as groomer from './groomer';
+import * as queen from './queen';
+import * as reviewer from './reviewer';
+import * as github from './github';
 import { askPrompt } from './ask';
 import * as memory from './memory';
 import * as permissions from './permissions';
@@ -15,7 +18,7 @@ import { ClaudeAdapter } from './agents/claude';
 import { CodexAdapter } from './agents/codex';
 import type { AgentAdapter, NormalizedResult } from './agents/types';
 import type { GroomSpec } from './groomer';
-import type { AskSession, Grooming, LogEvent, Task, TaskAgent } from './types';
+import type { AskSession, Grooming, LogEvent, Orchestration, PrInfo, Task, TaskAgent } from './types';
 
 // The registered agent backends, keyed by Task.agent. Claude is the default and
 // the historical behavior; codex drives the OpenAI Codex CLI. Grooming always
@@ -82,6 +85,12 @@ function emitGrooming(grooming: Grooming): void {
   broadcast({ type: 'grooming', grooming });
 }
 
+function emitOrchestration(orchestration: Orchestration): void {
+  orchestration.updatedAt = now();
+  save();
+  broadcast({ type: 'orchestration', orchestration });
+}
+
 function record(rec: SessionRecord, event: LogEvent): void {
   event.ts = event.ts || now();
   appendLog(rec.id, event);
@@ -115,6 +124,12 @@ interface LaunchOpts {
   // without launch() itself needing to know which one it's driving. The event is
   // the adapter's normalized usage payload (see NormalizedResult.usageEvent).
   onResult?: (event: Record<string, unknown>) => void;
+  // Whether the session id from this run's init event is recorded on the record.
+  // Defaults to true. A Code Review run (see codeReview) streams into the task's
+  // own card but is a *different, throwaway* session, so it opts out — otherwise
+  // it would clobber task.sessionId and break follow-ups and Autonomous Mode's
+  // review pass, which both resume the implementing session.
+  trackSession?: boolean;
 }
 
 /**
@@ -125,7 +140,7 @@ interface LaunchOpts {
  * process exits. The runner reacts only to the adapter's NormalizedEvents, so it
  * stays provider-agnostic; the process error/cleanup path is handled here.
  */
-function launch<T extends SessionRecord>(rec: T, { adapter, args, workDir, prompt, promptEvent, emit, resolveExit, onResult }: LaunchOpts): T {
+function launch<T extends SessionRecord>(rec: T, { adapter, args, workDir, prompt, promptEvent, emit, resolveExit, onResult, trackSession = true }: LaunchOpts): T {
   if (running.has(rec.id)) throw new Error('Task is already running');
 
   record(rec, promptEvent);
@@ -152,7 +167,7 @@ function launch<T extends SessionRecord>(rec: T, { adapter, args, workDir, promp
 
     // Keep hot record fields in sync with the session stream.
     if (norm.session) {
-      rec.sessionId = norm.session.sessionId || rec.sessionId;
+      if (trackSession) rec.sessionId = norm.session.sessionId || rec.sessionId;
       rec.resolvedModel = norm.session.model || rec.resolvedModel;
       emit(rec);
     }
@@ -215,7 +230,7 @@ function launch<T extends SessionRecord>(rec: T, { adapter, args, workDir, promp
 
 /**
  * Best-effort background memory distillation, kicked off after a task lands in
- * `review` (see dispatch's resolveExit). A short, read-only Claude session
+ * `validation` (see dispatch's resolveExit). A short, read-only Claude session
  * (see server/memory.ts) reviews what the task changed and folds any durable,
  * project-level learning into the repo's memory document. Everything here is
  * fire-and-forget: any guard below failing just means memory catches up on the
@@ -285,6 +300,132 @@ function distillMemory(task: Task): void {
 }
 
 /**
+ * The Code Review stage: a FRESH, read-only reviewer session over the task's
+ * branch (see server/reviewer.ts). It streams into the *same task card* as
+ * another run of that task — same NDJSON log, same cost ledger, one more
+ * `runCount` — but it is a different session with a different job, so:
+ *   - `trackSession: false` keeps task.sessionId pointing at the implementing
+ *     session (follow-ups and Autonomous Mode's review pass resume that one),
+ *   - the args carry no `--resume`, no write tool and no permission bridge
+ *     (see reviewArgs in server/agents/claude.ts), and
+ *   - it always runs on Claude, like grooming and the queen do.
+ *
+ * However it ends, the card lands in `validation`: the implementation work
+ * already succeeded and a human still has to validate it, so a failed, stopped
+ * or unparsable review must never mark the task `failed`. On a parsed verdict the
+ * grade is recorded on the task and stamped onto the PR as its `mergeable/<n>`
+ * label (fire-and-forget — the label is a convenience, not the record).
+ */
+function codeReview(task: Task, pr: PrInfo): Task {
+  if (running.has(task.id)) throw new Error('Task is already running');
+
+  const adapter = ClaudeAdapter;
+  // Restored in resolveExit: launch() must not leave the review's session id on
+  // the task even though we let it stream through the same record.
+  const implementationSessionId = task.sessionId;
+  task.status = 'code_review';
+  task.startedAt = now();
+  task.finishedAt = null;
+  task.lastOutcome = null;
+  task.lastError = null;
+  task.runCount = (task.runCount || 0) + 1;
+  task.activeSubagents = 0;
+  emitTask(task);
+
+  const prompt = reviewer.metaPrompt(task, pr);
+
+  return launch(task, {
+    adapter,
+    args: claude.reviewArgs(task),
+    workDir: task.worktreePath || task.repoPath,
+    prompt,
+    promptEvent: { type: 'prompt', text: prompt, codeReview: true, run: task.runCount },
+    emit: emitTask,
+    trackSession: false,
+    onResult: (event) => usage.applyResult(task, event),
+    resolveExit: ({ code, signal, stopped, sawResult, stderrTail }) => {
+      task.sessionId = implementationSessionId;
+      // Whatever happened, the human validates from here — never `failed`.
+      task.status = 'validation';
+      if (signal || stopped) {
+        task.lastOutcome = 'review-stopped';
+        task.lastError = 'Code review stopped by user';
+        record(task, { type: 'proc', text: 'Code review stopped by user — left in Validation' });
+        return;
+      }
+      const succeeded = sawResult && !sawResult.isError;
+      const verdict = succeeded ? reviewer.parseVerdict(sawResult.text) : null;
+      if (verdict) {
+        reviewer.applyVerdict(task, verdict);
+        task.lastOutcome = 'reviewed';
+        record(task, {
+          type: 'proc',
+          text: `Code review finished — mergeable ${verdict.grade}/5 (${reviewer.gradeMeaning(verdict.grade)})`,
+        });
+        // Best-effort: the grade lives on the task regardless of whether GitHub
+        // accepted the label.
+        github.setMergeableLabel(task, verdict.grade)
+          .then((res) => {
+            if (!res.ok) record(task, { type: 'proc', text: `Could not label the PR (${res.reason})` });
+          })
+          .catch((e) => console.warn('[reviewer] failed to label the PR:', (e as Error).message));
+      } else if (succeeded) {
+        task.lastOutcome = 'reviewed';
+        record(task, { type: 'proc', text: 'Code review finished but produced no readable grade — left ungraded' });
+      } else {
+        task.lastOutcome = 'review-error';
+        task.lastError =
+          (sawResult && sawResult.errorReason) ||
+          stderrTail.trim().split('\n').pop() ||
+          `${adapter.label} exited with code ${code}`;
+        record(task, { type: 'proc', text: `Code review failed (exit ${code}): ${task.lastError}` });
+      }
+    },
+  });
+}
+
+/**
+ * Best-effort auto-entry into the Code Review stage, kicked off right after a run
+ * lands successfully (see dispatch's resolveExit, next to maybeDistill which it
+ * is modeled on).
+ *
+ * This is OPT-IN per task (`task.autoCodeReview`, off by default): the stage costs
+ * one extra short read-only session, so a task only flows into `code_review` when
+ * it was configured to. Everything else — the flag off, no branch, no PR, a closed
+ * PR, the parallel-session cap already reached, a `gh` lookup that failed — simply
+ * leaves the task in `validation`, which is where it was already parked. Nothing
+ * here is ever retried, and the manual `POST /api/tasks/:id/code-review` route
+ * bypasses all of it (an explicit request always reviews).
+ */
+function maybeCodeReview(task: Task): void {
+  if (!task.autoCodeReview) return; // not configured to be graded — validation it is
+  if (!task.branch) return; // nothing to review against, and no PR to comment on
+  if (running.has(task.id)) return;
+  if (runningCount() >= db.settings.maxParallelSessions) {
+    record(task, { type: 'proc', text: 'Skipped code review: max parallel sessions reached — left in Validation' });
+    return;
+  }
+  github.prForTask(task)
+    .then((found) => {
+      if (!found.pr || found.pr.state !== 'open') {
+        record(task, {
+          type: 'proc',
+          text: `Skipped code review: no open pull request for ${task.branch} (${found.pr ? found.pr.state : found.reason || 'no-pr'})`,
+        });
+        return;
+      }
+      // Re-check the gates: the lookup is async, so the world may have moved on.
+      if (running.has(task.id) || task.status !== 'validation') return;
+      if (runningCount() >= db.settings.maxParallelSessions) {
+        record(task, { type: 'proc', text: 'Skipped code review: max parallel sessions reached — left in Validation' });
+        return;
+      }
+      codeReview(task, found.pr);
+    })
+    .catch((e) => console.warn('[reviewer] failed to start the code review:', (e as Error).message));
+}
+
+/**
  * Dispatch a task: spawn its agent CLI in the task's working directory and
  * stream the NDJSON output into the task log + SSE bus. `prompt` is the text sent
  * on stdin; `resume` continues an existing session.
@@ -298,6 +439,12 @@ function dispatch(task: Task, prompt: string, { resume = false }: { resume?: boo
   task.finishedAt = null;
   task.lastOutcome = null;
   task.lastError = null;
+  // Any implementation run invalidates the grade — a fresh one or a resume
+  // (follow-up, review pass, conflict fix) can all change the branch, and the
+  // verdict describes a diff that no longer exists. It comes back on the next
+  // code review. (A code-review run doesn't go through dispatch, so its own
+  // verdict is never cleared by this.)
+  task.codeReview = null;
   task.runCount = (task.runCount || 0) + 1;
   task.activeSubagents = 0;
   emitTask(task);
@@ -317,10 +464,15 @@ function dispatch(task: Task, prompt: string, { resume = false }: { resume?: boo
         task.lastError = 'Stopped by user';
         record(task, { type: 'proc', text: 'Run stopped by user' });
       } else if (sawResult && !sawResult.isError) {
-        task.status = 'review';
+        // The work landed: park it in `validation` for the human, then — only when
+        // the task opted into grading and has an open PR — flow on into the Code
+        // Review stage, which emits the `code_review` flip itself once its (async)
+        // PR lookup comes back.
+        task.status = 'validation';
         task.lastOutcome = 'success';
         record(task, { type: 'proc', text: `Run finished (exit ${code})` });
         maybeDistill(task);
+        maybeCodeReview(task);
       } else {
         task.status = 'failed';
         task.lastOutcome = 'error';
@@ -444,6 +596,130 @@ function groom(
 }
 
 /**
+ * Run one turn of a hive orchestration's "queen" session: a read-only Claude
+ * session that plans the goal and drives the board through Sr. Popo's own MCP
+ * server (see orchestrateArgs in server/agents/claude.ts — research tools plus
+ * the board tools, never a write tool and never a worktree).
+ *
+ * Every turn must end with one status object between the HIVE sentinels (see
+ * server/queen.ts), which decides where the card lands:
+ *   waiting  → `waiting`, with the watched task ids kept on the card so the hive
+ *              engine (server/hive.ts) can resume this same session when they land
+ *   question → `awaiting`, paused on a question for the developer
+ *   done     → `finished`
+ *   blocked  → `failed`
+ * `waiting` and `awaiting` keep the sessionId (they are resumable, and survive a
+ * server restart); the terminal states drop it. Pass `resumePrompt` to continue
+ * the session — the engine's status update, or the developer's answer.
+ */
+function orchestrate(
+  orchestration: Orchestration,
+  { resumePrompt }: { resumePrompt?: string } = {},
+): Orchestration {
+  if (running.has(orchestration.id)) throw new Error('Orchestration is already running');
+
+  const adapter = ClaudeAdapter;
+  const resume = typeof resumePrompt === 'string';
+  orchestration.status = 'running';
+  orchestration.startedAt = orchestration.startedAt && resume ? orchestration.startedAt : now();
+  orchestration.finishedAt = null;
+  orchestration.lastOutcome = null;
+  orchestration.lastError = null;
+  // A fresh (non-resume) run starts the goal over — drop the previous session and
+  // whatever it was watching.
+  if (!resume) {
+    orchestration.sessionId = null;
+    orchestration.watch = [];
+    orchestration.note = null;
+    // The turn cap (hive.MAX_TURNS) counts turns of ONE queen session, so a
+    // fresh run of the goal starts the count over.
+    orchestration.turnCount = 0;
+  }
+  orchestration.runCount = (orchestration.runCount || 0) + 1;
+  orchestration.turnCount = (orchestration.turnCount || 0) + 1;
+  orchestration.activeSubagents = 0;
+  emitOrchestration(orchestration);
+
+  const prompt = resume
+    ? resumePrompt!
+    : queen.metaPrompt(orchestration, memory.readMemory(orchestration.repoId));
+
+  return launch(orchestration, {
+    adapter,
+    args: claude.orchestrateArgs(orchestration, resume),
+    workDir: orchestration.repoPath, // planning is read-only exploration; never a worktree
+    prompt,
+    promptEvent: { type: 'prompt', text: prompt, orchestrate: true, resume, run: orchestration.runCount },
+    emit: emitOrchestration,
+    onResult: (event) => usage.applyOrchestrationResult(orchestration, event),
+    resolveExit: ({ code, signal, stopped, sawResult, stderrTail }) => {
+      if (signal || stopped) {
+        // Park a stopped orchestration back in draft with the goal intact. The
+        // session goes with it — a fresh run re-plans from scratch (mirrors how
+        // a stopped grooming card is parked).
+        orchestration.sessionId = null;
+        orchestration.watch = [];
+        orchestration.status = 'draft';
+        orchestration.lastOutcome = 'stopped';
+        orchestration.lastError = 'Orchestration stopped by user';
+        record(orchestration, { type: 'proc', text: 'Orchestration stopped by user' });
+        return;
+      }
+      const succeeded = sawResult && !sawResult.isError;
+      const status = succeeded ? queen.parseStatus(sawResult.text) : null;
+      if (!status) {
+        orchestration.sessionId = null;
+        orchestration.watch = [];
+        orchestration.status = 'failed';
+        orchestration.lastOutcome = 'error';
+        orchestration.lastError = succeeded
+          ? 'The orchestrator ended its turn without a valid status update'
+          : (sawResult && sawResult.errorReason) ||
+            stderrTail.trim().split('\n').pop() ||
+            `${adapter.label} exited with code ${code}`;
+        record(orchestration, { type: 'proc', text: `Orchestration failed (exit ${code}): ${orchestration.lastError}` });
+        return;
+      }
+
+      orchestration.note = status.note || null;
+      if (status.state === 'waiting') {
+        // Still going: keep the session (the engine resumes it) and remember the
+        // workers this turn asked for, both as the live watch set and on the
+        // running roster of every task this orchestration has touched.
+        orchestration.watch = status.watch;
+        orchestration.taskIds = [...new Set([...(orchestration.taskIds || []), ...status.watch])];
+        orchestration.status = 'waiting';
+        orchestration.lastOutcome = 'waiting';
+        orchestration.finishedAt = null; // paused between turns, not finished
+        record(orchestration, {
+          type: 'proc',
+          text: `Waiting on ${status.watch.length} task${status.watch.length === 1 ? '' : 's'}${status.note ? `: ${status.note}` : ''}`,
+        });
+      } else if (status.state === 'question') {
+        orchestration.watch = [];
+        orchestration.status = 'awaiting';
+        orchestration.lastOutcome = 'awaiting';
+        orchestration.finishedAt = null;
+        record(orchestration, { type: 'proc', text: `Orchestration needs input: ${status.note}` });
+      } else if (status.state === 'done') {
+        orchestration.sessionId = null;
+        orchestration.watch = [];
+        orchestration.status = 'finished';
+        orchestration.lastOutcome = 'orchestrated';
+        record(orchestration, { type: 'proc', text: `Goal complete: ${status.note}` });
+      } else {
+        orchestration.sessionId = null;
+        orchestration.watch = [];
+        orchestration.status = 'failed';
+        orchestration.lastOutcome = 'blocked';
+        orchestration.lastError = status.note || 'The orchestrator reported it is blocked';
+        record(orchestration, { type: 'proc', text: `Orchestration blocked: ${orchestration.lastError}` });
+      }
+    },
+  });
+}
+
+/**
  * Run a short, read-only "Ask Sr. Popo" Q&A session in a repo. Unlike
  * dispatch/groom, the session is ephemeral: `session` is a plain in-memory
  * record (never a Task/Grooming, never persisted), so it drives the same
@@ -518,7 +794,10 @@ function setBaseUrl(url: string): void {
 
 export {
   dispatch,
+  codeReview,
+  maybeCodeReview,
   groom,
+  orchestrate,
   ask,
   stop,
   stopAll,
