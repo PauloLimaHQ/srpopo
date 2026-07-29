@@ -1192,6 +1192,52 @@ test('personas: sanitize keeps only known ids and preamble is prepended', () => 
   assert.ok(!('instruction' in personas.catalog()[0]), 'catalog omits instruction text');
 });
 
+test('personas: autoPreamble hands the whole catalog to the run to pick from', () => {
+  const personas = require('../server/personas');
+  const auto = personas.autoPreamble();
+
+  assert.match(auto, /^# Personas/, 'shaped like preambleFor so framing can swap them');
+  assert.match(auto, /---\n\n$/, 'ends with a separator so it prepends cleanly');
+  for (const p of personas.catalog()) {
+    assert.ok(auto.includes(p.label), `the run is offered "${p.label}"`);
+  }
+});
+
+test('framing: autoPersona replaces the hand-picked persona preamble', () => {
+  const framing = require('../server/framing');
+  const personas = require('../server/personas');
+  const first = personas.catalog()[0].id;
+  const base = { id: 'p', prompt: 'Body', addons: [], attachments: [] };
+
+  const manual = framing.framePrompt({ ...base, personas: [first] });
+  assert.ok(manual.includes(personas.preambleFor([first])), 'picked personas are prepended verbatim');
+  assert.ok(!manual.includes('work out which expert role'), 'no auto-detection wording when off');
+
+  const auto = framing.framePrompt({ ...base, personas: [first], autoPersona: true });
+  assert.ok(auto.includes(personas.autoPreamble()), 'the run is asked to pick its own persona');
+  assert.ok(!auto.includes(personas.preambleFor([first])), 'the picked persona is not also injected');
+});
+
+test('addons: the self-review add-on is hidden from the catalog but still applies by id', () => {
+  const addons = require('../server/addons');
+  const autonomous = require('../server/autonomous');
+
+  const ids = addons.catalog().map((a: { id: string }) => a.id);
+  assert.ok(ids.includes('pull_request'), 'the PR add-on is still offered');
+  assert.ok(!ids.includes('code_review'), 'self-review is no longer a per-task checkbox');
+
+  // Autonomous Mode and the orchestrator still apply it by id, so it must keep working.
+  assert.ok(autonomous.REQUIRED_ADDONS.includes('code_review'), 'the engine still requires it');
+  assert.deepStrictEqual(addons.sanitize(['code_review']), ['code_review'], 'still a valid id');
+  assert.match(addons.instructionsFor(['code_review']), /self code review/, 'still injects its instruction');
+
+  // The chip row needs a short name + glyph for every add-on it renders.
+  for (const a of addons.catalog()) {
+    assert.ok(a.short || a.label, `${a.id} has a chip label`);
+    assert.ok(a.icon, `${a.id} has an icon`);
+  }
+});
+
 test('groomer: metaPrompt embeds the idea and asks for a sentinel-delimited spec', () => {
   const groomer = require('../server/groomer');
   const mp = groomer.metaPrompt('archive done tasks in bulk');
@@ -2271,11 +2317,11 @@ test('memory: GET/PUT /api/repos/:id/memory read and write the repo\'s memory fi
   }
 });
 
-// ---------- hive orchestration ----------
+// ---------- goal orchestration ----------
 
-test('queen: metaPrompt briefs the orchestrator, hands over the repo id, and demands a sentinel status', () => {
-  const queen = require('../server/queen');
-  const prompt = queen.metaPrompt(
+test('orchestrator: metaPrompt briefs the orchestrator, hands over the repo id, and demands a sentinel status', () => {
+  const orchestrator = require('../server/orchestrator');
+  const prompt = orchestrator.metaPrompt(
     { goal: 'make the board keyboard-navigable', repoId: 'repo-xyz', repoName: 'o/board', mode: 'manual' },
     'Prefers vanilla JS.',
   );
@@ -2283,76 +2329,76 @@ test('queen: metaPrompt briefs the orchestrator, hands over the repo id, and dem
   assert.ok(prompt.includes('repo-xyz'), 'the repo id create_task needs is handed over');
   assert.ok(prompt.includes('mcp__board__create_task'), 'the board tools are named');
   assert.ok(prompt.includes('Prefers vanilla JS.'), 'project memory is injected');
-  assert.ok(prompt.includes(queen.HIVE_START) && prompt.includes(queen.HIVE_END), 'the status markers are shown');
+  assert.ok(prompt.includes(orchestrator.ORCH_START) && prompt.includes(orchestrator.ORCH_END), 'the status markers are shown');
   assert.ok(prompt.includes('read-only'), 'it is told it may not edit the repo');
   assert.ok(prompt.includes('EXECUTION MODE: manual'), 'manual mode tells it to dispatch its own tasks');
   assert.ok(prompt.includes('mcp__board__dispatch_task'), 'manual mode names the dispatch tool');
 
-  const auto = queen.metaPrompt({ goal: 'g', repoId: 'r', repoName: 'n', mode: 'autonomous' }, '');
+  const auto = orchestrator.metaPrompt({ goal: 'g', repoId: 'r', repoName: 'n', mode: 'autonomous' }, '');
   assert.ok(auto.includes('EXECUTION MODE: autonomous hand-off'), 'autonomous mode is stated');
   assert.ok(auto.includes('"ready"') && auto.includes('pull_request'), 'autonomous mode spells out the required task shape');
   assert.ok(auto.includes('must NOT dispatch'), 'autonomous mode forbids self-dispatch');
 });
 
-test('queen: parseStatus recovers all four turn states, and rejects anything else', () => {
-  const queen = require('../server/queen');
-  const wrap = (json: string) => `thinking out loud…\n${queen.HIVE_START}\n${json}\n${queen.HIVE_END}`;
+test('orchestrator: parseStatus recovers all four turn states, and rejects anything else', () => {
+  const orchestrator = require('../server/orchestrator');
+  const wrap = (json: string) => `thinking out loud…\n${orchestrator.ORCH_START}\n${json}\n${orchestrator.ORCH_END}`;
 
-  const waiting = queen.parseStatus(wrap('{ "state": "waiting", "watch": ["a1", "b2", "a1"], "note": "two in flight" }'));
+  const waiting = orchestrator.parseStatus(wrap('{ "state": "waiting", "watch": ["a1", "b2", "a1"], "note": "two in flight" }'));
   assert.strictEqual(waiting.state, 'waiting');
   assert.deepStrictEqual(waiting.watch, ['a1', 'b2'], 'watch ids are deduped');
   assert.strictEqual(waiting.note, 'two in flight');
 
-  const question = queen.parseStatus(wrap('{ "state": "question", "note": "SQLite or JSON?" }'));
+  const question = orchestrator.parseStatus(wrap('{ "state": "question", "note": "SQLite or JSON?" }'));
   assert.deepStrictEqual(question, { state: 'question', watch: [], note: 'SQLite or JSON?' });
 
-  const done = queen.parseStatus(wrap('{ "state": "done", "summary": "shipped 3 tasks" }'));
+  const done = orchestrator.parseStatus(wrap('{ "state": "done", "summary": "shipped 3 tasks" }'));
   assert.deepStrictEqual(done, { state: 'done', watch: [], note: 'shipped 3 tasks' }, 'summary doubles as the note');
 
-  const blocked = queen.parseStatus(wrap('{ "state": "BLOCKED", "note": "no test runner" }'));
+  const blocked = orchestrator.parseStatus(wrap('{ "state": "BLOCKED", "note": "no test runner" }'));
   assert.deepStrictEqual(blocked, { state: 'blocked', watch: [], note: 'no test runner' }, 'state is case-insensitive');
 
   // A non-waiting turn never carries a watch list, even if the model emits one.
-  assert.deepStrictEqual(queen.parseStatus(wrap('{ "state": "done", "watch": ["x"] }')).watch, []);
+  assert.deepStrictEqual(orchestrator.parseStatus(wrap('{ "state": "done", "watch": ["x"] }')).watch, []);
 
   // Malformed / missing / unknown-state payloads are all "no status this turn".
-  assert.strictEqual(queen.parseStatus(wrap('{ "state": "waiting", ')), null, 'unparseable JSON -> null');
-  assert.strictEqual(queen.parseStatus(wrap('{ "state": "pondering" }')), null, 'an unknown state -> null');
-  assert.strictEqual(queen.parseStatus(wrap('[1,2,3]')), null, 'a non-object payload -> null');
-  assert.strictEqual(queen.parseStatus('no markers, no json at all'), null, 'no payload -> null');
-  assert.strictEqual(queen.parseStatus(''), null, 'empty text -> null');
-  assert.strictEqual(queen.parseStatus(undefined), null, 'no text at all -> null');
+  assert.strictEqual(orchestrator.parseStatus(wrap('{ "state": "waiting", ')), null, 'unparseable JSON -> null');
+  assert.strictEqual(orchestrator.parseStatus(wrap('{ "state": "pondering" }')), null, 'an unknown state -> null');
+  assert.strictEqual(orchestrator.parseStatus(wrap('[1,2,3]')), null, 'a non-object payload -> null');
+  assert.strictEqual(orchestrator.parseStatus('no markers, no json at all'), null, 'no payload -> null');
+  assert.strictEqual(orchestrator.parseStatus(''), null, 'empty text -> null');
+  assert.strictEqual(orchestrator.parseStatus(undefined), null, 'no text at all -> null');
 
   // The last sentinel span wins, so the echoed example in the prompt loses to
   // the real answer.
-  const twice = `${queen.HIVE_START}{"state":"waiting","watch":["old"]}${queen.HIVE_END}` +
-    `later…${queen.HIVE_START}{"state":"done","summary":"fin"}${queen.HIVE_END}`;
-  assert.strictEqual(queen.parseStatus(twice).state, 'done', 'the last span is the answer');
+  const twice = `${orchestrator.ORCH_START}{"state":"waiting","watch":["old"]}${orchestrator.ORCH_END}` +
+    `later…${orchestrator.ORCH_START}{"state":"done","summary":"fin"}${orchestrator.ORCH_END}`;
+  assert.strictEqual(orchestrator.parseStatus(twice).state, 'done', 'the last span is the answer');
 });
 
-test('queen: statusPrompt digests every watched worker and flags ones that vanished', () => {
-  const queen = require('../server/queen');
+test('orchestrator: statusPrompt digests every watched worker and flags ones that vanished', () => {
+  const orchestrator = require('../server/orchestrator');
   const tasks = [
     mkTask('w1', 'validation', 'repoA', { title: 'Add the parser', lastOutcome: 'success', branch: 'srpopo/parser', runCount: 1 }),
     mkTask('w2', 'failed', 'repoA', { title: 'Wire the UI', lastOutcome: 'error', lastError: 'tsc: type error in app.ts' }),
   ];
-  const prompt = queen.statusPrompt({ watch: ['w1', 'w2', 'gone'], mode: 'manual' }, tasks);
+  const prompt = orchestrator.statusPrompt({ watch: ['w1', 'w2', 'gone'], mode: 'manual' }, tasks);
   assert.ok(prompt.includes('w1') && prompt.includes('Add the parser'), 'each watched task is listed');
   assert.ok(prompt.includes('status=validation'), 'its status is reported');
   assert.ok(prompt.includes('tsc: type error in app.ts'), 'a failure reason is carried over');
   assert.ok(prompt.includes('gone'), 'a deleted watched id is called out');
-  assert.ok(prompt.includes(queen.HIVE_START), 'the status contract is restated');
+  assert.ok(prompt.includes(orchestrator.ORCH_START), 'the status contract is restated');
 
-  const reply = queen.replyPrompt('SQLite or JSON?', 'JSON, keep it dependency-free', 'manual');
+  const reply = orchestrator.replyPrompt('SQLite or JSON?', 'JSON, keep it dependency-free', 'manual');
   assert.ok(reply.includes('SQLite or JSON?') && reply.includes('dependency-free'), 'the Q and A are paired');
-  assert.ok(queen.nudgePrompt('manual').includes('no task ids to watch'), 'the empty-watch nudge explains itself');
+  assert.ok(orchestrator.nudgePrompt('manual').includes('no task ids to watch'), 'the empty-watch nudge explains itself');
 });
 
-test('queen: deriveTitle takes the first non-empty line and caps length', () => {
-  const queen = require('../server/queen');
-  assert.strictEqual(queen.deriveTitle('\n\n  Ship the new board  \nmore detail'), 'Ship the new board');
-  assert.strictEqual(queen.deriveTitle(''), 'Orchestrated goal', 'empty input still gets a title');
-  const long = queen.deriveTitle('x'.repeat(200));
+test('orchestrator: deriveTitle takes the first non-empty line and caps length', () => {
+  const orchestrator = require('../server/orchestrator');
+  assert.strictEqual(orchestrator.deriveTitle('\n\n  Ship the new board  \nmore detail'), 'Ship the new board');
+  assert.strictEqual(orchestrator.deriveTitle(''), 'Orchestrated goal', 'empty input still gets a title');
+  const long = orchestrator.deriveTitle('x'.repeat(200));
   assert.ok(long.length <= 60 && long.endsWith('…'), 'a long goal is truncated with an ellipsis');
 });
 
@@ -2400,7 +2446,7 @@ function mkOrchestration(id: string, status: string, watch: string[], extra: Rec
 }
 
 // Install orchestrations + tasks on the shared store and return a cleanup.
-function withHiveStore(orchestrations: unknown[], tasks: unknown[]) {
+function withOrchestratorStore(orchestrations: unknown[], tasks: unknown[]) {
   const store = require('../server/store');
   const prevOrch = store.db.orchestrations;
   const prevTasks = store.db.tasks;
@@ -2412,22 +2458,22 @@ function withHiveStore(orchestrations: unknown[], tasks: unknown[]) {
   };
 }
 
-// The hive cases below let the engine's debounce timer (collapsed to ~0ms by
+// The orchestrator cases below let the engine's debounce timer (collapsed to ~0ms by
 // _setTiming) run with the same `tick()` helper the autonomous cases use.
 
-test('hive: a watched worker landing resumes the queen exactly once, with a status digest', async () => {
-  const hive = require('../server/hive');
+test('orchestrator: a watched worker landing resumes the orchestrator exactly once, with a status digest', async () => {
+  const orchestratorEngine = require('../server/orchestrator-engine');
   const bus = require('../server/bus');
   const orch = mkOrchestration('o1', 'waiting', ['w1', 'w2']);
   const w1 = mkTask('w1', 'running', 'repoA');
   const w2 = mkTask('w2', 'running', 'repoA');
-  const restore = withHiveStore([orch], [w1, w2]);
+  const restore = withOrchestratorStore([orch], [w1, w2]);
   const resumes: string[] = [];
-  hive._setDeps({ resume: (_o: unknown, prompt: string) => { resumes.push(prompt); } });
-  hive._setTiming({ debounceMs: 0 });
+  orchestratorEngine._setDeps({ resume: (_o: unknown, prompt: string) => { resumes.push(prompt); } });
+  orchestratorEngine._setTiming({ debounceMs: 0 });
   try {
-    hive.start();
-    assert.strictEqual(hive.isWatching('o1'), true, 'a waiting orchestration is armed on boot (restart re-arm)');
+    orchestratorEngine.start();
+    assert.strictEqual(orchestratorEngine.isWatching('o1'), true, 'a waiting orchestration is armed on boot (restart re-arm)');
 
     // A worker still running changes nothing.
     bus.broadcast({ type: 'task', task: w1 });
@@ -2449,22 +2495,22 @@ test('hive: a watched worker landing resumes the queen exactly once, with a stat
     await tick();
     assert.strictEqual(resumes.length, 1, 'an already-reported landing is ignored');
   } finally {
-    hive._reset();
+    orchestratorEngine._reset();
     restore();
   }
 });
 
-test('hive: a worker mid-code-review has not landed, so the queen is not woken', async () => {
-  const hive = require('../server/hive');
+test('orchestrator: a worker mid-code-review has not landed, so the orchestrator is not woken', async () => {
+  const orchestratorEngine = require('../server/orchestrator-engine');
   const bus = require('../server/bus');
   const orch = mkOrchestration('o-cr', 'waiting', ['wcr']);
   const worker = mkTask('wcr', 'running', 'repoA');
-  const restore = withHiveStore([orch], [worker]);
+  const restore = withOrchestratorStore([orch], [worker]);
   const resumes: string[] = [];
-  hive._setDeps({ resume: (_o: unknown, prompt: string) => { resumes.push(prompt); } });
-  hive._setTiming({ debounceMs: 0 });
+  orchestratorEngine._setDeps({ resume: (_o: unknown, prompt: string) => { resumes.push(prompt); } });
+  orchestratorEngine._setTiming({ debounceMs: 0 });
   try {
-    hive.start();
+    orchestratorEngine.start();
     // The Code Review stage is a live child, not a terminal state — the worker is
     // still in flight and lands in `validation` next.
     worker.status = 'code_review';
@@ -2475,51 +2521,51 @@ test('hive: a worker mid-code-review has not landed, so the queen is not woken',
     worker.status = 'validation';
     bus.broadcast({ type: 'task', task: worker });
     await tick();
-    assert.strictEqual(resumes.length, 1, 'the validation landing is what wakes the queen');
+    assert.strictEqual(resumes.length, 1, 'the validation landing is what wakes the orchestrator');
   } finally {
-    hive._reset();
+    orchestratorEngine._reset();
     restore();
   }
 });
 
-test('hive: only the orchestration watching a task reacts to it', async () => {
-  const hive = require('../server/hive');
+test('orchestrator: only the orchestration watching a task reacts to it', async () => {
+  const orchestratorEngine = require('../server/orchestrator-engine');
   const bus = require('../server/bus');
   const mine = mkOrchestration('o-mine', 'waiting', ['t-mine']);
   const other = mkOrchestration('o-other', 'waiting', ['t-other']);
   const draft = mkOrchestration('o-draft', 'draft', ['t-mine']);
   const task = mkTask('t-mine', 'validation', 'repoA');
-  const restore = withHiveStore([mine, other, draft], [task, mkTask('t-other', 'ready', 'repoA')]);
+  const restore = withOrchestratorStore([mine, other, draft], [task, mkTask('t-other', 'ready', 'repoA')]);
   const resumed: string[] = [];
-  hive._setDeps({ resume: (o: { id: string }) => { resumed.push(o.id); } });
-  hive._setTiming({ debounceMs: 0 });
+  orchestratorEngine._setDeps({ resume: (o: { id: string }) => { resumed.push(o.id); } });
+  orchestratorEngine._setTiming({ debounceMs: 0 });
   try {
-    hive.start();
-    assert.strictEqual(hive.isWatching('o-draft'), false, 'a draft orchestration is never armed');
+    orchestratorEngine.start();
+    assert.strictEqual(orchestratorEngine.isWatching('o-draft'), false, 'a draft orchestration is never armed');
     bus.broadcast({ type: 'task', task });
     await tick();
     assert.deepStrictEqual(resumed, ['o-mine'], 'only the watcher of that task resumes');
   } finally {
-    hive._reset();
+    orchestratorEngine._reset();
     restore();
   }
 });
 
-test('hive: never resumes a session that is already running, and retries once it frees up', async () => {
-  const hive = require('../server/hive');
+test('orchestrator: never resumes a session that is already running, and retries once it frees up', async () => {
+  const orchestratorEngine = require('../server/orchestrator-engine');
   const bus = require('../server/bus');
   const orch = mkOrchestration('o2', 'waiting', ['w3']);
   const task = mkTask('w3', 'validation', 'repoA');
-  const restore = withHiveStore([orch], [task]);
+  const restore = withOrchestratorStore([orch], [task]);
   let live = true;
   const resumed: string[] = [];
-  hive._setDeps({
+  orchestratorEngine._setDeps({
     resume: (o: { id: string }) => { resumed.push(o.id); },
     isRunning: () => live,
   });
-  hive._setTiming({ debounceMs: 0, retryMs: 0 });
+  orchestratorEngine._setTiming({ debounceMs: 0, retryMs: 0 });
   try {
-    hive.start();
+    orchestratorEngine.start();
     bus.broadcast({ type: 'task', task });
     await tick();
     assert.deepStrictEqual(resumed, [], 'no second turn while the session is live');
@@ -2527,23 +2573,23 @@ test('hive: never resumes a session that is already running, and retries once it
     await tick();
     assert.deepStrictEqual(resumed, ['o2'], 'the queued wake-up fires once the session frees up');
   } finally {
-    hive._reset();
+    orchestratorEngine._reset();
     restore();
   }
 });
 
-test('hive: waits for a free session slot instead of blowing past the parallel cap', async () => {
-  const hive = require('../server/hive');
+test('orchestrator: waits for a free session slot instead of blowing past the parallel cap', async () => {
+  const orchestratorEngine = require('../server/orchestrator-engine');
   const bus = require('../server/bus');
   const orch = mkOrchestration('o3', 'waiting', ['w4']);
   const task = mkTask('w4', 'done', 'repoA');
-  const restore = withHiveStore([orch], [task]);
+  const restore = withOrchestratorStore([orch], [task]);
   let full = true;
   const resumed: string[] = [];
-  hive._setDeps({ resume: (o: { id: string }) => { resumed.push(o.id); }, atCapacity: () => full });
-  hive._setTiming({ debounceMs: 0, retryMs: 0 });
+  orchestratorEngine._setDeps({ resume: (o: { id: string }) => { resumed.push(o.id); }, atCapacity: () => full });
+  orchestratorEngine._setTiming({ debounceMs: 0, retryMs: 0 });
   try {
-    hive.start();
+    orchestratorEngine.start();
     bus.broadcast({ type: 'task', task });
     await tick();
     assert.deepStrictEqual(resumed, [], 'held back while every session slot is busy');
@@ -2551,81 +2597,81 @@ test('hive: waits for a free session slot instead of blowing past the parallel c
     await tick();
     assert.deepStrictEqual(resumed, ['o3'], 'resumes once a slot frees up');
   } finally {
-    hive._reset();
+    orchestratorEngine._reset();
     restore();
   }
 });
 
-test('hive: the turn cap fails the card instead of looping forever', async () => {
-  const hive = require('../server/hive');
+test('orchestrator: the turn cap fails the card instead of looping forever', async () => {
+  const orchestratorEngine = require('../server/orchestrator-engine');
   const bus = require('../server/bus');
-  const orch = mkOrchestration('o4', 'waiting', ['w5'], { turnCount: hive.MAX_TURNS });
+  const orch = mkOrchestration('o4', 'waiting', ['w5'], { turnCount: orchestratorEngine.MAX_TURNS });
   const task = mkTask('w5', 'validation', 'repoA');
-  const restore = withHiveStore([orch], [task]);
+  const restore = withOrchestratorStore([orch], [task]);
   const resumed: string[] = [];
-  hive._setDeps({ resume: (o: { id: string }) => { resumed.push(o.id); } });
-  hive._setTiming({ debounceMs: 0 });
+  orchestratorEngine._setDeps({ resume: (o: { id: string }) => { resumed.push(o.id); } });
+  orchestratorEngine._setTiming({ debounceMs: 0 });
   try {
-    hive.start();
+    orchestratorEngine.start();
     bus.broadcast({ type: 'task', task });
     await tick();
     assert.deepStrictEqual(resumed, [], 'no further turn is started');
     assert.strictEqual(orch.status, 'failed', 'the card is failed');
-    assert.match(String(orch.lastError), new RegExp(`${hive.MAX_TURNS} orchestrator turns`), 'and says why');
+    assert.match(String(orch.lastError), new RegExp(`${orchestratorEngine.MAX_TURNS} orchestrator turns`), 'and says why');
     assert.strictEqual(orch.sessionId, null, 'the exhausted session is dropped');
-    assert.strictEqual(hive.isWatching('o4'), false, 'the watchers are disarmed');
+    assert.strictEqual(orchestratorEngine.isWatching('o4'), false, 'the watchers are disarmed');
   } finally {
-    hive._reset();
+    orchestratorEngine._reset();
     restore();
   }
 });
 
-test('hive: a turn ending as waiting re-arms; question/done/failed and archive disarm', async () => {
-  const hive = require('../server/hive');
+test('orchestrator: a turn ending as waiting re-arms; question/done/failed and archive disarm', async () => {
+  const orchestratorEngine = require('../server/orchestrator-engine');
   const bus = require('../server/bus');
   const orch = mkOrchestration('o5', 'running', []);
-  const restore = withHiveStore([orch], []);
-  hive._setDeps({ resume: () => {} });
-  hive._setTiming({ debounceMs: 0 });
+  const restore = withOrchestratorStore([orch], []);
+  orchestratorEngine._setDeps({ resume: () => {} });
+  orchestratorEngine._setTiming({ debounceMs: 0 });
   try {
-    hive.start();
-    assert.strictEqual(hive.isWatching('o5'), false, 'a running orchestration has nothing to watch');
+    orchestratorEngine.start();
+    assert.strictEqual(orchestratorEngine.isWatching('o5'), false, 'a running orchestration has nothing to watch');
 
     orch.status = 'waiting';
     orch.watch = ['w6'];
     bus.broadcast({ type: 'orchestration', orchestration: orch });
-    assert.strictEqual(hive.isWatching('o5'), true, 'ending a turn as waiting arms the watchers');
+    assert.strictEqual(orchestratorEngine.isWatching('o5'), true, 'ending a turn as waiting arms the watchers');
 
     for (const status of ['awaiting', 'finished', 'failed', 'draft']) {
       orch.status = 'waiting';
       bus.broadcast({ type: 'orchestration', orchestration: orch });
       orch.status = status;
       bus.broadcast({ type: 'orchestration', orchestration: orch });
-      assert.strictEqual(hive.isWatching('o5'), false, `${status} disarms the watchers`);
+      assert.strictEqual(orchestratorEngine.isWatching('o5'), false, `${status} disarms the watchers`);
     }
 
     orch.status = 'waiting';
     bus.broadcast({ type: 'orchestration', orchestration: orch });
     bus.broadcast({ type: 'orchestration-removed', orchestrationId: 'o5' });
-    assert.strictEqual(hive.isWatching('o5'), false, 'a removed card is forgotten');
+    assert.strictEqual(orchestratorEngine.isWatching('o5'), false, 'a removed card is forgotten');
   } finally {
-    hive._reset();
+    orchestratorEngine._reset();
     restore();
   }
 });
 
-test('hive: a worker that landed while the queen was busy still wakes it on re-arm', async () => {
-  const hive = require('../server/hive');
+test('orchestrator: a worker that landed while the orchestrator was busy still wakes it on re-arm', async () => {
+  const orchestratorEngine = require('../server/orchestrator-engine');
   const bus = require('../server/bus');
   const orch = mkOrchestration('o6', 'running', ['w7']);
   // The worker finished mid-turn, while nothing was armed to notice.
   const task = mkTask('w7', 'validation', 'repoA');
-  const restore = withHiveStore([orch], [task]);
+  const restore = withOrchestratorStore([orch], [task]);
   const resumed: string[] = [];
-  hive._setDeps({ resume: (o: { id: string }) => { resumed.push(o.id); } });
-  hive._setTiming({ debounceMs: 0 });
+  orchestratorEngine._setDeps({ resume: (o: { id: string }) => { resumed.push(o.id); } });
+  orchestratorEngine._setTiming({ debounceMs: 0 });
   try {
-    hive.start();
+    orchestratorEngine.start();
     bus.broadcast({ type: 'task', task }); // lands unnoticed — nothing armed
     await tick();
     assert.deepStrictEqual(resumed, [], 'nothing to notice it yet');
@@ -2634,30 +2680,30 @@ test('hive: a worker that landed while the queen was busy still wakes it on re-a
     await tick();
     assert.deepStrictEqual(resumed, ['o6'], 'the missed landing is picked up when the watchers re-arm');
   } finally {
-    hive._reset();
+    orchestratorEngine._reset();
     restore();
   }
 });
 
-test('hive: a waiting turn that watches nothing is nudged rather than stalling forever', async () => {
-  const hive = require('../server/hive');
+test('orchestrator: a waiting turn that watches nothing is nudged rather than stalling forever', async () => {
+  const orchestratorEngine = require('../server/orchestrator-engine');
   const bus = require('../server/bus');
-  const queen = require('../server/queen');
+  const orchestrator = require('../server/orchestrator');
   const orch = mkOrchestration('o7', 'running', []);
-  const restore = withHiveStore([orch], []);
+  const restore = withOrchestratorStore([orch], []);
   const prompts: string[] = [];
-  hive._setDeps({ resume: (_o: unknown, prompt: string) => { prompts.push(prompt); } });
-  hive._setTiming({ debounceMs: 0 });
+  orchestratorEngine._setDeps({ resume: (_o: unknown, prompt: string) => { prompts.push(prompt); } });
+  orchestratorEngine._setTiming({ debounceMs: 0 });
   try {
-    hive.start();
+    orchestratorEngine.start();
     orch.status = 'waiting';
     orch.watch = [];
     bus.broadcast({ type: 'orchestration', orchestration: orch });
     await tick();
     assert.strictEqual(prompts.length, 1, 'it is resumed immediately');
-    assert.strictEqual(prompts[0], queen.nudgePrompt('manual'), 'with the empty-watch nudge');
+    assert.strictEqual(prompts[0], orchestrator.nudgePrompt('manual'), 'with the empty-watch nudge');
   } finally {
-    hive._reset();
+    orchestratorEngine._reset();
     restore();
   }
 });
@@ -2671,16 +2717,16 @@ test('index: orchestration routes are registered, gated on the plugin, and valid
   const post = (path: string, body: unknown) => fetch(`${base}${path}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   });
-  const repo = { id: store.id(), path: '/tmp/hive-repo', name: 'o/hive', branch: null, addedAt: store.now() };
+  const repo = { id: store.id(), path: '/tmp/orch-repo', name: 'o/orch', branch: null, addedAt: store.now() };
   store.db.repos.push(repo);
   try {
     // Gated: nothing can be created until the plugin is installed.
     store.db.settings.installedPlugins = [];
     let res = await post('/api/orchestrations', { repoId: repo.id, goal: 'x' });
     assert.strictEqual(res.status, 400, 'creation is refused without the plugin');
-    assert.match((await res.json()).error, /Hive Orchestration plugin/, 'and says which plugin to install');
+    assert.match((await res.json()).error, /Goal Orchestration plugin/, 'and says which plugin to install');
 
-    store.db.settings.installedPlugins = ['hive'];
+    store.db.settings.installedPlugins = ['orchestration'];
     assert.strictEqual((await post('/api/orchestrations', { repoId: repo.id, run: false })).status, 400, 'a goal is required');
     assert.strictEqual((await post('/api/orchestrations', { repoId: 'nope', goal: 'x', run: false })).status, 400, 'the repo must exist');
 
@@ -2729,13 +2775,14 @@ test('index: orchestration routes are registered, gated on the plugin, and valid
   }
 });
 
-test('plugins: the catalog lists Hive Orchestration and sanitize keeps it', () => {
+test('plugins: the catalog lists Goal Orchestration and sanitize keeps it', () => {
   const plugins = require('../server/plugins');
-  const hive = plugins.catalog().find((p: { id: string }) => p.id === 'hive');
-  assert.ok(hive, 'hive is in the marketplace catalog');
-  assert.strictEqual(hive.requiresApiKey, false, 'it needs no API key');
-  assert.strictEqual(hive.icon, 'crown', 'it uses an icon, never an emoji');
-  assert.deepStrictEqual(plugins.sanitize(['hive', 'bogus']), ['hive'], 'unknown ids are dropped');
+  const orch = plugins.catalog().find((p: { id: string }) => p.id === 'orchestration');
+  assert.ok(orch, 'orchestration is in the marketplace catalog');
+  assert.strictEqual(orch.name, 'Goal Orchestration', 'it is displayed under its non-codename name');
+  assert.strictEqual(orch.requiresApiKey, false, 'it needs no API key');
+  assert.strictEqual(orch.icon, 'crown', 'it uses an icon, never an emoji');
+  assert.deepStrictEqual(plugins.sanitize(['orchestration', 'bogus']), ['orchestration'], 'unknown ids are dropped');
 });
 
 test('store: db.orchestrations is backfilled and orphaned running cards fail on boot', () => {
@@ -2745,4 +2792,87 @@ test('store: db.orchestrations is backfilled and orphaned running cards fail on 
   // failed — exactly what store.ts does for tasks and groomings.
   const src = fs.readFileSync(path.join(__dirname, '..', 'server', 'store.ts'), 'utf8');
   assert.ok(src.includes('Server restarted while the orchestrator was running'), 'orphaned running orchestrations are failed on boot');
+});
+
+test('desktop: the editor catalog covers VS Code and the IntelliJ family, keyed by their CLI launchers', () => {
+  const desktop = require('../server/desktop');
+  const byId = (id: string) => desktop.EDITORS.find((e: { id: string }) => e.id === id);
+  assert.deepStrictEqual(byId('vscode').bins, ['code'], 'VS Code launches through `code`');
+  assert.deepStrictEqual(byId('intellij').bins, ['idea'], 'IntelliJ launches through `idea`');
+  for (const id of ['webstorm', 'pycharm', 'goland', 'phpstorm', 'rubymine', 'clion', 'rider']) {
+    assert.ok(byId(id), `${id} is in the catalog`);
+  }
+  // Every entry needs the two fallbacks a launch depends on, plus a hint to show
+  // the user when neither is present.
+  for (const e of desktop.EDITORS) {
+    assert.ok(e.label && e.bins.length && e.macApps.length && e.hint, `${e.id} is fully specified`);
+  }
+  assert.ok(['Finder', 'File Explorer', 'file manager'].includes(desktop.FILE_MANAGER_LABEL), 'the file manager has a platform name');
+});
+
+test('desktop: detect() reports availability per editor and openInEditor refuses an unknown id', () => {
+  const desktop = require('../server/desktop');
+  const list = desktop.detect(true);
+  assert.strictEqual(list.length, desktop.EDITORS.length, 'every catalog entry is reported');
+  for (const e of list) {
+    assert.strictEqual(typeof e.available, 'boolean', `${e.id} carries an availability flag`);
+    assert.ok(!('bins' in e), 'the board never sees the launcher internals');
+  }
+  // Throws rather than spawning anything for an id that isn't in the catalog.
+  assert.throws(() => desktop.openInEditor('not-an-editor', '/tmp'), /Unknown editor/);
+});
+
+test('index: GET /api/desktop lists the editors, and PATCH only accepts a known default', async () => {
+  const store = require('../server/store');
+  const index = require('../server/index');
+  const prev = store.db.settings.defaultEditor;
+  const { server, port } = await index.start(0);
+  const base = `http://127.0.0.1:${port}`;
+  const patch = (body: unknown) => fetch(`${base}/api/settings`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  try {
+    const body = await (await fetch(`${base}/api/desktop`)).json();
+    assert.ok(body.fileManager, 'the file manager name is exposed for the button label');
+    assert.ok(Array.isArray(body.editors) && body.editors.length, 'the editor catalog is exposed');
+    assert.strictEqual(typeof body.defaultEditor, 'string', 'the configured default comes along');
+
+    assert.strictEqual((await (await patch({ defaultEditor: 'intellij' })).json()).defaultEditor, 'intellij', 'a known id sticks');
+    assert.strictEqual((await (await patch({ defaultEditor: 'bogus-ide' })).json()).defaultEditor, 'intellij', 'an unknown id is ignored');
+    assert.strictEqual((await (await patch({ defaultEditor: '' })).json()).defaultEditor, '', 'and it can be cleared');
+  } finally {
+    await new Promise<void>((r) => server.close(() => r()));
+    store.db.settings.defaultEditor = prev;
+  }
+});
+
+test('index: the reveal/editor routes validate the repo and path before launching anything', async () => {
+  const store = require('../server/store');
+  const index = require('../server/index');
+  const prev = store.db.settings.defaultEditor;
+  const { server, port } = await index.start(0);
+  const base = `http://127.0.0.1:${port}`;
+  const post = (path: string, body: unknown) => fetch(`${base}${path}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const repo = { id: store.id(), path: '/tmp/desktop-repo', name: 'd/desk', branch: null, addedAt: store.now() };
+  store.db.repos.push(repo);
+  try {
+    assert.strictEqual((await post('/api/repos/nope/reveal', {})).status, 404, 'an unknown repo 404s');
+    assert.strictEqual((await post('/api/repos/nope/editor', {})).status, 404, 'an unknown repo 404s');
+    // A path that isn't the repo root or one of its live worktrees is refused,
+    // so neither route can be pointed at an arbitrary filesystem location.
+    assert.strictEqual((await post(`/api/repos/${repo.id}/reveal`, { path: '/etc' })).status, 404, 'a foreign path 404s');
+    assert.strictEqual((await post(`/api/repos/${repo.id}/editor`, { path: '/etc' })).status, 404, 'a foreign path 404s');
+    // With no default configured the editor route reports "pick one" (409)
+    // instead of failing — the board opens its picker on that.
+    store.db.settings.defaultEditor = '';
+    const res = await post(`/api/repos/${repo.id}/editor`, {});
+    assert.strictEqual(res.status, 409, 'no editor configured is a 409, not a 500');
+    assert.match((await res.json()).error, /No editor configured/);
+  } finally {
+    await new Promise<void>((r) => server.close(() => r()));
+    store.db.repos = store.db.repos.filter((r: { id: string }) => r.id !== repo.id);
+    store.db.settings.defaultEditor = prev;
+  }
 });

@@ -29,21 +29,23 @@
     </div>
     <div class="topbar-actions">
       <span id="health" class="health-chip" title="Agent CLI status">checking…</span>
+      <span class="topbar-sep" aria-hidden="true"></span>
       <button class="btn ghost" id="btn-palette" title="Search & commands"><span class="i" data-icon="command"></span></button>
       <button class="btn ghost" id="btn-theme" title="Theme: System" aria-label="Toggle theme"></button>
       <button class="btn ghost" id="btn-settings" title="Settings" aria-label="Settings"><span class="i" data-icon="settings"></span></button>
-      <button class="btn ghost" id="btn-repos"><span class="i" data-icon="folder"></span>Repos</button>
-      <button class="btn ghost" id="btn-ask"><span class="i" data-icon="message-circle-question"></span>Ask Sr. Popo</button>
-      <button class="btn ghost hidden" id="btn-brief"><span class="i" data-icon="lightbulb"></span>Brief an Idea</button>
-      <button class="btn ghost hidden" id="btn-hive"><span class="i" data-icon="crown"></span>Orchestrate a Goal</button>
-      <button class="btn ghost hidden" id="btn-linear"><span class="i" data-icon="linear"></span>From Linear</button>
-      <button class="btn ghost hidden" id="btn-specs"><span class="i" data-icon="folder"></span>From Specs</button>
-      <button class="btn primary" id="btn-new-task"><span class="i" data-icon="plus"></span>New Task</button>
+      <span class="topbar-sep" aria-hidden="true"></span>
+      <button class="btn ghost btn-collapsible" id="btn-repos" title="Repos" aria-label="Repos"><span class="i" data-icon="folder"></span><span class="btn-label">Repos</span></button>
+      <button class="btn ghost btn-collapsible" id="btn-ask" title="Ask Sr. Popo" aria-label="Ask Sr. Popo"><span class="i" data-icon="message-circle-question"></span><span class="btn-label">Ask Sr. Popo</span></button>
+      <button class="btn ghost hidden btn-collapsible" id="btn-brief" title="Brief an Idea" aria-label="Brief an Idea"><span class="i" data-icon="lightbulb"></span><span class="btn-label">Brief an Idea</span></button>
+      <button class="btn ghost hidden btn-collapsible" id="btn-orchestrate" title="Orchestrate a Goal" aria-label="Orchestrate a Goal"><span class="i" data-icon="crown"></span><span class="btn-label">Orchestrate a Goal</span></button>
+      <button class="btn ghost hidden btn-collapsible" id="btn-linear" title="From Linear" aria-label="From Linear"><span class="i" data-icon="linear"></span><span class="btn-label">From Linear</span></button>
+      <button class="btn ghost hidden btn-collapsible" id="btn-specs" title="From Specs" aria-label="From Specs"><span class="i" data-icon="folder"></span><span class="btn-label">From Specs</span></button>
+      <button class="btn primary btn-collapsible" id="btn-new-task" title="New task" aria-label="New task"><span class="i" data-icon="plus"></span><span class="btn-label">New Task</span></button>
     </div>
   </header>
 
   <div id="workspace-header" class="workspace-header hidden">
-    <button class="btn ghost" id="workspace-back"><span class="i" data-icon="arrow-left"></span>Super View</button>
+    <button class="btn ghost btn-collapsible" id="workspace-back" title="Back to Super View" aria-label="Back to Super View"><span class="i" data-icon="arrow-left"></span><span class="btn-label">Super View</span></button>
     <div class="workspace-header-title">
       <button class="workspace-switcher" id="workspace-switcher" aria-haspopup="menu" aria-expanded="false" title="Switch workspace">
         <span id="workspace-title" class="workspace-title"></span>
@@ -58,11 +60,18 @@
         <div id="workspace-popover-list" class="ws-popover-list"></div>
       </div>
     </div>
-    <button class="btn ghost hidden" id="btn-autonomous" title="Autonomous Mode"><span class="i" data-icon="bot"></span>Autonomous</button>
+    <button class="btn ghost hidden btn-collapsible" id="btn-autonomous" title="Autonomous Mode" aria-label="Autonomous Mode"><span class="i" data-icon="bot"></span><span class="btn-label">Autonomous</span></button>
     <button class="btn ghost icon" id="workspace-memory" title="Project memory" aria-label="Project memory"><span class="i" data-icon="brain"></span></button>
     <button class="btn ghost icon" id="workspace-terminal" title="Open a terminal here" aria-label="Open terminal"><span class="i" data-icon="terminal"></span></button>
+    <button class="btn ghost icon" id="workspace-reveal" title="Reveal in file manager" aria-label="Reveal in file manager"><span class="i" data-icon="folder-open"></span></button>
+    <button class="btn ghost icon" id="workspace-ide" title="Open in IDE" aria-label="Open in IDE" aria-haspopup="menu" aria-expanded="false"><span class="i" data-icon="code"></span></button>
     <button class="btn ghost icon" id="workspace-info" title="Workspace details" aria-label="Workspace details"><span class="i" data-icon="info"></span></button>
   </div>
+
+  <!-- Editor picker for the "Open in IDE" quick action. Anchored under whichever
+       button opened it; only shown when no default editor is configured yet (the
+       pick is then remembered as the default). -->
+  <div id="ide-menu" class="quick-menu hidden" role="menu" aria-label="Open in IDE"></div>
 
   <!-- Autonomous Mode live status banner (shown only while a session runs) -->
   <div id="autonomous-banner" class="autonomous-banner hidden"></div>
@@ -126,82 +135,112 @@
     </div>
   </aside>
 
-  <!-- New task modal -->
+  <!-- New task modal — laid out as a prompt composer rather than a settings
+       sheet: the prompt is the hero, every setting is a one-click icon chip
+       around it, and the rarely-touched fields live under "Advanced". The goal
+       is that the whole thing fits on screen without scrolling. -->
   <div id="modal-task" class="modal hidden">
-    <div class="modal-box">
-      <h2 id="task-modal-title">New Task</h2>
-      <label id="task-repo-field">Repository
-        <div class="row">
-          <select id="task-repo"></select>
-          <button class="btn ghost" id="task-add-repo" title="Add a repository" aria-label="Add a repository"><span class="i" data-icon="plus"></span></button>
-        </div>
-        <span id="task-repo-branch" class="field-hint"></span>
-      </label>
-      <label id="task-base-branch-field">Base branch <span class="field-hint">— new work branches off this</span>
-        <div class="row">
-          <select id="task-base-branch"></select>
-          <button class="btn ghost" id="task-new-branch" title="Create a new branch, checked out from the current one" aria-label="Create a new branch"><span class="i" data-icon="git-branch"></span></button>
-        </div>
-      </label>
-      <label>Title
-        <input id="task-title" placeholder="e.g. Add dark mode toggle" maxlength="120" />
-      </label>
-      <label>Prompt
-        <textarea id="task-prompt" rows="6" placeholder="Describe the task exactly as you would tell the agent…"></textarea>
-      </label>
-      <div class="field-block">
-        <span class="field-label">Attachments <span class="field-hint">— files the run can Read by path</span></span>
-        <input type="file" id="task-file-input" multiple hidden />
-        <div id="task-dropzone" class="dropzone">
-          <span class="i" data-icon="paperclip"></span>
-          <span class="dropzone-text">Drag files here or
-            <button type="button" class="link-btn" id="task-add-files">add files</button>
+    <div class="modal-box task-box">
+      <h2 id="task-modal-title"><span class="i" data-icon="sparkles"></span>New Task</h2>
+
+      <div class="task-context">
+        <label id="task-repo-field" class="ctl">
+          <span class="ctl-label"><span class="i" data-icon="folder"></span>Repository</span>
+          <div class="row">
+            <select id="task-repo"></select>
+            <button class="btn ghost icon" id="task-add-repo" title="Add a repository" aria-label="Add a repository"><span class="i" data-icon="plus"></span></button>
+          </div>
+          <span id="task-repo-branch" class="field-hint"></span>
+        </label>
+        <label id="task-base-branch-field" class="ctl">
+          <span class="ctl-label"><span class="i" data-icon="git-branch"></span>Base branch</span>
+          <div class="row">
+            <select id="task-base-branch" title="New work branches off this"></select>
+            <button class="btn ghost icon" id="task-new-branch" title="Create a new branch, checked out from the current one" aria-label="Create a new branch"><span class="i" data-icon="plus"></span></button>
+          </div>
+        </label>
+      </div>
+
+      <div class="task-titlebar">
+        <span class="i" data-icon="type" aria-hidden="true"></span>
+        <input id="task-title" aria-label="Task title" maxlength="120"
+               placeholder="Task title — e.g. Add a dark mode toggle" />
+      </div>
+
+      <!-- The composer: prompt, its attachment tray, and the run settings.
+           Files can be dropped or pasted anywhere on it. -->
+      <div class="composer-box" id="task-composer">
+        <textarea id="task-prompt" rows="7" aria-label="Prompt"
+                  placeholder="Describe the task exactly as you would tell the agent…&#10;Drop or paste files here to attach them."></textarea>
+        <div id="task-attachment-list" class="attachment-strip"></div>
+        <div class="composer-bar">
+          <input type="file" id="task-file-input" multiple hidden />
+          <button type="button" class="chip-btn" id="task-add-files" title="Attach files the run can read" aria-label="Attach files"><span class="i" data-icon="paperclip"></span></button>
+          <span class="chip-sep" aria-hidden="true"></span>
+          <span class="sel-chip" title="Agent backend">
+            <span class="i" data-icon="bot" aria-hidden="true"></span>
+            <select id="task-agent" aria-label="Agent">
+              <option value="claude">Claude Code</option>
+              <option value="codex">OpenAI Codex</option>
+            </select>
+            <span class="i chev" data-icon="chevron-down" aria-hidden="true"></span>
           </span>
+          <span class="sel-chip" title="Model">
+            <span class="i" data-icon="cpu" aria-hidden="true"></span>
+            <select id="task-model" aria-label="Model">
+              <option value="default">Account default</option>
+              <option value="sonnet" data-agent="claude">Sonnet</option>
+              <option value="opus" data-agent="claude">Opus</option>
+              <option value="haiku" data-agent="claude">Haiku</option>
+              <option value="fable" data-agent="claude">Fable</option>
+              <option value="gpt-5.6-sol" data-agent="codex">GPT-5.6 Sol</option>
+              <option value="gpt-5.6-terra" data-agent="codex">GPT-5.6 Terra</option>
+              <option value="gpt-5.6-luna" data-agent="codex">GPT-5.6 Luna</option>
+            </select>
+            <span class="i chev" data-icon="chevron-down" aria-hidden="true"></span>
+          </span>
+          <span class="sel-chip" title="Permissions — how much the run may do without asking">
+            <span class="i" data-icon="shield" aria-hidden="true"></span>
+            <select id="task-perm" aria-label="Permissions">
+              <option value="acceptEdits">Accept edits</option>
+              <option value="bypassPermissions">Bypass all (YOLO)</option>
+              <option value="plan">Plan only</option>
+              <option value="default">Ask by default</option>
+            </select>
+            <span class="i chev" data-icon="chevron-down" aria-hidden="true"></span>
+          </span>
+          <span class="composer-kbd" aria-hidden="true">⌘↵ run</span>
         </div>
-        <div id="task-attachment-list" class="attachment-list"></div>
+        <div class="composer-drop" aria-hidden="true">
+          <span class="i" data-icon="paperclip"></span> Drop to attach
+        </div>
       </div>
-      <div class="grid-2">
-        <label>Agent
-          <select id="task-agent">
-            <option value="claude">Claude Code</option>
-            <option value="codex">OpenAI Codex</option>
-          </select>
+      <span id="task-perm-codex-hint" class="field-hint hidden">Codex maps this to a sandbox level (read-only / workspace-write); there is no per-tool prompt.</span>
+
+      <!-- Behavior toggles + persona picker, as chips so they cost one row each. -->
+      <div class="task-options" id="task-addons">
+        <label class="opt-chip" title="Work on a dedicated branch srpopo/&lt;task&gt; instead of the repo's current branch">
+          <input type="checkbox" id="task-worktree" checked />
+          <span class="i" data-icon="git-branch" aria-hidden="true"></span>Worktree
         </label>
-        <label>Model
-          <select id="task-model">
-            <option value="default">Account default</option>
-            <option value="sonnet" data-agent="claude">Sonnet</option>
-            <option value="opus" data-agent="claude">Opus</option>
-            <option value="haiku" data-agent="claude">Haiku</option>
-            <option value="fable" data-agent="claude">Fable</option>
-            <option value="gpt-5.6-sol" data-agent="codex">GPT-5.6 Sol</option>
-            <option value="gpt-5.6-terra" data-agent="codex">GPT-5.6 Terra</option>
-            <option value="gpt-5.6-luna" data-agent="codex">GPT-5.6 Luna</option>
-          </select>
+        <div id="task-addon-list" class="opt-chip-group"></div>
+        <label class="opt-chip" id="task-auto-code-review-chip"
+               title="After the run lands, a separate read-only reviewer session reads the diff, posts one review comment on the pull request, and grades it 1-5. Needs an open PR; costs one extra short session.">
+          <input type="checkbox" id="task-auto-code-review" />
+          <span class="i" data-icon="search" aria-hidden="true"></span>Code Review
         </label>
-      </div>
-      <div class="grid-2">
-        <label>Permissions
-          <select id="task-perm">
-            <option value="acceptEdits">Accept edits (recommended)</option>
-            <option value="bypassPermissions">Bypass all (YOLO)</option>
-            <option value="plan">Plan only</option>
-            <option value="default">Default (may block)</option>
-          </select>
-          <span id="task-perm-codex-hint" class="field-hint hidden">Codex maps this to a sandbox level (read-only / workspace-write); there is no per-tool prompt.</span>
+        <span class="chip-sep" aria-hidden="true"></span>
+        <label class="opt-chip" id="task-auto-persona-chip"
+               title="Let the run work out which expert role the task needs, and adopt it before starting">
+          <input type="checkbox" id="task-auto-persona" />
+          <span class="i" data-icon="sparkles" aria-hidden="true"></span>Auto persona
         </label>
-      </div>
-      <label>Allowed tools <span class="field-hint">— auto-approved in headless runs, comma-separated</span>
-        <input id="task-allowed-tools" type="text"
-               placeholder="Bash(npm run lint:*), Bash(npm test:*)" />
-      </label>
-      <fieldset id="task-personas" class="addons">
-        <legend>Personas</legend>
         <div class="persona-picker">
           <div id="task-persona-chips" class="persona-chips" role="list" aria-label="Selected personas"></div>
           <button type="button" class="persona-add-btn" id="task-persona-add"
+                  title="Give the agent an expert hat — injected at the start of the prompt"
                   aria-haspopup="listbox" aria-controls="task-persona-menu" aria-expanded="false">
-            <span class="i" data-icon="persona" aria-hidden="true"></span> Add persona
+            <span class="i" data-icon="persona" aria-hidden="true"></span> Persona
           </button>
           <div id="task-persona-menu" class="persona-menu hidden">
             <div class="persona-menu-search">
@@ -213,36 +252,28 @@
                  aria-multiselectable="true" aria-label="Personas"></div>
           </div>
         </div>
-        <p class="addon-hint">Give the agent one or more expert hats — injected at the start of the prompt.</p>
-      </fieldset>
-      <fieldset id="task-addons" class="addons">
-        <legend>Extra behavior</legend>
-        <label class="check addon">
-          <input type="checkbox" id="task-worktree" checked />
-          <span class="addon-text">
-            <span class="addon-label">Run in an isolated git worktree</span>
-            <span class="addon-hint">Work on a dedicated branch <code>srpopo/&lt;task&gt;</code> instead of the repo's current branch.</span>
-          </span>
-        </label>
-        <label id="task-branch-field">Branch name <span class="field-hint">— optional, defaults to <code>srpopo/&lt;task&gt;-&lt;id&gt;</code></span>
-          <input id="task-branch" type="text" placeholder="e.g. feature/ABC-123, matching your repo's convention" />
-        </label>
-        <label class="check addon">
-          <input type="checkbox" id="task-auto-code-review" />
-          <span class="addon-text">
-            <span class="addon-label">Grade the branch in Code Review when it finishes</span>
-            <span class="addon-hint">After the run lands, a separate read-only reviewer session reads the diff,
-              posts one review comment on the pull request, and grades it 1–5 — the card then moves to
-              <strong>Validation</strong> with the grade. Costs one extra short session, and needs an open PR;
-              without this the card goes straight to Validation.</span>
-          </span>
-        </label>
-        <div id="task-addon-list"></div>
-      </fieldset>
+      </div>
+
+      <details class="task-advanced" id="task-advanced">
+        <summary>
+          <span class="i chev" data-icon="chevron-right" aria-hidden="true"></span>
+          <span class="i" data-icon="sliders-horizontal" aria-hidden="true"></span>Advanced
+        </summary>
+        <div class="task-advanced-body">
+          <label id="task-branch-field">Branch name <span class="field-hint">— optional, defaults to <code>srpopo/&lt;task&gt;-&lt;id&gt;</code></span>
+            <input id="task-branch" type="text" placeholder="e.g. feature/ABC-123, matching your repo's convention" />
+          </label>
+          <label>Allowed tools <span class="field-hint">— auto-approved in headless runs, comma-separated</span>
+            <input id="task-allowed-tools" type="text"
+                   placeholder="Bash(npm run lint:*), Bash(npm test:*)" />
+          </label>
+        </div>
+      </details>
+
       <div class="modal-actions">
-        <button class="btn ghost" id="task-cancel">Cancel</button>
-        <button class="btn" id="task-create">Create in Backlog</button>
-        <button class="btn primary" id="task-create-run">Create &amp; Run <span class="i" data-icon="play"></span></button>
+        <button class="btn ghost" id="task-cancel"><span class="i" data-icon="x"></span>Cancel</button>
+        <button class="btn" id="task-create"><span class="i" data-icon="inbox"></span>Create in Backlog</button>
+        <button class="btn primary" id="task-create-run"><span class="i" data-icon="play"></span>Create &amp; Run</button>
       </div>
     </div>
   </div>
@@ -271,35 +302,116 @@
     </div>
   </div>
 
-  <!-- Brief an Idea modal (grooming) -->
+  <!-- Brief an Idea modal (grooming) — same prompt-composer shell as the New
+       Task modal: the idea is the hero, model/target are chips on its bar,
+       branch name folds into Advanced. -->
   <div id="modal-brief" class="modal hidden">
-    <div class="modal-box">
+    <div class="modal-box task-box">
       <h2 id="brief-modal-title"><span class="i" data-icon="lightbulb"></span>Brief an Idea</h2>
       <p class="muted">Describe a rough idea and pick a project. Sr. Popo runs a quick, read-only Claude
         session in that repo to think it through, then spawns one or more well-formed tasks on the board.</p>
-      <label id="brief-repo-field">Repository
-        <div class="row">
-          <select id="brief-repo"></select>
-          <button class="btn ghost" id="brief-add-repo" title="Add a repository" aria-label="Add a repository"><span class="i" data-icon="plus"></span></button>
-        </div>
-        <span id="brief-repo-branch" class="field-hint"></span>
-      </label>
-      <label>Your idea
-        <textarea id="brief-text" rows="5"
+
+      <div class="task-context">
+        <label id="brief-repo-field" class="ctl">
+          <span class="ctl-label"><span class="i" data-icon="folder"></span>Repository</span>
+          <div class="row">
+            <select id="brief-repo"></select>
+            <button class="btn ghost icon" id="brief-add-repo" title="Add a repository" aria-label="Add a repository"><span class="i" data-icon="plus"></span></button>
+          </div>
+          <span id="brief-repo-branch" class="field-hint"></span>
+        </label>
+      </div>
+
+      <div class="composer-box" id="brief-composer">
+        <textarea id="brief-text" rows="5" aria-label="Your idea"
                   placeholder="e.g. it'd be nice to archive all Done tasks in one click"></textarea>
+        <div class="composer-bar">
+          <span class="sel-chip" title="Where the groomed tasks land">
+            <span class="i" data-icon="inbox" aria-hidden="true"></span>
+            <select id="brief-target" aria-label="Groomed tasks land in">
+              <option value="backlog">Backlog — review first</option>
+              <option value="auto">Let grooming decide</option>
+              <option value="ready">Ready — dispatchable right away</option>
+            </select>
+            <span class="i chev" data-icon="chevron-down" aria-hidden="true"></span>
+          </span>
+          <span class="sel-chip" title="Model used for the grooming session">
+            <span class="i" data-icon="cpu" aria-hidden="true"></span>
+            <select id="brief-model" aria-label="Model">
+              <option value="default">Account default</option>
+              <option value="sonnet">Sonnet</option>
+              <option value="opus">Opus</option>
+              <option value="haiku">Haiku</option>
+              <option value="fable">Fable</option>
+            </select>
+            <span class="i chev" data-icon="chevron-down" aria-hidden="true"></span>
+          </span>
+          <span class="composer-kbd" aria-hidden="true">⌘↵ groom</span>
+        </div>
+      </div>
+
+      <details class="task-advanced" id="brief-advanced">
+        <summary>
+          <span class="i chev" data-icon="chevron-right" aria-hidden="true"></span>
+          <span class="i" data-icon="sliders-horizontal" aria-hidden="true"></span>Advanced
+        </summary>
+        <div class="task-advanced-body">
+          <label>Branch name <span class="field-hint">— optional, used only when a single task is spawned</span>
+            <input id="brief-branch" type="text" placeholder="e.g. feature/ABC-123, matching your repo's convention" />
+          </label>
+        </div>
+      </details>
+
+      <div class="modal-actions">
+        <button class="btn ghost" id="brief-cancel"><span class="i" data-icon="x"></span>Cancel</button>
+        <button class="btn" id="brief-draft"><span class="i" data-icon="inbox"></span>Save as Draft</button>
+        <button class="btn primary" id="brief-submit">Groom it <span class="i" data-icon="sparkles"></span></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Orchestrate a Goal modal (goal orchestration) -->
+  <div id="modal-orchestrate" class="modal hidden">
+    <div class="modal-box">
+      <h2 id="orchestrate-modal-title"><span class="i" data-icon="crown"></span>Orchestrate a Goal</h2>
+      <p class="muted">Describe one high-level goal and pick a project. An orchestrator agent explores the repo
+        read-only, breaks the goal into worker tasks on the board, watches what they produce, and keeps
+        coordinating follow-ups until the goal is done. It never edits the repo itself — the workers do.</p>
+      <label id="orchestrate-repo-field">Repository
+        <div class="row">
+          <select id="orchestrate-repo"></select>
+          <button class="btn ghost" id="orchestrate-add-repo" title="Add a repository" aria-label="Add a repository"><span class="i" data-icon="plus"></span></button>
+        </div>
+        <span id="orchestrate-repo-branch" class="field-hint"></span>
       </label>
-      <label>Groomed tasks land in
-        <select id="brief-target">
-          <option value="backlog">Backlog — review them before running</option>
-          <option value="auto">Let the grooming decide per task</option>
-          <option value="ready">Ready — dispatchable right away</option>
-        </select>
+      <label>Your goal
+        <textarea id="orchestrate-text" rows="5"
+                  placeholder="e.g. make the board keyboard-navigable end to end"></textarea>
       </label>
-      <label>Branch name <span class="field-hint">— optional, used only when a single task is spawned</span>
-        <input id="brief-branch" type="text" placeholder="e.g. feature/ABC-123, matching your repo's convention" />
+      <label class="check addon">
+        <input type="checkbox" id="orchestrate-autonomous" />
+        <span class="addon-text">
+          <span class="addon-label">Hand execution to Autonomous Mode</span>
+          <span class="addon-hint">The orchestrator creates tasks straight into <strong>Ready</strong> and Autonomous
+            Mode dispatches, reviews and merges them — no babysitting. Without this, the orchestrator dispatches
+            each task itself and a human merges.</span>
+        </span>
       </label>
-      <label>Model <span class="field-hint">— used for the grooming session</span>
-        <select id="brief-model">
+      <div id="orchestrate-autonomous-fields" class="hidden">
+        <label>Budget cap (USD)
+          <input id="orchestrate-budget" type="number" min="0.5" max="1000" step="0.5" value="20" />
+          <span class="field-hint">Shared with the Autonomous Mode session this starts; new work stops being picked up once it's spent.</span>
+        </label>
+        <label class="check addon">
+          <input type="checkbox" id="orchestrate-review-mode" checked />
+          <span class="addon-text">
+            <span class="addon-label">Review &amp; finish tasks in Review</span>
+            <span class="addon-hint">Let Autonomous Mode re-review each finished branch and apply fixes before merging.</span>
+          </span>
+        </label>
+      </div>
+      <label>Model <span class="field-hint">— used for the orchestrator session</span>
+        <select id="orchestrate-model">
           <option value="default">Account default</option>
           <option value="sonnet">Sonnet</option>
           <option value="opus">Opus</option>
@@ -308,9 +420,9 @@
         </select>
       </label>
       <div class="modal-actions">
-        <button class="btn ghost" id="brief-cancel">Cancel</button>
-        <button class="btn" id="brief-draft">Save as Draft</button>
-        <button class="btn primary" id="brief-submit">Groom it <span class="i" data-icon="sparkles"></span></button>
+        <button class="btn ghost" id="orchestrate-cancel">Cancel</button>
+        <button class="btn" id="orchestrate-draft">Save as Draft</button>
+        <button class="btn primary" id="orchestrate-submit">Orchestrate it <span class="i" data-icon="crown"></span></button>
       </div>
     </div>
   </div>
@@ -549,6 +661,19 @@
               </label>
             </fieldset>
             <fieldset class="addons">
+              <legend>External tools</legend>
+              <label>Default IDE <span class="field-hint">— opened by a workspace's <strong>Open in IDE</strong> button</span>
+                <select id="setting-default-editor">
+                  <option value="">Ask me each time</option>
+                </select>
+              </label>
+              <p class="addon-hint" id="setting-editor-note">Sr. Popo hands the repository (or worktree) folder to the
+                editor's command-line launcher — <code>code</code> for VS Code, <code>idea</code>/<code>webstorm</code>/… for
+                JetBrains IDEs — and falls back to the installed app on macOS. Editors it can't find on this machine are
+                listed as unavailable.</p>
+              <button class="btn ghost" id="setting-editor-rescan"><span class="i" data-icon="rotate-cw"></span>Rescan for editors</button>
+            </fieldset>
+            <fieldset class="addons">
               <legend>Pull requests</legend>
               <label class="check addon">
                 <input type="checkbox" id="setting-auto-resolve-conflicts" />
@@ -724,14 +849,24 @@
     <div class="modal-box">
       <h2 id="workspace-modal-title">Workspace</h2>
       <div class="workspace-info-rows">
-        <div class="workspace-info-row"><span class="field-label">Path</span><span id="workspace-info-path" class="mono"></span></div>
+        <div class="workspace-info-row">
+          <span class="field-label">Path</span>
+          <span class="workspace-info-path-cell">
+            <span id="workspace-info-path" class="mono"></span>
+            <button class="btn ghost icon" id="workspace-copy-path" title="Copy path" aria-label="Copy path"><span class="i" data-icon="copy"></span></button>
+          </span>
+        </div>
         <div class="workspace-info-row"><span class="field-label">Repository</span><span id="workspace-info-name"></span></div>
         <div class="workspace-info-row"><span class="field-label">Branch</span><span id="workspace-info-branch"></span></div>
       </div>
       <span class="field-label">Live worktrees</span>
       <div id="workspace-worktree-list" class="worktree-list"></div>
       <div class="modal-actions">
-        <button class="btn ghost" id="workspace-open-terminal" title="Open a terminal at the repository path"><span class="i" data-icon="terminal"></span>Open Terminal</button>
+        <div class="modal-actions-lead" role="group" aria-label="Open this repository in">
+          <button class="btn ghost" id="workspace-open-terminal" title="Open a terminal at the repository path"><span class="i" data-icon="terminal"></span>Terminal</button>
+          <button class="btn ghost" id="workspace-open-folder" title="Reveal the repository in your file manager"><span class="i" data-icon="folder-open"></span><span id="workspace-open-folder-label">Reveal</span></button>
+          <button class="btn ghost" id="workspace-open-ide" title="Open the repository in your IDE" aria-haspopup="menu" aria-expanded="false"><span class="i" data-icon="code"></span><span id="workspace-open-ide-label">Open in IDE</span></button>
+        </div>
         <button class="btn ghost" id="workspace-modal-close">Close</button>
       </div>
     </div>

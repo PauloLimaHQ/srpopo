@@ -75,6 +75,10 @@ export interface Settings {
   // server/memory.ts), which is then injected into grooming sessions for
   // context. On by default — it runs on a cheap fixed model and is cheap.
   memory: boolean;
+  // Which editor the workspace "Open in IDE" quick action launches — an id from
+  // server/desktop.ts's catalog (`vscode`, `intellij`, `webstorm`, …). Empty
+  // until the user picks one, either here or from the button's own picker.
+  defaultEditor: string;
 }
 
 // The redacted, board-facing view of Settings. Omits the raw Linear token and
@@ -98,6 +102,7 @@ export interface PublicSettings {
   // settings pane can render/edit them.
   customModels: CustomModel[];
   memory: boolean;
+  defaultEditor: string;
 }
 
 // A marketplace plugin as the UI lists it. The full catalog lives in
@@ -214,31 +219,31 @@ export interface Grooming {
   finishedAt: string | null;
 }
 
-// An orchestration ("hive") card's lifecycle — separate from tasks and from
-// groomings. It never becomes a task; it spawns and coordinates them.
-//   draft    — configured, the queen session hasn't started yet
-//   running  — a live queen session (set only by runner.orchestrate)
-//   waiting  — the queen ended a turn and is watching worker tasks; the hive
-//              engine resumes it when one of them lands (see server/hive.ts)
-//   awaiting — the queen asked the developer a question and is paused on it
-//   finished — the queen declared the goal done
-//   failed   — the queen declared itself blocked, the run failed, or the turn
-//              cap was reached
+// An orchestration ("Goal Orchestration") card's lifecycle — separate from tasks
+// and from groomings. It never becomes a task; it spawns and coordinates them.
+//   draft    — configured, the orchestrator session hasn't started yet
+//   running  — a live orchestrator session (set only by runner.orchestrate)
+//   waiting  — the orchestrator ended a turn and is watching worker tasks; the
+//              engine resumes it when one of them lands (see server/orchestrator-engine.ts)
+//   awaiting — the orchestrator asked the developer a question and is paused on it
+//   finished — the orchestrator declared the goal done
+//   failed   — the orchestrator declared itself blocked, the run failed, or the
+//              turn cap was reached
 export type OrchestrationStatus = 'draft' | 'running' | 'waiting' | 'awaiting' | 'finished' | 'failed';
 
 // How the worker tasks an orchestration spawns actually get executed:
 //   autonomous — handed to Autonomous Mode (server/autonomous.ts), which
-//                dispatches, review-loops and merges them; the queen watches
+//                dispatches, review-loops and merges them; the orchestrator watches
 //                for done/failed
-//   manual     — the queen dispatches tasks itself and watches for validation/failed;
-//                a human merges
+//   manual     — the orchestrator dispatches tasks itself and watches for
+//                validation/failed; a human merges
 export type OrchestrationMode = 'autonomous' | 'manual';
 
 // A "Orchestrate a Goal" card. Lives in db.orchestrations with its own locked
-// board column and lifecycle. The queen session is read-only in the repo — it
-// plans and coordinates, and only ever mutates the board through Sr. Popo's own
-// MCP server (server/mcp.ts); the worker tasks it spawns do all the editing, so
-// there is never a worktree of its own to clean up.
+// board column and lifecycle. The orchestrator session is read-only in the repo
+// — it plans and coordinates, and only ever mutates the board through Sr. Popo's
+// own MCP server (server/mcp.ts); the worker tasks it spawns do all the editing,
+// so there is never a worktree of its own to clean up.
 export interface Orchestration {
   id: string;
   title: string;
@@ -256,16 +261,17 @@ export interface Orchestration {
   numTurns: number | null;
   durationMs: number | null;
   runCount: number;
-  // Queen turns run so far (a fresh run plus every resume) — capped by
-  // hive.MAX_TURNS so a queen that never converges can't loop forever.
+  // Orchestrator turns run so far (a fresh run plus every resume) — capped by
+  // orchestratorEngine.MAX_TURNS so an orchestrator that never converges can't
+  // loop forever.
   turnCount: number;
   activeSubagents: number;
   lastOutcome: string | null;
   lastError: string | null;
-  // The queen's latest note: what it's waiting on, the question it asked, or
-  // the closing summary. Rendered on the card and in the drawer.
+  // The orchestrator's latest note: what it's waiting on, the question it asked,
+  // or the closing summary. Rendered on the card and in the drawer.
   note: string | null;
-  // Worker task ids the queen asked to be watched this turn — the engine
+  // Worker task ids the orchestrator asked to be watched this turn — the engine
   // resumes the session when one of them reaches a terminal state.
   watch: string[];
   // Every worker task this orchestration has watched, accumulated across turns.
@@ -325,6 +331,10 @@ export interface Task {
   // `POST /api/tasks/:id/code-review` — an explicit request always reviews.
   autoCodeReview: boolean;
   personas: string[];
+  // Let the run pick its own expert persona from the catalog before it starts,
+  // instead of using the hand-picked `personas` above (which it then ignores).
+  // Optional so tasks written before this existed keep loading unchanged.
+  autoPersona?: boolean;
   // Files the user attached; bytes live under DATA_DIR/attachments/<id>/<name>,
   // managed only through the upload/delete routes (never the PATCH allowlist).
   attachments?: Attachment[];

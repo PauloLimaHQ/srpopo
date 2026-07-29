@@ -217,8 +217,8 @@ const BOARD_TOOLS = ['list_repos', 'list_tasks', 'get_task', 'create_task', 'dis
 
 // The `--mcp-config` JSON registering that board server over MCP's Streamable
 // HTTP transport. It always points at 127.0.0.1 (resolvedBaseUrl), so even with
-// LAN remote access on, the queen talks to the local app and never across the
-// network.
+// LAN remote access on, the orchestrator talks to the local app and never across
+// the network.
 function boardMcpConfig(): string {
   return JSON.stringify({
     mcpServers: {
@@ -227,7 +227,7 @@ function boardMcpConfig(): string {
   });
 }
 
-// Args for a hive orchestrator ("queen") session: the same read-only research
+// Args for an orchestrator session: the same read-only research
 // set as grooming, plus the board tools it needs to plan work onto the Kanban
 // board. It is never given a write tool, a worktree, or the interactive
 // permission bridge — anything outside this allow-list is auto-denied by the

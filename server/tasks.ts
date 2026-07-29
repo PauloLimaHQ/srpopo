@@ -39,6 +39,7 @@ export interface CreateTaskInput {
   prDraft?: unknown;
   autoCodeReview?: unknown;
   personas?: unknown;
+  autoPersona?: unknown;
   allowedTools?: unknown;
   branchName?: unknown;
   baseBranch?: unknown;
@@ -82,6 +83,7 @@ export function createTask(input: CreateTaskInput): Task {
     // when the run finishes, instead of going straight to validation.
     autoCodeReview: !!input.autoCodeReview,
     personas: personas.sanitize(input.personas),
+    autoPersona: !!input.autoPersona,
     attachments: [],
     useWorktree: !!input.useWorktree,
     worktreePath: null,

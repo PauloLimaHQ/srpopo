@@ -131,4 +131,29 @@ function preambleFor(ids: string[] = []): string {
   return '# Personas\n\n' + intro + '\n\n' + blocks.join('\n\n') + '\n\n---\n\n';
 }
 
-export { PERSONAS, catalog, sanitize, preambleFor };
+// Preamble used when a task opts into auto-detected personas instead of picking
+// them by hand (`task.autoPersona`). Rather than a second agent run just to
+// classify the prompt, the run itself is told to choose its own hat *before* it
+// starts working — the catalog is handed over verbatim so the choice comes from
+// the same list the picker offers. Mutually exclusive with `preambleFor`.
+function autoPreamble(): string {
+  const menu = PERSONAS.map((p) => `- **${p.label}** — ${p.hint}`).join('\n');
+  return [
+    '# Personas',
+    '',
+    'Before you do anything else, work out which expert role — or which small',
+    'combination of roles — the task below actually calls for, then adopt it for',
+    'the rest of the session. Choose from:',
+    '',
+    menu,
+    '',
+    'State which persona(s) you picked and why in one short line, then work as that',
+    'expert. If none of them fit, say so and proceed as a pragmatic senior engineer.',
+    '',
+    '---',
+    '',
+    '',
+  ].join('\n');
+}
+
+export { PERSONAS, catalog, sanitize, preambleFor, autoPreamble };

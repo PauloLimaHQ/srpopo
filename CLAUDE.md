@@ -35,6 +35,7 @@ static with **no build step** (see Conventions).
 | `server/tasks.ts` | Task lifecycle service (`createTask`/`dispatchTask` + capacity gate) shared by the REST API and the MCP server, so both queue/run tasks identically. |
 | `server/mcp.ts` | **Board MCP server** (see "MCP server" below). Streamable-HTTP MCP endpoint mounted on the Express app at `POST /mcp` so outside MCP clients can drive the board while Sr. Popo runs. |
 | `server/git.ts` | Worktree lifecycle (`git worktree add/remove`). |
+| `server/desktop.ts` | Desktop hand-offs for the workspace quick actions: reveal a checkout in the OS file manager, or open it in the user's IDE (see "Workspace quick actions"). |
 | `server/github.ts` | `gh` CLI integration: read-only lookup of a task's pull request, its merge-safety check, the merge itself, and the `mergeable/<n>` grade label. |
 | `server/reviewer.ts` | Meta-prompt + verdict parser for the **Code Review** stage (see "Code Review" below). |
 | `server/pr-refresh.ts` | Background sweep that keeps validation-column tasks' PR status current (broadcasts a `pr` bus event on change) so a PR merged/closed outside Sr. Popo shows up without opening the task. |
@@ -44,9 +45,9 @@ static with **no build step** (see Conventions).
 | `server/permissions.ts` | In-memory registry of pending tool-approval prompts (see "Interactive permissions"). |
 | `server/permission-mcp.js` | **Stays plain JS.** Standalone MCP stdio bridge `claude` spawns to ask before running a tool — kept JS so it runs without a TS loader in both dev and the packaged app. `tsc` copies it into `dist/` untouched (`allowJs`). |
 | `server/groomer.ts` | Meta-prompt + result parser for "Brief an Idea" (see "Grooming" below). |
-| `server/queen.ts` | Meta-prompt + turn-status parser for the hive orchestrator (see "Hive Orchestration"). |
-| `server/hive.ts` | Hive engine: watches the bus and resumes a waiting queen session when its worker tasks land. |
-| `server/sentinels.ts` | Tolerant extraction of the sentinel-delimited JSON `groomer.ts`, `queen.ts` and `reviewer.ts` end a turn with. |
+| `server/orchestrator.ts` | Meta-prompt + turn-status parser for the orchestrator (see "Goal Orchestration"). |
+| `server/orchestrator-engine.ts` | Orchestrator engine: watches the bus and resumes a waiting orchestrator session when its worker tasks land. |
+| `server/sentinels.ts` | Tolerant extraction of the sentinel-delimited JSON `groomer.ts`, `orchestrator.ts` and `reviewer.ts` end a turn with. |
 | `server/types.ts` | Shared interfaces (`Task`, `Repo`, `Db`, `Decision`, …). Typing only. |
 | `server/paths.ts` | Resolves the app root (`public/`, `assets/`, `build/`) from source or `dist/`. |
 | `electron/main.ts` | macOS tray/menu-bar app shell; boots the server on a local port. |
@@ -246,14 +247,31 @@ would require it.
 
 `server/addons.ts` is the single source of truth for optional per-task behaviors
 (e.g. "open a PR at the end", "self-review the diff"). Each entry drives **both** the
-UI checkbox (`GET /api/addons`) and the extra prompt text injected at dispatch. To add
-one, append an entry with `{ id, label, hint, instruction, allow? }` — nothing else
-changes. The `instruction` is appended to the user's prompt, so write it as a clear,
-standalone directive to Claude. The optional `allow` array lists the `--allowedTools`
+UI chip (`GET /api/addons`) and the extra prompt text injected at dispatch. To add
+one, append an entry with `{ id, label, short?, hint, icon?, instruction, allow?,
+hidden? }` — nothing else changes. The `instruction` is appended to the user's prompt,
+so write it as a clear, standalone directive to Claude; `label` doubles as that block's
+heading, while `short` + `icon` (a `public/icons.js` glyph) are what the New Task
+modal's chip row renders. The optional `allow` array lists the `--allowedTools`
 patterns the behavior needs auto-approved (e.g. the "open a PR" add-on allows `gh` and
 git commit/push) so the headless run doesn't silently finish without doing the work;
 `runner.effectiveAllowedTools` merges these on top of the task's own allow-list and the
 safe package-manager defaults (`DEFAULT_ALLOWED_TOOLS`: npm/pnpm/yarn) at dispatch.
+
+`hidden: true` keeps an add-on out of `catalog()` — it stays applicable by id but is
+never offered as a checkbox. `code_review` is the one such entry: it isn't a per-task
+choice any more, but Autonomous Mode (`REQUIRED_ADDONS`) and the orchestrator's worker
+recipe still apply it, so it must keep working.
+
+## Personas (who the agent is)
+
+`server/personas.ts` is the matching catalog for the *start* of the prompt — an expert
+role preamble prepended by `framing.framePrompt`. A task either names its personas
+(`task.personas`, chosen in the modal's picker) **or** sets `task.autoPersona`, which
+swaps `personas.preambleFor` for `personas.autoPreamble()`: the catalog is handed to
+the run and it picks its own hat before starting. The two are mutually exclusive — when
+`autoPersona` is on, `personas` is kept (so toggling it off restores the selection) but
+ignored at dispatch, and the board's card chip shows one or the other, never both.
 
 ## Interactive permissions (ask instead of auto-deny)
 
@@ -300,6 +318,37 @@ The wiring:
 Note: `--permission-prompt-tool` is a stable but undocumented CLI flag; the request/reply
 shapes here match what the CLI expects. If you change the bridge protocol, re-verify the
 handshake against a real run — the smoke suite covers the pieces but not the live CLI.
+
+## Workspace quick actions (terminal / file manager / IDE)
+
+The workspace header carries a row of "work on this here" escape hatches, all acting on a
+**checkout** — the repo root, or one of the live worktrees listed in the Workspace details
+modal (each row has the same three buttons):
+
+- **Terminal** — the in-app shell (`server/terminal.ts`), docked at the bottom.
+- **Reveal** — the OS file manager (`open` / `explorer` / `xdg-open`).
+- **Open in IDE** — VS Code or a JetBrains IDE.
+
+The last two live in `server/desktop.ts` and are exposed as `POST /api/repos/:id/reveal`
+and `POST /api/repos/:id/editor` (plus `GET /api/desktop`, which tells the board what this
+OS calls its file manager and which editors are actually installed, so the buttons can be
+labeled honestly — "Reveal in Finder", "Open in WebStorm"). All three routes resolve their
+target through `resolveRepoTarget`, which accepts only the repo root or a path `git
+worktree list` reports — these routes can't be pointed at an arbitrary filesystem location.
+
+Editors are launched **server-side**, never from the renderer, so the actions behave the
+same in the Electron app and in a browser tab. `desktop.ts` resolves a launcher by scanning
+`PATH` plus JetBrains Toolbox's generated-scripts directory (usually absent from a GUI app's
+`PATH`), and falls back to `open -a` on the macOS app bundle — so an IDE installed without a
+CLI launcher still opens. When neither exists the route 400s with the message that says how
+to install the launcher; the board toasts it verbatim. To support another editor, append one
+entry to `EDITORS` — nothing else changes.
+
+The chosen IDE is `Settings > defaultEditor` (Settings → General → External tools). It
+starts empty: the first click on **Open in IDE** opens an anchored picker of the detected
+editors and remembers the pick as the default, so the button works without a detour through
+Settings. `POST /api/repos/:id/editor` returns **409** (not 400) when no editor is
+configured — that's the board's signal to open the picker rather than toast an error.
 
 ## MCP server: drive the board from outside
 
@@ -372,10 +421,12 @@ and **resumes** the same session (`runner.groom` with a `resumePrompt` → `clau
 server restart (the claude session is resumable); `POST /api/groomings/:id/run`
 re-grooms from scratch, discarding the pending questions.
 
-## Hive Orchestration: "Orchestrate a Goal"
+## Goal Orchestration: "Orchestrate a Goal"
 
-Another **installable plugin** (`hive` in `server/plugins.ts`) — the "Orchestrate a Goal"
-button and the board's Orchestration column only surface once it's installed.
+Another **installable plugin** (`orchestration` in `server/plugins.ts`) — the
+"Orchestrate a Goal" button and the board's Orchestration column only surface once
+it's installed. (`store.ts` migrates the plugin's old internal id, `hive`, to
+`orchestration` on load, so an existing install isn't silently dropped.)
 
 An orchestration is its own entity (`db.orchestrations`, `Orchestration` in `types.ts`)
 with its own REST routes (`/api/orchestrations/...`) and lifecycle: **draft** (gray) →
@@ -384,33 +435,35 @@ worker tasks) or **awaiting** (amber — it asked the developer something) →
 **finished** (green) or **failed** (red). Like a grooming card it never leaves its
 locked column; the status only recolors it in place.
 
-The **queen** is a read-only `claude -p` session scoped to one repo and one high-level
-goal. It plans, and **workers do all the editing** — it is given the grooming research
-tools plus Sr. Popo's own board tools and nothing else (`orchestrateArgs` in
-`server/agents/claude.ts`), so a write tool is auto-denied by the headless run. It
-reaches the board through the **`/mcp` server** (`server/mcp.ts`), registered via
-`--mcp-config` as an **HTTP** MCP server named `board` pointing at the app's own
-`127.0.0.1` base URL — verified against a live `claude` CLI, so no stdio proxy is
-needed. Never confuse that name with the per-task permission bridge (`srpopo`); the
-queen gets no permission bridge and no worktree.
+The **orchestrator** is a read-only `claude -p` session scoped to one repo and one
+high-level goal. It plans, and **workers do all the editing** — it is given the
+grooming research tools plus Sr. Popo's own board tools and nothing else
+(`orchestrateArgs` in `server/agents/claude.ts`), so a write tool is auto-denied by the
+headless run. It reaches the board through the **`/mcp` server** (`server/mcp.ts`),
+registered via `--mcp-config` as an **HTTP** MCP server named `board` pointing at the
+app's own `127.0.0.1` base URL — verified against a live `claude` CLI, so no stdio
+proxy is needed. Never confuse that name with the per-task permission bridge
+(`srpopo`); the orchestrator gets no permission bridge and no worktree.
 
-Every queen turn ends with ONE JSON object between `@@SRPOPO_HIVE_START@@` /
-`@@SRPOPO_HIVE_END@@` (parsed by `queen.parseStatus`): `waiting` (with the worker task
-ids to watch), `question`, `done`, or `blocked`. `server/hive.ts` is the engine: it
-subscribes to the SSE bus and, when a watched worker reaches
-`validation`/`done`/`failed` (the last covering Autonomous Mode's merge → done, and
-`code_review` deliberately not being terminal), debounces a few seconds and
-**resumes the same session** with a status digest from `queen.statusPrompt`. It never
-resumes a session that is already running, re-arms `waiting` orchestrations from the
-store on boot (`hive.start()` in `index.start`), and hard-stops a queen after
-`hive.MAX_TURNS` turns. To change how goals are orchestrated, edit `queen.ts`; to
-change when the queen wakes up, edit `hive.ts`.
+Every orchestrator turn ends with ONE JSON object between `@@SRPOPO_ORCH_START@@` /
+`@@SRPOPO_ORCH_END@@` (parsed by `orchestrator.parseStatus`): `waiting` (with the
+worker task ids to watch), `question`, `done`, or `blocked`.
+`server/orchestrator-engine.ts` is the engine: it subscribes to the SSE bus and, when
+a watched worker reaches `validation`/`done`/`failed` (the last covering Autonomous Mode's
+merge → done, with `code_review` deliberately *not* terminal — a worker being graded is still
+in flight), debounces a few seconds and **resumes the same session** with a status digest from
+`orchestrator.statusPrompt`. It never resumes a session that is already running,
+re-arms `waiting` orchestrations from the store on boot
+(`orchestratorEngine.start()` in `index.start`), and hard-stops an orchestrator after
+`orchestratorEngine.MAX_TURNS` turns. To change how goals are orchestrated, edit
+`orchestrator.ts`; to change when the orchestrator wakes up, edit
+`orchestrator-engine.ts`.
 
 **Autonomous hand-off.** `POST /api/orchestrations/:id/run` takes an optional
 `{ autonomous: { budgetUsd, reviewMode } }`: it starts an Autonomous Mode session for
-the repo first, and the queen is told to create `ready` tasks with the engine's
-`REQUIRED_ADDONS` and let it dispatch/review/merge them. Without it the queen runs in
-manual mode — it dispatches its own tasks and a human merges.
+the repo first, and the orchestrator is told to create `ready` tasks with the engine's
+`REQUIRED_ADDONS` and let it dispatch/review/merge them. Without it the orchestrator
+runs in manual mode — it dispatches its own tasks and a human merges.
 
 ## Maintaining this repo with Claude (the meta-workflow)
 

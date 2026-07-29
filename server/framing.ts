@@ -60,7 +60,10 @@ function specCompletionBlock(task: Task): string {
 
 // Build the full stdin prompt for a fresh (non-resume) dispatch of `task`.
 function framePrompt(task: Task): string {
-  let framed = personas.preambleFor(task.personas) + task.prompt +
+  // `autoPersona` hands the choice of expert hat to the run itself, so it
+  // replaces (rather than augments) any hand-picked persona preamble.
+  const who = task.autoPersona ? personas.autoPreamble() : personas.preambleFor(task.personas);
+  let framed = who + task.prompt +
     addons.instructionsFor(task.addons, { prDraft: task.prDraft });
   // List any attached files by absolute path so the session can Read them.
   if (task.attachments?.length) {

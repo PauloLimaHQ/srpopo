@@ -172,7 +172,7 @@ function deriveTitle(idea: unknown): string {
 
 // Recover the single JSON payload the session emits at the end of a turn, as a
 // plain object. The tolerant span extraction (sentinels → ```json fence → bare
-// {…}) lives in server/sentinels.ts, shared with the hive orchestrator.
+// {…}) lives in server/sentinels.ts, shared with the orchestrator.
 function parseSpecObject(text: unknown): Record<string, unknown> | null {
   return sentinels.parseObject(text, SPEC_START, SPEC_END);
 }

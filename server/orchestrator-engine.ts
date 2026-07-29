@@ -1,9 +1,9 @@
 /*
- * Hive Orchestration engine — the loop that keeps a "queen" session moving.
+ * Goal Orchestration engine — the loop that keeps an orchestrator session moving.
  *
- * A queen (server/queen.ts, launched by runner.orchestrate) plans one high-level
- * goal for one repo, spawns worker tasks onto the board over Sr. Popo's own MCP
- * server, then ends its turn as `waiting` with the ids of the workers whose
+ * An orchestrator (server/orchestrator.ts, launched by runner.orchestrate) plans one
+ * high-level goal for one repo, spawns worker tasks onto the board over Sr. Popo's
+ * own MCP server, then ends its turn as `waiting` with the ids of the workers whose
  * results it needs. This module is what wakes it back up: it watches the SSE bus
  * and, once a watched worker lands in a terminal state (`validation` / `done` /
  * `failed` — the last one covering Autonomous Mode's merge → done transitions),
@@ -17,27 +17,27 @@
  * themselves ARE persisted (db.orchestrations) — only the watchers are
  * process-local, and start() re-arms them from the store on boot.
  *
- * Three backstops keep an unattended queen honest:
+ * Three backstops keep an unattended orchestrator honest:
  *   - a hard turn cap (MAX_TURNS) that fails the card rather than looping forever,
  *   - a debounce, so a burst of workers landing together produces ONE resume, and
- *   - the "never resume a session that is already running" rule (a queen turn is
- *     a single claude child; a second one would be a different session).
+ *   - the "never resume a session that is already running" rule (an orchestrator
+ *     turn is a single claude child; a second one would be a different session).
  */
 import { db, save, now, getTask, getOrchestration } from './store';
 import { broadcast, subscribe } from './bus';
 import * as runner from './runner';
-import * as queen from './queen';
+import * as orchestrator from './orchestrator';
 import type { Orchestration, Task, TaskStatus } from './types';
 
-// Worker states that mean "this task landed and the queen should look at it".
+// Worker states that mean "this task landed and the orchestrator should look at it".
 // `validation` is where a manual-mode worker parks; `done` is where Autonomous
-// Mode leaves one after merging its PR; `failed` needs the queen's judgment
+// Mode leaves one after merging its PR; `failed` needs the orchestrator's judgment
 // either way. `code_review` is deliberately NOT terminal — a worker being graded
 // by the Code Review stage is still in flight, and lands in `validation` next.
 const TERMINAL: TaskStatus[] = ['validation', 'done', 'failed'];
 
-// How many turns one queen session may run before the engine calls it off. The
-// same philosophy as autonomous.MAX_REVIEW_ROUNDS: a model that keeps finding
+// How many turns one orchestrator session may run before the engine calls it off.
+// The same philosophy as autonomous.MAX_REVIEW_ROUNDS: a model that keeps finding
 // "one more thing" must not burn a subscription forever.
 const MAX_TURNS = 25;
 
@@ -51,11 +51,11 @@ let retryMs = 30000;
 // The boundaries the engine touches. Defaults wire to the real modules; tests
 // swap them for stubs so no `claude` process is ever spawned.
 interface Deps {
-  // Resume the queen's session with a prompt. Sets status = 'running'.
+  // Resume the orchestrator's session with a prompt. Sets status = 'running'.
   resume(orchestration: Orchestration, prompt: string): void;
   // Is this orchestration's own session live right now?
   isRunning(id: string): boolean;
-  // Global concurrency cap (dispatched runs + grooming + queens share the pool).
+  // Global concurrency cap (dispatched runs + grooming + orchestrators share the pool).
   atCapacity(): boolean;
 }
 
@@ -116,7 +116,7 @@ function arm(orchestration: Orchestration): void {
 
 // Stop watching an orchestration, cancelling any scheduled resume. Keeps the
 // `reported` set: the card may be armed again later in the same session and
-// must not re-report landings the queen already saw.
+// must not re-report landings the orchestrator already saw.
 function disarm(id: string): void {
   watchers.delete(id);
   const timer = timers.get(id);
@@ -136,7 +136,7 @@ function forget(id: string): void {
 function schedule(id: string, delay = debounceMs): void {
   if (timers.has(id)) return; // one queued update per orchestration
   const timer = setTimeout(() => { void fire(id); }, delay);
-  // Never hold the process open just to wake a queen up.
+  // Never hold the process open just to wake an orchestrator up.
   if (typeof timer.unref === 'function') timer.unref();
   timers.set(id, timer);
 }
@@ -180,8 +180,9 @@ async function fire(id: string): Promise<void> {
   const watched = (orchestration.watch || [])
     .map((taskId) => getTask(taskId))
     .filter((t): t is Task => !!t);
-  // Everything terminal we're about to tell the queen about counts as reported,
-  // so re-arming after this turn doesn't wake it up for the same landing again.
+  // Everything terminal we're about to tell the orchestrator about counts as
+  // reported, so re-arming after this turn doesn't wake it up for the same
+  // landing again.
   const seen = reported.get(id) || new Set<string>();
   reported.set(id, seen);
   for (const task of watched) {
@@ -189,15 +190,15 @@ async function fire(id: string): Promise<void> {
   }
 
   const prompt = (orchestration.watch || []).length
-    ? queen.statusPrompt(orchestration, watched)
-    : queen.nudgePrompt(orchestration.mode);
+    ? orchestrator.statusPrompt(orchestration, watched)
+    : orchestrator.nudgePrompt(orchestration.mode);
 
   try {
     deps.resume(orchestration, prompt);
   } catch (e) {
     // Couldn't spawn the turn (e.g. the session is mid-exit). Leave the card
     // waiting and try again shortly — never lose the wake-up.
-    console.warn('[hive] could not resume orchestration:', (e as Error).message);
+    console.warn('[orchestrator] could not resume orchestration:', (e as Error).message);
     schedule(id, retryMs);
   }
 }

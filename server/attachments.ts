@@ -50,6 +50,12 @@ function write(taskId: string, rawName: unknown, bytes: Buffer): { name: string;
   return { name, size: bytes.length };
 }
 
+// Absolute path of one stored attachment. The name is re-sanitized, so a
+// hostile :name param can't reach outside the task's own directory.
+function filePath(taskId: string, rawName: unknown): string {
+  return path.join(attachmentsDir(taskId), sanitizeName(rawName));
+}
+
 // Remove a single attachment file. The name is re-sanitized so a hostile
 // :name param can't reach outside the task dir. Missing file is a no-op.
 function remove(taskId: string, rawName: unknown): void {
@@ -71,4 +77,4 @@ function listPaths(taskId: string, names: string[]): string[] {
     .filter((p) => fs.existsSync(p));
 }
 
-export { attachmentsDir, sanitizeName, write, remove, removeDir, listPaths };
+export { attachmentsDir, sanitizeName, filePath, write, remove, removeDir, listPaths };

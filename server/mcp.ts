@@ -100,6 +100,7 @@ const TOOL_DEFS = [
         prDraft: { type: 'boolean', description: 'When the "pull_request" addon is selected, open the PR as a draft instead of ready for review.' },
         autoCodeReview: { type: 'boolean', description: 'Grade the branch in the Code Review stage (a fresh read-only reviewer that comments on the PR) when the run finishes, before it lands in validation. Off by default.' },
         personas: { type: 'array', items: { type: 'string' }, description: 'Persona ids (see the board).' },
+        autoPersona: { type: 'boolean', description: 'Let the run pick its own expert persona from the catalog before it starts, instead of using "personas".' },
       },
       required: ['repoId', 'title', 'prompt'],
       additionalProperties: false,

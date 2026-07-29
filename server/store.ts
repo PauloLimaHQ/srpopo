@@ -47,6 +47,9 @@ const DEFAULT_SETTINGS: Settings = {
   // On by default: cheap (runs on a fixed Haiku model) and the developer
   // explicitly wants automatic per-repo memory distillation. See server/memory.ts.
   memory: true,
+  // Unset until the user picks an IDE: the "Open in IDE" quick action then offers
+  // the editors detected on this machine and remembers the pick (server/desktop.ts).
+  defaultEditor: '',
 };
 
 let db: Db = { repos: [], tasks: [], groomings: [], orchestrations: [], settings: { ...DEFAULT_SETTINGS } };
@@ -62,7 +65,7 @@ if (fs.existsSync(DB_PATH)) {
 }
 // Older db.json files predate the groomings collection.
 if (!Array.isArray(db.groomings)) db.groomings = [];
-// …and the orchestrations one (Hive Orchestration, see server/hive.ts).
+// …and the orchestrations one (Goal Orchestration, see server/orchestrator-engine.ts).
 if (!Array.isArray(db.orchestrations)) db.orchestrations = [];
 // Backfill any missing setting so the rest of the app can read them directly.
 // Capture pre-backfill hints first so we can migrate older db.json files below.
@@ -72,6 +75,11 @@ db.settings = Object.assign({ ...DEFAULT_SETTINGS }, db.settings || {});
 // Migrate: users who configured Linear before the marketplace existed keep it
 // installed, so their "From Linear" button doesn't silently disappear.
 if (!hadInstalledPlugins) db.settings.installedPlugins = hadLinearToken ? ['linear'] : [];
+// Migrate: the plugin used to ship under the internal codename 'hive' — rewrite
+// it to today's id so an existing user's install isn't silently dropped.
+if (db.settings.installedPlugins.includes('hive')) {
+  db.settings.installedPlugins = db.settings.installedPlugins.map((p) => (p === 'hive' ? 'orchestration' : p));
+}
 
 // Bring one persisted task up to date with the current schema. Any task marked
 // running when the server starts is an orphan from a previous run — its child
@@ -109,9 +117,10 @@ for (const g of db.groomings) {
     g.lastError = 'Server restarted while grooming was running';
   }
 }
-// Same for orchestration cards: a live queen session died with the server. A
-// card that was merely `waiting` (or `awaiting` an answer) is left alone — its
-// claude session is resumable, and hive.start() re-arms the watchers on boot.
+// Same for orchestration cards: a live orchestrator session died with the
+// server. A card that was merely `waiting` (or `awaiting` an answer) is left
+// alone — its claude session is resumable, and orchestratorEngine.start()
+// re-arms the watchers on boot.
 for (const o of db.orchestrations) {
   if (!Array.isArray(o.watch)) o.watch = [];
   if (!Array.isArray(o.taskIds)) o.taskIds = [];
