@@ -295,6 +295,10 @@ async function dispatchOne(task: Task): Promise<void> {
   task.useWorktree = true;
   // Unattended: a blocked permission prompt would hang forever with no human.
   task.promptPermissions = false;
+  // The engine can only merge graded work (see mergeFlow's gate), so opt the task
+  // into the Code Review stage — it grades the branch as soon as the run lands
+  // instead of the engine having to start a review of its own afterwards.
+  task.autoCodeReview = true;
   // Ensure the lifecycle add-ons are present (sanitize keeps catalog order/dedupes).
   task.addons = addons.sanitize([...(task.addons || []), ...REQUIRED_ADDONS]);
 
@@ -324,7 +328,13 @@ async function startReviewPass(task: Task): Promise<void> {
   if (!session) return;
   // Unattended, and make sure the allow-list covers the fixes' edit/commit/push.
   task.promptPermissions = false;
+  task.autoCodeReview = true;
   task.addons = addons.sanitize([...(task.addons || []), ...REQUIRED_ADDONS]);
+  // A pass that commits fixes produces a new diff, so the round it opens deserves
+  // its own grade: allow one more code review for this task (the once-per-task
+  // guard is what stops an ungradable review looping *within* a round, and
+  // MAX_REVIEW_ROUNDS bounds the rounds themselves).
+  session.codeReviewed.delete(task.id);
 
   const before = await deps.headSha(task);
   if (!session) return; // the session may have ended while we awaited git
@@ -337,7 +347,7 @@ async function startReviewPass(task: Task): Promise<void> {
     await deps.reviewDispatch(task);
     emit('reviewing');
   } catch (e) {
-    // Couldn't resume it — hand it back to the human, still parked in review.
+    // Couldn't resume it — hand it back to the human, still parked in validation.
     session.running.delete(task.id);
     session.reviewing.delete(task.id);
     session.reviewBase.delete(task.id);

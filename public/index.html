@@ -227,6 +227,16 @@
         <label id="task-branch-field">Branch name <span class="field-hint">— optional, defaults to <code>srpopo/&lt;task&gt;-&lt;id&gt;</code></span>
           <input id="task-branch" type="text" placeholder="e.g. feature/ABC-123, matching your repo's convention" />
         </label>
+        <label class="check addon">
+          <input type="checkbox" id="task-auto-code-review" />
+          <span class="addon-text">
+            <span class="addon-label">Grade the branch in Code Review when it finishes</span>
+            <span class="addon-hint">After the run lands, a separate read-only reviewer session reads the diff,
+              posts one review comment on the pull request, and grades it 1–5 — the card then moves to
+              <strong>Validation</strong> with the grade. Costs one extra short session, and needs an open PR;
+              without this the card goes straight to Validation.</span>
+          </span>
+        </label>
         <div id="task-addon-list"></div>
       </fieldset>
       <div class="modal-actions">

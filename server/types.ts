@@ -317,6 +317,13 @@ export interface Task {
   // PR it opens at the end is created as a draft (`gh pr create --draft`)
   // instead of ready for review. Ignored when that add-on isn't selected.
   prDraft: boolean;
+  // Opt-in: when this task's run finishes successfully with an open pull request,
+  // flow it through the Code Review stage (a fresh read-only reviewer session that
+  // grades the branch — see server/reviewer.ts) before it lands in `validation`.
+  // Off by default, since it costs one extra short session per finished run; a task
+  // without it goes straight to `validation`. Never gates the manual
+  // `POST /api/tasks/:id/code-review` — an explicit request always reviews.
+  autoCodeReview: boolean;
   personas: string[];
   // Files the user attached; bytes live under DATA_DIR/attachments/<id>/<name>,
   // managed only through the upload/delete routes (never the PATCH allowlist).

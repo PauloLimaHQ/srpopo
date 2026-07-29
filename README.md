@@ -108,9 +108,10 @@ the background when the window is closed.
 3. **Dispatch** — drag the card into **Running** (or hit *Create & Run*). Sr. Popo
    spawns the agent's CLI (`claude -p --output-format stream-json`, or
    `codex exec --json`) in the repo/worktree and streams everything live.
-4. **Code Review** — a successful run with an open PR flows into **Code Review**: a
-   fresh, read-only reviewer agent grades the branch 1–5, comments on the PR, and the
-   server labels it `mergeable/<n>`.
+4. **Code Review** — opt in per task ("grade the branch when it finishes") and a
+   successful run with an open PR flows into **Code Review**: a fresh, read-only
+   reviewer agent grades the branch 1–5, comments on the PR, and the server labels it
+   `mergeable/<n>`. Without it the run goes straight to Validation.
 5. **Validation** — the card lands in **Validation** with its grade for you to accept;
    failures show there with a red badge. Click any card for the full session timeline
    and final cost/turns.

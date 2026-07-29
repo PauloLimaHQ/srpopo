@@ -362,6 +362,9 @@ function spawnGroomedTasks(grooming: Grooming, specs: GroomSpec[]): string[] {
       agent,
       addons: ['pull_request'],
       prDraft: false,
+      // Grading in Code Review is opt-in per task (an extra session); the user
+      // turns it on when they want this one graded before Validation.
+      autoCodeReview: false,
       personas: [],
       attachments: [],
       useWorktree: true,
@@ -1383,6 +1386,9 @@ app.post('/api/repos/:id/specs/import', async (req: Request, res: Response) => {
       agent: 'claude', // spec imports run on Claude by default; switchable per task after import
       addons: [],
       prDraft: false,
+      // Grading in Code Review is opt-in per task (an extra session); the user
+      // turns it on when they want this one graded before Validation.
+      autoCodeReview: false,
       personas: [],
       attachments: [],
       useWorktree,
@@ -1425,7 +1431,7 @@ app.patch('/api/tasks/:id', (req: Request, res: Response) => {
   if (!task) return err(res, 404, 'Task not found');
   if (runner.isRunning(task.id)) return err(res, 409, 'Task is running; stop it first');
 
-  const allowed = ['title', 'prompt', 'agent', 'model', 'permissionMode', 'allowedTools', 'promptPermissions', 'useWorktree', 'branchName', 'baseBranch', 'status', 'addons', 'prDraft', 'personas'] as const;
+  const allowed = ['title', 'prompt', 'agent', 'model', 'permissionMode', 'allowedTools', 'promptPermissions', 'useWorktree', 'branchName', 'baseBranch', 'status', 'addons', 'prDraft', 'autoCodeReview', 'personas'] as const;
   for (const key of allowed) {
     if (key in req.body) {
       if (key === 'agent') {
@@ -1435,6 +1441,8 @@ app.patch('/api/tasks/:id', (req: Request, res: Response) => {
         task.addons = addons.sanitize(req.body.addons);
       } else if (key === 'prDraft') {
         task.prDraft = !!req.body.prDraft;
+      } else if (key === 'autoCodeReview') {
+        task.autoCodeReview = !!req.body.autoCodeReview;
       } else if (key === 'allowedTools') {
         task.allowedTools = runner.normalizeAllowedTools(req.body.allowedTools);
       } else if (key === 'promptPermissions') {

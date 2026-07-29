@@ -105,12 +105,20 @@ when `useWorktree` is set.
 
 ## Code Review: grading the branch before a human looks at it
 
-A successful run parks the task in `validation` and then, **when the task has an open
-pull request**, flows on into `code_review` automatically (`runner.maybeCodeReview`,
-called next to `maybeDistill` in `dispatch`'s success branch). That costs one extra
-short read-only session per finished task; every guard failing — no branch, no open
-PR, the parallel-session cap already reached — just leaves the task in `validation`
-with a `proc` log line saying why. Nothing is ever retried.
+The stage is **opt-in per task**: `task.autoCodeReview` (a checkbox in New Task, off
+by default, editable via `PATCH`) is what lets a finished run flow on into
+`code_review`. A task without it goes straight to `validation` — the stage costs one
+extra short read-only session, so nothing pays for it unasked. Autonomous Mode forces
+the flag on for the tasks it dispatches (`dispatchOne`), since it can only merge graded
+work.
+
+When it is on, a successful run parks the task in `validation` and then, **if the task
+has an open pull request**, flows into `code_review` (`runner.maybeCodeReview`, called
+next to `maybeDistill` in `dispatch`'s success branch). Every guard failing — the flag
+off, no branch, no open PR, the parallel-session cap already reached — just leaves the
+task in `validation`, with a `proc` log line when there was something to explain.
+Nothing is ever retried. The manual route below ignores the flag: an explicit request
+always reviews.
 
 - **The run** (`runner.codeReview`) streams into the **same task card**: same NDJSON
   log, one more `runCount`, cost through `usage.applyResult`. It is a *different*
@@ -135,8 +143,10 @@ with a `proc` log line saying why. Nothing is ever retried.
 - **However it ends** — verdict, unparsable output, failure, or a user stop — the card
   lands in `validation`, never `failed`: the implementation succeeded and the human
   still has to validate it. A review run never triggers another review.
-- A fresh (non-resume) dispatch clears `task.codeReview`, so a stale grade never
-  outlives the diff it graded.
+- **Any** dispatch (fresh or a resume — follow-up, review pass, conflict fix) clears
+  `task.codeReview`: the verdict describes a diff the run is about to change. It comes
+  back on the next code review. A code-review run doesn't go through `dispatch`, so it
+  never clears its own verdict.
 
 **Starting one by hand.** `POST /api/tasks/:id/code-review` is the manual equivalent
 (the board's `Code Review` action, and dropping a card on the Code Review column):

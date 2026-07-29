@@ -1820,6 +1820,7 @@
     // Claude asks before unapproved tools; Codex is governed by its sandbox, so
     // the "asks" chip only makes sense for Claude (no per-tool prompt on Codex).
     if (t.promptPermissions && !codex) meta.push(`<span class="chip" title="Asks you to approve otherwise-denied tools">${icon('shield')} asks</span>`);
+    if (t.autoCodeReview) meta.push(`<span class="chip addon-chip" title="A fresh reviewer grades this branch in Code Review when the run finishes (needs an open PR)">${icon('search')} grades on finish</span>`);
     if (t.linearIssue && t.linearIssue.identifier) {
       meta.push(`<a class="chip linear-chip" href="${esc(t.linearIssue.url)}" target="_blank" rel="noopener" title="Open in Linear">${icon('linear')} ${esc(t.linearIssue.identifier)}</a>`);
     }
@@ -2731,6 +2732,7 @@
         useWorktree: fields.useWorktree,
         addons: fields.addons,
         prDraft: fields.prDraft,
+        autoCodeReview: fields.autoCodeReview,
         personas: fields.personas,
         repoId,
       }));
@@ -2833,6 +2835,7 @@
     $('#task-branch').value = task ? (task.branchName || '') : '';
     // The branch is fixed once the worktree is materialized.
     $('#task-branch').disabled = !!(task && task.worktreePath);
+    $('#task-auto-code-review').checked = task ? !!task.autoCodeReview : !!last.autoCodeReview;
     renderAddonOptions(task ? (task.addons || []) : (last.addons || []), task ? !!task.prDraft : !!last.prDraft);
     initPersonaPicker(task ? (task.personas || []) : (last.personas || []));
     $('#task-repo-field').classList.toggle('hidden', !!task);
@@ -2873,6 +2876,7 @@
       baseBranch: selectedBaseBranch(),
       addons: selectedAddons(),
       prDraft: selectedPrDraft(),
+      autoCodeReview: $('#task-auto-code-review').checked,
       personas: selectedPersonas(),
     };
     try {

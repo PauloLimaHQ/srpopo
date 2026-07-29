@@ -387,12 +387,18 @@ function codeReview(task: Task, pr: PrInfo): Task {
 /**
  * Best-effort auto-entry into the Code Review stage, kicked off right after a run
  * lands successfully (see dispatch's resolveExit, next to maybeDistill which it
- * is modeled on). A task with an OPEN pull request flows on into `code_review`;
- * anything else — no branch, no PR, a closed PR, the parallel-session cap already
- * reached, a `gh` lookup that failed — simply stays in `validation` with a log
- * line saying why. Nothing here is ever retried.
+ * is modeled on).
+ *
+ * This is OPT-IN per task (`task.autoCodeReview`, off by default): the stage costs
+ * one extra short read-only session, so a task only flows into `code_review` when
+ * it was configured to. Everything else — the flag off, no branch, no PR, a closed
+ * PR, the parallel-session cap already reached, a `gh` lookup that failed — simply
+ * leaves the task in `validation`, which is where it was already parked. Nothing
+ * here is ever retried, and the manual `POST /api/tasks/:id/code-review` route
+ * bypasses all of it (an explicit request always reviews).
  */
 function maybeCodeReview(task: Task): void {
+  if (!task.autoCodeReview) return; // not configured to be graded — validation it is
   if (!task.branch) return; // nothing to review against, and no PR to comment on
   if (running.has(task.id)) return;
   if (runningCount() >= db.settings.maxParallelSessions) {
@@ -433,10 +439,12 @@ function dispatch(task: Task, prompt: string, { resume = false }: { resume?: boo
   task.finishedAt = null;
   task.lastOutcome = null;
   task.lastError = null;
-  // A fresh implementation run invalidates any grade: it graded a diff that is
-  // about to change. A resume (follow-up, review pass, conflict fix) keeps it
-  // until the next code review replaces it.
-  if (!resume) task.codeReview = null;
+  // Any implementation run invalidates the grade — a fresh one or a resume
+  // (follow-up, review pass, conflict fix) can all change the branch, and the
+  // verdict describes a diff that no longer exists. It comes back on the next
+  // code review. (A code-review run doesn't go through dispatch, so its own
+  // verdict is never cleared by this.)
+  task.codeReview = null;
   task.runCount = (task.runCount || 0) + 1;
   task.activeSubagents = 0;
   emitTask(task);
@@ -456,9 +464,10 @@ function dispatch(task: Task, prompt: string, { resume = false }: { resume?: boo
         task.lastError = 'Stopped by user';
         record(task, { type: 'proc', text: 'Run stopped by user' });
       } else if (sawResult && !sawResult.isError) {
-        // The work landed: park it in `validation` for the human, then — when it
-        // has an open PR — flow on into the Code Review stage, which emits the
-        // `code_review` flip itself once its (async) PR lookup comes back.
+        // The work landed: park it in `validation` for the human, then — only when
+        // the task opted into grading and has an open PR — flow on into the Code
+        // Review stage, which emits the `code_review` flip itself once its (async)
+        // PR lookup comes back.
         task.status = 'validation';
         task.lastOutcome = 'success';
         record(task, { type: 'proc', text: `Run finished (exit ${code})` });
@@ -786,6 +795,7 @@ function setBaseUrl(url: string): void {
 export {
   dispatch,
   codeReview,
+  maybeCodeReview,
   groom,
   orchestrate,
   ask,

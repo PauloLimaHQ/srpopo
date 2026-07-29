@@ -96,8 +96,9 @@ function executionSection(mode: OrchestrationMode): string[] {
   return [
     'EXECUTION MODE: manual.',
     'Autonomous Mode is NOT running, so you drive execution yourself:',
-    '  1. create each worker task with useWorktree: true and addons: ["pull_request", "code_review"]',
-    '     (leave status at its default "backlog" — you are about to dispatch it),',
+    '  1. create each worker task with useWorktree: true, autoCodeReview: true and',
+    '     addons: ["pull_request", "code_review"] (leave status at its default "backlog" — you are',
+    '     about to dispatch it),',
     '  2. call mcp__board__dispatch_task on each task you want running now.',
     'Respect the parallel-session cap: if dispatch_task fails with a capacity error, leave that task queued,',
     'say so in your note, and dispatch it on a later turn once the running ones land.',

@@ -1326,7 +1326,7 @@ test('groomer: deriveTitle takes the first non-empty line and caps length', () =
 function mkTask(id: string, status: string, repoId: string, extra: Record<string, unknown> = {}) {
   return {
     id, title: id, prompt: 'do it', repoId, repoName: 'R', repoPath: '/tmp/r',
-    addons: [], personas: [], attachments: [], useWorktree: false, worktreePath: null,
+    addons: [], personas: [], attachments: [], autoCodeReview: false, useWorktree: false, worktreePath: null,
     branchName: null, branch: null, model: 'default', permissionMode: 'acceptEdits',
     allowedTools: '', promptPermissions: true, status, sessionId: null, resolvedModel: null,
     costUsd: 0, numTurns: null, durationMs: null, runCount: 0, activeSubagents: 0,
@@ -1386,6 +1386,7 @@ test('autonomous: forces the unattended lifecycle config on dispatched tasks', a
     await autonomous.start({ repoId: 'repoA', budgetUsd: 100 });
     assert.strictEqual(task.useWorktree, true, 'worktree is forced on');
     assert.strictEqual(task.promptPermissions, false, 'interactive prompting is forced off for unattended runs');
+    assert.strictEqual(task.autoCodeReview, true, 'grading is forced on — the engine can only merge graded work');
     assert.deepStrictEqual(task.addons, ['pull_request', 'code_review'], 'lifecycle add-ons are ensured, in catalog order');
     assert.deepStrictEqual(autonomous.REQUIRED_ADDONS, ['pull_request', 'code_review'], 'required add-ons are exported');
   } finally {
@@ -1742,6 +1743,63 @@ test('index: PATCH /api/tasks/:id refuses the runner-owned code_review status bu
     store.db.tasks = store.db.tasks.filter((t: { repoId: string }) => t.repoId !== repo.id);
     store.db.repos.splice(store.db.repos.indexOf(repo), 1);
     await new Promise<void>((r) => server.close(() => r()));
+  }
+});
+
+test('tasks: the Code Review stage is opt-in per task, off by default, and PATCH toggles it', async () => {
+  const store = require('../server/store');
+  const tasks = require('../server/tasks');
+  const index = require('../server/index');
+  const repo = { id: store.id(), path: '/tmp/acr-repo', name: 'acr/repo', branch: null, addedAt: store.now() };
+  store.db.repos.push(repo);
+  const { server, port } = await index.start(0);
+  const base = `http://127.0.0.1:${port}`;
+  try {
+    const off = tasks.createTask({ repoId: repo.id, title: 'plain', prompt: 'p' });
+    assert.strictEqual(off.autoCodeReview, false, 'a task is NOT graded automatically unless configured');
+
+    const on = tasks.createTask({ repoId: repo.id, title: 'graded', prompt: 'p', autoCodeReview: true });
+    assert.strictEqual(on.autoCodeReview, true, 'and honors the opt-in at creation');
+
+    const patched = await (await fetch(`${base}/api/tasks/${off.id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ autoCodeReview: true }),
+    })).json();
+    assert.strictEqual(patched.autoCodeReview, true, 'the flag is editable after creation');
+  } finally {
+    store.db.tasks = store.db.tasks.filter((t: { repoId: string }) => t.repoId !== repo.id);
+    store.db.repos.splice(store.db.repos.indexOf(repo), 1);
+    await new Promise<void>((r) => server.close(() => r()));
+  }
+});
+
+test('runner: maybeCodeReview only looks for a PR when the task opted in', () => {
+  const store = require('../server/store');
+  const runner = require('../server/runner');
+  // A cwd that can't exist makes the `gh` lookup fail immediately (same trick the
+  // pr-refresh cases use), so the opted-in path is deterministic and spawns nothing.
+  const extra = { branch: 'srpopo/x', repoPath: '/tmp/srpopo-test-does-not-exist' };
+  const off = mkTask('mcr-off', 'validation', 'repoA', extra);
+  const on = mkTask('mcr-on', 'validation', 'repoA', { ...extra, autoCodeReview: true });
+  const restore = withStore([off, on], 10);
+  try {
+    runner.maybeCodeReview(off);
+    assert.strictEqual(store.readLog('mcr-off').length, 0, 'an un-configured task is left alone entirely');
+    assert.strictEqual(runner.isRunning('mcr-off'), false, 'and nothing is spawned for it');
+
+    runner.maybeCodeReview(on);
+    return new Promise<void>((resolve) => setTimeout(() => {
+      const lines = store.readLog('mcr-on') as Array<{ type: string; text?: string }>;
+      assert.ok(lines.length > 0, 'the opted-in task does look for its pull request');
+      assert.match(String(lines[lines.length - 1].text), /Skipped code review: no open pull request/, 'and says why it skipped');
+      assert.strictEqual(on.status, 'validation', 'a task with no open PR stays in validation');
+      assert.strictEqual(runner.isRunning('mcr-on'), false, 'no reviewer session was spawned');
+      store.removeLog('mcr-on');
+      restore();
+      resolve();
+    }, 200));
+  } catch (e) {
+    restore();
+    throw e;
   }
 });
 
