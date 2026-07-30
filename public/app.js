@@ -187,10 +187,42 @@
     return '';
   };
 
+  // Read `key` out of a plain object map without falling through to
+  // Object.prototype, so an unexpected key ('constructor', 'toString', …) misses
+  // instead of resolving to an inherited member.
+  const lookup = (map, key) => (Object.prototype.hasOwnProperty.call(map, key) ? map[key] : null);
+
+  // Which backend a task runs on. Tasks created before the field existed have no
+  // `agent`, and those are Claude — so read it through here, never raw.
+  const agentOf = (t) => (t && t.agent) || 'claude';
+
+  // How the board labels each non-default backend (Claude cards stay unbadged, as
+  // they were before there was more than one backend).
+  const AGENT_BADGE = {
+    codex: { label: 'Codex', icon: 'cpu', title: 'Runs on the OpenAI Codex CLI' },
+    grok: { label: 'Grok', icon: 'cpu', title: 'Runs on the xAI Grok CLI' },
+  };
+  const agentBadge = (t) => lookup(AGENT_BADGE, agentOf(t));
+
+  // Only Claude can ask the board to approve a tool mid-run: the interactive
+  // permission bridge is a `claude` CLI feature (--permission-prompt-tool, see
+  // server/permissions.ts). Codex is governed by its sandbox and Grok by its
+  // permission mode plus allow rules, and neither has an approval hook to route
+  // here — so the Allow/Deny prompts, the "asks" chip and AUTO MODE are all
+  // Claude-only. One predicate so those three can never drift apart.
+  const hasPermissionBridge = (t) => agentOf(t) === 'claude';
+
   // Input + output tokens accumulated across a task's runs (task.modelUsage is
-  // keyed by model; both Claude and Codex populate it — see server/usage.ts).
+  // keyed by model; every backend populates it — see server/usage.ts).
   const totalTokens = (t) =>
     Object.values(t.modelUsage || {}).reduce((n, m) => n + (m.inputTokens || 0) + (m.outputTokens || 0), 0);
+
+  // Does this task's spend have to be shown as tokens instead of dollars? Codex
+  // subscription runs never report a dollar cost, and Grok's OAuth path usually
+  // doesn't either (it stamps cost for API-key traffic, and drops every cost
+  // float when a turn's cost was only partial). An absent cost means "unreported",
+  // never "free" — so show "—" plus the token total, never a misleading $0.
+  const tokensOnly = (t) => agentOf(t) === 'codex' || (agentOf(t) === 'grok' && !(t.costUsd > 0));
   // Compact token count, e.g. 12345 -> "12.3k".
   const fmtTokens = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
 
@@ -1109,8 +1141,9 @@
       `<span class="chip repo">${esc(t.repoName)}</span>`,
     ];
     // Show the backend only for the non-default agent, so Claude cards read the
-    // same as before; Codex gets an explicit badge (no emoji — icons.js glyph).
-    if (t.agent === 'codex') chips.push(`<span class="chip agent-chip" title="Runs on the OpenAI Codex CLI">${icon('cpu')} Codex</span>`);
+    // same as before; Codex and Grok get an explicit badge (no emoji — icons.js glyph).
+    const badge = agentBadge(t);
+    if (badge) chips.push(`<span class="chip agent-chip" title="${badge.title}">${icon(badge.icon)} ${badge.label}</span>`);
     chips.push(`<span class="chip model${modelClass(modelName)}">${esc(modelName)}</span>`);
     if (t.groomingId) chips.push(`<span class="chip grooming-chip" title="Spawned by a grooming">${icon('lightbulb')} groomed</span>`);
     if (t.resolvingConflicts) chips.push(`<span class="chip conflict-chip" title="Auto-resolving merge conflicts with main">${icon('git-branch')} Resolving Conflicts</span>`);
@@ -1590,7 +1623,18 @@
   const timeline = {
     toolRows: new Map(),   // tool_use_id -> tool row element
     subagents: new Map(),  // Task tool_use_id -> { group, body, head }
+    // The Grok text/thought block currently being streamed into, if any:
+    // { kind, text, body }. See appendGrokDelta.
+    stream: null,
   };
+
+  // Drop the per-session render state before (re)playing a timeline, so a drawer
+  // never folds new events into the previous session's elements.
+  function resetTimelineState() {
+    timeline.toolRows.clear();
+    timeline.subagents.clear();
+    timeline.stream = null;
+  }
 
   async function openDrawer(taskId) {
     state.openTaskId = taskId;
@@ -1599,8 +1643,7 @@
     $('#drawer').classList.remove('hidden');
     $('#drawer-overlay').classList.remove('hidden');
     $('#timeline').innerHTML = '<div class="ev-meta">loading session…</div>';
-    timeline.toolRows.clear();
-    timeline.subagents.clear();
+    resetTimelineState();
 
     try {
       const { task, events } = await api('GET', `/api/tasks/${taskId}/logs`);
@@ -1624,8 +1667,7 @@
     $('#drawer').classList.remove('hidden');
     $('#drawer-overlay').classList.remove('hidden');
     $('#timeline').innerHTML = '<div class="ev-meta">loading session…</div>';
-    timeline.toolRows.clear();
-    timeline.subagents.clear();
+    resetTimelineState();
     renderPermissionPrompts(null);
 
     try {
@@ -1648,8 +1690,7 @@
     $('#drawer').classList.remove('hidden');
     $('#drawer-overlay').classList.remove('hidden');
     $('#timeline').innerHTML = '<div class="ev-meta">loading session…</div>';
-    timeline.toolRows.clear();
-    timeline.subagents.clear();
+    resetTimelineState();
     renderPermissionPrompts(null);
 
     try {
@@ -1684,8 +1725,8 @@
     // The AUTO MODE toggle only makes sense when the run asks before each tool,
     // i.e. its permission mode is "Accept edits" — 'bypassPermissions' never
     // prompts, and 'plan'/'default' aren't the accept-edits flow we auto-approve.
-    // Codex has no per-tool approval hook (it's sandbox-governed), so never here.
-    const canAuto = live && task.permissionMode === 'acceptEdits' && task.agent !== 'codex';
+    // Only Claude has an approval hook to auto-answer, so never for the others.
+    const canAuto = live && task.permissionMode === 'acceptEdits' && hasPermissionBridge(task);
     // The box carries that toggle plus the pending prompts. Nothing to show for a
     // task that can't auto-approve and has no prompts.
     if (!canAuto && !list.length) {
@@ -1762,8 +1803,8 @@
     if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
     const task = state.tasks.get(state.openTaskId);
     // Only the "Accept edits" flow exposes AUTO MODE — match renderPermissionPrompts
-    // (Codex is sandbox-governed and never prompts, so it has no AUTO MODE).
-    if (!task || !isLive(task) || task.permissionMode !== 'acceptEdits' || task.agent === 'codex') return;
+    // (the other backends never prompt, so they have no AUTO MODE).
+    if (!task || !isLive(task) || task.permissionMode !== 'acceptEdits' || !hasPermissionBridge(task)) return;
     e.preventDefault();
     toggleAutoApprove(state.openTaskId, !isAutoApprove(state.openTaskId));
   });
@@ -1999,16 +2040,15 @@
 
   function renderDrawerHead(t) {
     $('#drawer-title').textContent = t.title;
-    const codex = t.agent === 'codex';
+    const badge = agentBadge(t);
     const meta = [
       `<span class="chip repo">${esc(t.repoName)}</span>`,
     ];
-    if (codex) meta.push(`<span class="chip agent-chip" title="Runs on the OpenAI Codex CLI">${icon('cpu')} Codex</span>`);
+    if (badge) meta.push(`<span class="chip agent-chip" title="${badge.title}">${icon(badge.icon)} ${badge.label}</span>`);
     meta.push(`<span class="chip model${modelClass(t.resolvedModel || t.model)}">${esc(t.resolvedModel || t.model)}</span>`);
     meta.push(`<span class="chip">${esc(t.permissionMode)}</span>`);
-    // Claude asks before unapproved tools; Codex is governed by its sandbox, so
-    // the "asks" chip only makes sense for Claude (no per-tool prompt on Codex).
-    if (t.promptPermissions && !codex) meta.push(`<span class="chip" title="Asks you to approve otherwise-denied tools">${icon('shield')} asks</span>`);
+    // Only Claude asks before an unapproved tool, so the "asks" chip is Claude-only.
+    if (t.promptPermissions && hasPermissionBridge(t)) meta.push(`<span class="chip" title="Asks you to approve otherwise-denied tools">${icon('shield')} asks</span>`);
     if (t.autoCodeReview) meta.push(`<span class="chip addon-chip" title="A fresh reviewer grades this branch in Code Review when the run finishes (needs an open PR)">${icon('search')} grades on finish</span>`);
     if (t.linearIssue && t.linearIssue.identifier) {
       meta.push(`<a class="chip linear-chip" href="${esc(t.linearIssue.url)}" target="_blank" rel="noopener" title="Open in Linear">${icon('linear')} ${esc(t.linearIssue.identifier)}</a>`);
@@ -2024,11 +2064,11 @@
       meta.push(repoBranchChipHtml(t));
     }
     if (t.sessionId) meta.push(`<span class="chip" title="session id">${esc(t.sessionId.slice(0, 8))}…</span>`);
-    if (codex) {
-      // Codex subscription runs report tokens, not a dollar cost — show "—" for
-      // cost (never a misleading $0) plus the token total the ledger recorded.
+    if (tokensOnly(t)) {
+      // This backend reported tokens but no dollar cost — show "—" for cost (never
+      // a misleading $0) plus the token total the ledger recorded.
       const tok = totalTokens(t);
-      meta.push(`<span class="chip cost" title="Codex subscription runs report tokens, not a dollar cost">— cost</span>`);
+      meta.push(`<span class="chip cost" title="This run reported tokens, not a dollar cost">— cost</span>`);
       if (tok > 0) meta.push(`<span class="chip" title="input + output tokens across all runs">${fmtTokens(tok)} tok</span>`);
     } else if (t.costUsd > 0) {
       meta.push(`<span class="chip cost">$${t.costUsd.toFixed(2)} total</span>`);
@@ -2443,8 +2483,44 @@
     }
   }
 
+  // Grok streams its answer as `text` / `thought` DELTAS — a few words per event —
+  // rather than whole messages (see server/agents/grok.ts). Rendering one div per
+  // delta would shred the timeline, so consecutive chunks of the same kind fold
+  // into a single growing block, and any other event closes it (see closeGrokDelta)
+  // so everything stays in stream order. Replaying a stored log rebuilds the same
+  // blocks, because the events arrive in the same order they did live.
+  function appendGrokDelta(kind, chunk) {
+    if (!chunk) return;
+    const open = timeline.stream;
+    if (!open || open.kind !== kind) {
+      const html = kind === 'thought'
+        ? `<details class="ev-thinking" open><summary>${icon('brain')} thinking</summary><pre></pre></details>`
+        : '<div class="ev-text md"></div>';
+      const tpl = document.createElement('template');
+      tpl.innerHTML = html;
+      const el = tpl.content.firstElementChild;
+      $('#timeline').appendChild(el);
+      // `body` is what the text goes into; for a thought that's the inner <pre>.
+      timeline.stream = { kind, text: '', body: kind === 'thought' ? el.querySelector('pre') : el };
+    }
+    const block = timeline.stream;
+    block.text += chunk;
+    // Re-render the whole accumulated block: markdown can't be parsed one delta at
+    // a time (a fence or a list only makes sense whole), and a response is small
+    // enough that reformatting it per chunk costs nothing.
+    if (block.kind === 'thought') block.body.textContent = block.text;
+    else block.body.innerHTML = mdToHtml(block.text);
+    scrollTimeline();
+  }
+
+  // Stop folding into the current delta block, so the next event renders after it.
+  function closeGrokDelta() {
+    timeline.stream = null;
+  }
+
   function appendEvent(ev) {
     const type = ev.type;
+    if (type !== 'text' && type !== 'thought') closeGrokDelta();
     if (type === 'prompt') {
       const tag = ev.groom ? 'GROOMING' : ev.codeReview ? 'CODE REVIEW' : ev.resume ? 'FOLLOW-UP' : 'PROMPT';
       addHtml(containerFor(ev), `
@@ -2493,6 +2569,25 @@
       addHtml($('#timeline'), `<div class="ev-meta perm-log ${allowed ? 'ok' : 'no'}">${icon(auto ? 'zap' : 'shield')} ${verb} ${esc(ev.toolName || 'tool')}${esc(why)}</div>`);
     } else if (type === 'raw') {
       addHtml($('#timeline'), `<div class="ev-stderr">${esc(ev.text)}</div>`);
+    } else if (type === 'text' || type === 'thought') {
+      // Grok response / reasoning deltas.
+      appendGrokDelta(type, ev.data);
+    } else if (type === 'end') {
+      // Grok's terminal event: the session id and the whole spend report. It has
+      // no duration, and a subscription run usually has no dollar cost — show the
+      // tokens, and only add the cost when Grok actually stamped one.
+      const u = ev.usage || {};
+      const cost = ev.total_cost_usd > 0 ? ` · $${ev.total_cost_usd.toFixed(2)}` : '';
+      addHtml($('#timeline'), `
+        <div class="ev-result">
+          ${icon('circle-check')} <span class="md">${esc(ev.stopReason || 'done')}</span>
+          <div class="stats">${u.input_tokens || 0} in · ${u.output_tokens || 0} out · ${u.cache_read_input_tokens || 0} cached · ${ev.num_turns ?? '?'} turns${cost}</div>
+        </div>`);
+    } else if (type === 'max_turns_reached') {
+      addHtml($('#timeline'), `<div class="ev-meta">${icon('square')} Stopped: maximum turns reached</div>`);
+    } else if (typeof type === 'string' && type.startsWith('auto_compact_')) {
+      // Grok compacted its own context mid-run — worth a line, drives nothing.
+      addHtml($('#timeline'), `<div class="ev-meta">${icon('square')} context ${esc(type.replace('auto_compact_', 'compact '))}</div>`);
     } else if (type === 'thread.started') {
       // Codex session start (see server/agents/codex.ts for the JSONL schema).
       addHtml(containerFor(ev), `<div class="ev-meta">${icon('zap')} codex session · ${esc((ev.thread_id || '').slice(0, 8))}</div>`);
@@ -3143,11 +3238,19 @@
     } catch (e) { toast(e.message); }
   }
 
-  // Show only the chosen agent's models in the New-Task model picker and toggle
-  // the Codex permissions hint. Options tagged data-agent (or data-custom, which
+  // What the Permissions choice actually means on a backend that has no per-tool
+  // approval prompt. Claude is absent on purpose — it asks, so the picker already
+  // reads literally there and needs no footnote.
+  const PERM_HINTS = {
+    codex: 'Codex maps this to a sandbox level (read-only / workspace-write); there is no per-tool prompt.',
+    grok: 'Grok maps this to its own permission mode; there is no per-tool prompt, so "Ask by default" denies anything outside the allow-list instead of asking.',
+  };
+
+  // Show only the chosen agent's models in the New-Task model picker and set the
+  // permissions hint for it. Options tagged data-agent (or data-custom, which
   // are Claude/Bedrock models) are shown only for their agent; the untagged
   // "Account default" is always available. Resets to default if the current
-  // selection belongs to the other agent.
+  // selection belongs to another agent.
   function syncAgentModels() {
     const agent = $('#task-agent').value;
     const sel = $('#task-model');
@@ -3156,10 +3259,12 @@
       opt.hidden = a ? a !== agent : false;
     }
     if (sel.selectedOptions[0] && sel.selectedOptions[0].hidden) sel.value = 'default';
-    // Codex has no per-tool approval prompt — its permission mode maps to a
-    // sandbox level. Surface that in the form so the choice isn't misleading.
-    const codex = agent === 'codex';
-    $('#task-perm-codex-hint').classList.toggle('hidden', !codex);
+    // Neither Codex nor Grok has a per-tool approval prompt, and each reinterprets
+    // the permission choice above in its own terms. Say so in the form so the
+    // choice isn't misleading (see server/agents/codex.ts and grok.ts).
+    const hint = $('#task-perm-agent-hint');
+    hint.textContent = lookup(PERM_HINTS, agent) || '';
+    hint.classList.toggle('hidden', !hint.textContent);
   }
   $('#task-agent').addEventListener('change', syncAgentModels);
 
@@ -5213,13 +5318,13 @@
     try {
       const h = await api('GET', '/api/health');
       const chip = $('#health');
-      // Either backend is enough to run a task; the header only shows the
+      // Any one backend is enough to run a task; the header only shows the
       // status dot — CLI versions live in Settings → About instead.
-      const agents = [h.claude, h.codex].filter(Boolean);
+      const agents = [h.claude, h.codex, h.grok].filter(Boolean);
       chip.textContent = h.ok ? '●' : '● no agent CLI found';
       chip.title = h.ok
         ? `Agent CLIs found:\n${agents.join('\n')}`
-        : 'No agent CLI found — install Claude Code and/or OpenAI Codex';
+        : 'No agent CLI found — install Claude Code, OpenAI Codex and/or xAI Grok';
       chip.classList.add(h.ok ? 'ok' : 'bad');
       const about = $('#setting-about-version');
       if (about && h.version) {

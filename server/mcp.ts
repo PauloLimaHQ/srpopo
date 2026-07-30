@@ -35,7 +35,7 @@ const INSTRUCTIONS =
   'Sr. Popo orchestrates coding-agent tasks on a local Kanban board. Use list_repos ' +
   'to find a registered repo id, then list_tasks/get_task to inspect work, ' +
   'create_task to queue a prompt, and dispatch_task to run it. Each task runs on its ' +
-  'own agent backend (claude or codex). Dispatching spawns a real agent session on ' +
+  'own agent backend (claude, codex or grok). Dispatching spawns a real agent session on ' +
   'the user\'s machine — confirm intent before starting runs.';
 
 // One MCP tool: its advertised schema plus the id of the arguments it reads.
@@ -87,10 +87,10 @@ const TOOL_DEFS = [
         repoId: { type: 'string', description: 'Target repo id (see list_repos).' },
         title: { type: 'string', description: 'Short task title.' },
         prompt: { type: 'string', description: 'The prompt the agent will run.' },
-        agent: { type: 'string', description: 'Which backend runs the task: "claude" (default) or "codex".' },
-        model: { type: 'string', description: 'A model for the chosen agent, or "default" for its account default. Claude: sonnet / opus / haiku / fable, or a custom model id configured in Settings. Codex: e.g. gpt-5.6-sol.' },
+        agent: { type: 'string', description: 'Which backend runs the task: "claude" (default), "codex" or "grok".' },
+        model: { type: 'string', description: 'A model for the chosen agent, or "default" for its account default. Claude: sonnet / opus / haiku / fable, or a custom model id configured in Settings. Codex: e.g. gpt-5.6-sol. Grok: grok-build / grok-4.5.' },
         useWorktree: { type: 'boolean', description: 'Run isolated on a srpopo/<slug> worktree branch.' },
-        permissionMode: { type: 'string', description: 'acceptEdits (default), bypassPermissions, plan, or default. On codex these map to a sandbox level rather than per-tool prompts.' },
+        permissionMode: { type: 'string', description: 'acceptEdits (default), bypassPermissions, plan, or default. On codex these map to a sandbox level rather than per-tool prompts; on grok they map to its own permission modes (again with no per-tool prompt).' },
         status: { type: 'string', description: '"ready" to stage for dispatch, otherwise backlog.' },
         branchName: { type: 'string', description: 'Override the auto-generated worktree branch name.' },
         baseBranch: { type: 'string', description: 'Branch to base the task on (worktree start point, or checked out for a direct run). Defaults to the repo\'s current HEAD.' },

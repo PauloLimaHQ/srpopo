@@ -200,9 +200,9 @@ const REVIEW_TOOLS = [
 // by the headless run, which is exactly the guarantee we want.
 function reviewArgs(task: Pick<Task, 'model' | 'agent'>): string[] {
   const args = ['-p', '--output-format', 'stream-json', '--verbose'];
-  // The reviewer always runs on Claude, so a Codex task's model name is not a
-  // valid `--model` here — those fall back to the CLI's default model.
-  if (task.model && task.model !== 'default' && task.agent !== 'codex') args.push('--model', task.model);
+  // The reviewer always runs on Claude, so a Codex or Grok task's model name is
+  // not a valid `--model` here — those fall back to the CLI's default model.
+  if (task.model && task.model !== 'default' && (task.agent || 'claude') === 'claude') args.push('--model', task.model);
   args.push('--allowedTools', mergeAllowedTools(RESEARCH_TOOLS, REVIEW_TOOLS));
   return args;
 }
