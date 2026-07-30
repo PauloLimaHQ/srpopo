@@ -125,9 +125,13 @@ const MERGEABLE_LABEL_COLORS: Record<number, string> = {
  * Stamp a task's PR with its Code Review grade as the single `mergeable/<n>`
  * label. Best-effort and non-throwing like its neighbors: it resolves the PR,
  * creates the label if the repo doesn't have it yet (ignoring an "already exists"
- * failure), then adds it while removing the other four grades so exactly one
- * sticks. If that combined edit fails, the add is retried on its own so a grade
- * still lands even when a removal is what `gh` objected to.
+ * failure), removes the other four grades one at a time — each its own `gh` call,
+ * so one grade that was never created (and therefore errors on removal) can't
+ * stop a *different*, actually-attached grade from being removed — and only then
+ * adds the new one. Removing before adding, and never combining the two into one
+ * edit, is what keeps exactly one `mergeable/*` label on the PR; a combined
+ * add+remove call fails atomically on any missing label, which used to leave the
+ * stale grade in place.
  */
 async function setMergeableLabel(
   task: Partial<Task>,
@@ -144,19 +148,18 @@ async function setMergeableLabel(
 
   // Best-effort creation: the common case is that it already exists, which `gh`
   // reports as a failure we deliberately ignore. A repo where we may not create
-  // labels also falls through here — the edit below is what actually reports.
+  // labels also falls through here — the add below is what actually reports.
   await gh(cwd, [
     'label', 'create', name,
     '--color', MERGEABLE_LABEL_COLORS[g],
     '--description', `Sr. Popo code review grade ${g}/5`,
   ]);
 
-  const args = ['pr', 'edit', String(found.pr.number), '--add-label', name];
   for (const other of MERGEABLE_LABELS) {
-    if (other !== name) args.push('--remove-label', other);
+    if (other !== name) await gh(cwd, ['pr', 'edit', String(found.pr.number), '--remove-label', other]);
   }
-  let res = await gh(cwd, args);
-  if (res.err) res = await gh(cwd, ['pr', 'edit', String(found.pr.number), '--add-label', name]);
+
+  const res = await gh(cwd, ['pr', 'edit', String(found.pr.number), '--add-label', name]);
   if (res.err) return { ok: false, reason: classifyError(res), message: res.stderr.trim() || undefined };
   return { ok: true };
 }
