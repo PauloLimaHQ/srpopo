@@ -286,6 +286,19 @@ body {
 .btn:disabled:active { transform: none; }
 .btn-label { white-space: nowrap; }
 
+/* ── split button (top-bar "New Task ▾") ──
+   A primary action fused with a caret that opens `#new-menu`, the standard
+   "main action + more ways to start" pattern instead of a flat row of buttons. */
+.split-btn { display: inline-flex; align-items: stretch; }
+.split-btn-main { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.split-btn-caret {
+  border-top-left-radius: 0; border-bottom-left-radius: 0;
+  border-left: 1px solid rgba(255, 255, 255, .3);
+  padding: 8px 10px;
+}
+.split-btn-caret .icon { width: 14px; height: 14px; }
+.split-btn-caret[aria-expanded="true"] { filter: brightness(1.06); }
+
 /* ── filter bar ── */
 .filterbar {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
@@ -369,6 +382,39 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
 .workspace-header-title { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; position: relative; }
 .workspace-title { font-family: var(--serif); font-size: 16px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* ── Autonomous Mode toggle (workspace header) ──
+   A pill rather than a plain toolbar button, so its on/off state reads at a
+   glance instead of blending into the icon row next to it. */
+.autonomous-toggle {
+  display: inline-flex; align-items: center; gap: 7px; flex: none;
+  padding: 6px 13px; border-radius: 20px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--bg-card); color: var(--text-dim);
+  font: inherit; font-size: 12px; font-weight: 600; white-space: nowrap;
+  transition: background .15s, border-color .15s, color .15s;
+}
+.autonomous-toggle:hover { color: var(--text); border-color: var(--card-hover-border); }
+.autonomous-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.autonomous-toggle .icon { width: 14px; height: 14px; }
+.autonomous-toggle.active { color: var(--accent); border-color: var(--accent-soft); background: var(--accent-soft); }
+.autonomous-toggle.active:hover { filter: brightness(0.97); }
+.autonomous-toggle-dot {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex: none;
+  animation: autonomous-pulse 1.4s ease-in-out infinite;
+}
+
+/* ── workspace quick-action group (memory/terminal/reveal/IDE/info) ──
+   A single bordered pill with hairline dividers reads as one toolbar instead
+   of five loose icon buttons floating in the header. */
+.workspace-tools {
+  display: flex; align-items: stretch; flex: none;
+  background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px;
+  overflow: hidden;
+}
+.workspace-tools .btn.icon {
+  border: none; border-radius: 0; background: none; padding: 7px 10px;
+}
+.workspace-tools .btn.icon + .btn.icon { border-left: 1px solid var(--border); }
+
 /* ── responsive header: collapse text labels to icon-only under medium
    widths so the toolbar never wraps or overflows as the window is resized
    (both bars use `.btn-collapsible` on the buttons that carry a label). ── */
@@ -380,6 +426,8 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
   .btn-collapsible .btn-label { display: none; }
   .btn-collapsible { padding: 8px 10px; }
   .workspace-header { padding: 10px 16px; gap: 8px; }
+  .autonomous-toggle .btn-label { display: none; }
+  .autonomous-toggle { padding: 7px 9px; }
 }
 
 @media (max-width: 620px) {
@@ -1405,8 +1453,12 @@ a.chip.pr:hover { border-color: currentColor; }
   font: inherit; font-size: 13px; color: var(--text); text-align: left; cursor: pointer;
 }
 .quick-menu-item:hover, .quick-menu-item:focus-visible { background: var(--bg-hover); outline: none; }
-.quick-menu-item .icon { width: 15px; height: 15px; flex: none; color: var(--text-dim); }
+.quick-menu-item .icon { width: 15px; height: 15px; flex: none; color: var(--text-dim); margin-top: 1px; }
 .quick-menu-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Two-line variant — icon + stacked label/hint, used by the "New Task ▾" menu. */
+.quick-menu-item-body { display: flex; flex-direction: column; min-width: 0; flex: 1; gap: 1px; }
+.quick-menu-item-label { font-size: 13px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quick-menu-item-hint { font-size: 11px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .quick-menu-note {
   padding: 8px 10px 4px; margin-top: 4px; border-top: 1px solid var(--border);
   font-size: 11px; line-height: 1.45; color: var(--text-dim);
