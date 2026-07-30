@@ -20,6 +20,7 @@
     prByTask: new Map(), // taskId -> 'loading' | { pr, reason } from /api/tasks/:id/pr
     repoBranchByTask: new Map(), // taskId -> 'loading' | repo's live current branch (non-worktree tasks only)
     repoBranchByRepo: new Map(), // repoId -> 'loading' | repo's live current branch (Super View / workspace header)
+    repoRemoteUrlByRepo: new Map(), // repoId -> repo's `origin` remote as a web URL (e.g. GitHub), or null
     worktreesByRepo: new Map(), // repoId -> 'loading' | [ WorktreeInfo ] from /api/repos/:id/worktrees
     permissions: new Map(), // taskId -> [ pending tool-approval requests ]
     autoApprove: new Set(), // taskIds whose live run is in auto-approve ("AUTO MODE")
@@ -602,9 +603,10 @@
   async function refreshRepoBranchCard(repoId, force) {
     if (!force && state.repoBranchByRepo.has(repoId)) return;
     state.repoBranchByRepo.set(repoId, 'loading');
-    let branch = null;
-    try { ({ branch } = await api('GET', `/api/repos/${repoId}/branch`)); } catch { /* stays null */ }
+    let branch = null, remoteUrl = null;
+    try { ({ branch, remoteUrl } = await api('GET', `/api/repos/${repoId}/branch`)); } catch { /* stay null */ }
     state.repoBranchByRepo.set(repoId, branch);
+    state.repoRemoteUrlByRepo.set(repoId, remoteUrl);
     if (state.view.mode === 'super') renderSuperView();
     else if (state.view.mode === 'workspace' && state.view.repoId === repoId) renderWorkspaceHeader();
   }
@@ -693,8 +695,12 @@
     $('#workspace-title').textContent = repo.name;
     refreshRepoBranchCard(repo.id);
     const branch = state.repoBranchByRepo.get(repo.id);
+    const remoteUrl = state.repoRemoteUrlByRepo.get(repo.id);
     $('#workspace-branch-chip').innerHTML = branch && branch !== 'loading'
-      ? `<span class="chip">${icon('git-branch')} ${esc(branch)}</span>` : '';
+      ? (remoteUrl
+        ? `<a class="chip" href="${esc(remoteUrl)}/tree/${esc(encodeURIComponent(branch))}" target="_blank" rel="noopener" title="Open this branch on GitHub">${icon('git-branch')} ${esc(branch)}</a>`
+        : `<span class="chip">${icon('git-branch')} ${esc(branch)}</span>`)
+      : '';
   }
 
   function renderWorkspaceWorktreeList(repoId) {
