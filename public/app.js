@@ -3500,15 +3500,21 @@
     $('#task-create-run').innerHTML = `${icon('play')}${task ? 'Save & Run' : 'Create & Run'}`;
 
     $('#modal-task').classList.remove('hidden');
-    $('#task-title').focus();
+    // New tasks lead with the prompt (title is optional/derived); editing an
+    // existing task leads with the title, since that's the field most likely
+    // to need a manual tweak.
+    (task ? $('#task-title') : $('#task-prompt')).focus();
   }
 
   async function saveTask(run) {
     const title = $('#task-title').value.trim();
     const prompt = $('#task-prompt').value.trim();
-    if (!title || !prompt) { toast('Title and prompt are required'); return; }
+    if (!prompt) { toast('Prompt is required'); return; }
     const fields = {
-      title,
+      // Left blank, the server derives one from the prompt — no title round-trip
+      // through an LLM just for a label. Omitted (not sent empty) so an edit with
+      // a blank field doesn't clear an existing/derived title.
+      ...(title ? { title } : {}),
       prompt,
       agent: $('#task-agent').value,
       model: $('#task-model').value,

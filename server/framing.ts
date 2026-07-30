@@ -103,4 +103,14 @@ function frameReviewPrompt(task: Task): string {
   ].join('\n');
 }
 
-export { framePrompt, frameReviewPrompt, slugify };
+// A short, safe title derived straight from the raw prompt — used when a task is
+// created without an explicit title, so that doesn't cost an LLM call.
+function deriveTitle(prompt: unknown): string {
+  const line = String(prompt || '')
+    .split('\n')
+    .map((s) => s.trim())
+    .find(Boolean) || 'Untitled task';
+  return line.length > 60 ? line.slice(0, 57).trimEnd() + '…' : line;
+}
+
+export { framePrompt, frameReviewPrompt, slugify, deriveTitle };

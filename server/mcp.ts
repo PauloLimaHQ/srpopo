@@ -85,7 +85,7 @@ const TOOL_DEFS = [
       type: 'object',
       properties: {
         repoId: { type: 'string', description: 'Target repo id (see list_repos).' },
-        title: { type: 'string', description: 'Short task title.' },
+        title: { type: 'string', description: 'Short task title. Optional — left blank, it is derived from the prompt\'s first line.' },
         prompt: { type: 'string', description: 'The prompt the agent will run.' },
         agent: { type: 'string', description: 'Which backend runs the task: "claude" (default), "codex" or "grok".' },
         model: { type: 'string', description: 'A model for the chosen agent, or "default" for its account default. Claude: sonnet / opus / haiku / fable, or a custom model id configured in Settings. Codex: e.g. gpt-5.6-sol. Grok: grok-build / grok-4.5.' },
@@ -102,7 +102,7 @@ const TOOL_DEFS = [
         personas: { type: 'array', items: { type: 'string' }, description: 'Persona ids (see the board).' },
         autoPersona: { type: 'boolean', description: 'Let the run pick its own expert persona from the catalog before it starts, instead of using "personas".' },
       },
-      required: ['repoId', 'title', 'prompt'],
+      required: ['repoId', 'prompt'],
       additionalProperties: false,
     },
   },

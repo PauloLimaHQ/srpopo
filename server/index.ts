@@ -1555,6 +1555,11 @@ app.patch('/api/tasks/:id', (req: Request, res: Response) => {
       } else if (key === 'baseBranch') {
         // Base is only consulted at dispatch; fixed once the worktree exists.
         if (!task.worktreePath) task.baseBranch = req.body.baseBranch ? String(req.body.baseBranch).trim() : null;
+      } else if (key === 'title') {
+        // A blank edit is a no-op rather than clearing the label — the auto-derived
+        // title (or the last real one) stays until the user types a replacement.
+        const trimmed = String(req.body.title ?? '').trim();
+        if (trimmed) task.title = trimmed;
       } else {
         (task as unknown as Record<string, unknown>)[key] = req.body[key];
       }

@@ -180,8 +180,8 @@
 
       <div class="task-titlebar">
         <span class="i" data-icon="type" aria-hidden="true"></span>
-        <input id="task-title" aria-label="Task title" maxlength="120"
-               placeholder="Task title — e.g. Add a dark mode toggle" />
+        <input id="task-title" aria-label="Task title (optional)" maxlength="120"
+               placeholder="Title (optional — derived from the prompt if left blank)" />
       </div>
 
       <!-- The composer: prompt, its attachment tray, and the run settings.
@@ -609,12 +609,15 @@
     </div>
   </div>
 
-  <!-- Settings modal (Claude-desktop style: sidebar nav + content pane) -->
+  <!-- Settings modal (ChatGPT-desktop style: header bar + sidebar nav + content pane) -->
   <div id="modal-settings" class="modal hidden">
     <div class="modal-box settings-box">
+      <div class="settings-head">
+        <h2 class="settings-title">Settings</h2>
+        <button class="btn icon settings-close" id="settings-close" title="Close" aria-label="Close"><span class="i" data-icon="x"></span></button>
+      </div>
       <div class="settings-layout">
         <nav class="settings-nav" aria-label="Settings sections">
-          <div class="settings-nav-title">Settings</div>
           <button class="settings-nav-item active" data-section="general">
             <span class="i" data-icon="sliders-horizontal"></span>General
           </button>
@@ -635,8 +638,6 @@
           </button>
         </nav>
         <div class="settings-main">
-          <button class="btn icon settings-close" id="settings-close" title="Close" aria-label="Close"><span class="i" data-icon="x"></span></button>
-
           <section class="settings-section" data-section="general">
             <h2 class="settings-section-title">General</h2>
             <fieldset class="addons">

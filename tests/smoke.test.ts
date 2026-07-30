@@ -1046,6 +1046,10 @@ test('mcp: create_task / list_tasks / get_task round-trip through the store', as
   // Missing input is a plain throw that respond() surfaces as an isError result.
   await assert.rejects(() => mcp.callTool('get_task', { taskId: 'nope' }), /Task not found/, 'a missing task throws');
   await assert.rejects(() => mcp.callTool('create_task', { repoId: repo.id, title: 'x' }), /required/, 'a prompt-less create throws');
+
+  // title is optional — a titleless create derives one from the prompt.
+  const titleless = JSON.parse((await mcp.callTool('create_task', { repoId: repo.id, prompt: 'Do the other thing' })).content[0].text);
+  assert.strictEqual(titleless.title, 'Do the other thing', 'title derived from the prompt');
 });
 
 test('permissions: a pending prompt resolves with the user decision and is listed until settled', async () => {
@@ -2113,6 +2117,27 @@ test('tasks: createTask defaults agent to claude and accepts codex and grok', ()
   // isAgent is what PATCH /api/tasks/:id gates on, so it must agree with createTask.
   assert.ok(tasks.isAgent('grok') && tasks.isAgent('codex') && tasks.isAgent('claude'));
   assert.ok(!tasks.isAgent('gpt') && !tasks.isAgent(undefined), 'unknown backends are rejected, not defaulted');
+});
+
+test('tasks: createTask derives a title from the prompt when none is given', () => {
+  const store = require('../server/store');
+  const tasks = require('../server/tasks');
+  const repo = { id: store.id(), path: '/tmp/title-repo', name: 'o/title', branch: null, addedAt: store.now() };
+  store.db.repos.push(repo);
+
+  const noTitle = tasks.createTask({ repoId: repo.id, prompt: 'Add a dark mode toggle\nsome more detail' });
+  assert.strictEqual(noTitle.title, 'Add a dark mode toggle', 'first non-blank line of the prompt, no LLM involved');
+
+  const blankTitle = tasks.createTask({ repoId: repo.id, title: '   ', prompt: 'Fix the flaky test' });
+  assert.strictEqual(blankTitle.title, 'Fix the flaky test', 'a whitespace-only title is treated as absent');
+
+  const kept = tasks.createTask({ repoId: repo.id, title: 'Custom label', prompt: 'Fix the flaky test' });
+  assert.strictEqual(kept.title, 'Custom label', 'an explicit title is kept as-is');
+
+  const long = tasks.createTask({ repoId: repo.id, prompt: 'x'.repeat(80) });
+  assert.ok(long.title.length <= 60 && long.title.endsWith('…'), 'a long derived title is truncated with an ellipsis');
+
+  assert.throws(() => tasks.createTask({ repoId: repo.id, title: 'Only a title' }), /required/, 'prompt is still required');
 });
 
 test('agents/codex: buildArgs streams exec --json over stdin, maps sandbox, and resumes', () => {

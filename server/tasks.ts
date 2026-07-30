@@ -68,9 +68,11 @@ export function capacityError(): string {
 // connected board. Throws a plain Error on invalid input; the caller maps that
 // to a 4xx (REST) or a tool error (MCP).
 export function createTask(input: CreateTaskInput): Task {
-  const title = String(input.title ?? '').trim();
   const prompt = String(input.prompt ?? '');
-  if (!title || !prompt) throw new Error('title and prompt are required');
+  if (!prompt.trim()) throw new Error('prompt is required');
+  // No title is required up front: a blank one is derived from the prompt's
+  // first line, so creating a task never costs an LLM call just for a label.
+  const title = String(input.title ?? '').trim() || framing.deriveTitle(prompt);
   const repo = getRepo(String(input.repoId ?? ''));
   if (!repo) throw new Error('Unknown repo');
 

@@ -1049,21 +1049,31 @@ a.chip.pr:hover { border-color: currentColor; }
   .attachment-strip { max-height: 76px; }
 }
 
-/* ── settings: full-screen dialog (Claude-desktop two-pane: sidebar nav + content) ──
-   Unlike the other modals (a centered card), Settings takes the whole viewport —
-   there's enough content across its sections that a fixed-width card either
-   scrolls constantly or wastes the rest of the screen. */
+/* ── settings: a capped, centered dialog (ChatGPT-desktop style: header bar,
+   sidebar nav, scrollable content pane) ──
+   This used to be a full-viewport sheet, but that put the sidebar's own
+   "Settings" heading right where the mac traffic lights sit (hiddenInset
+   title bar, see electron/main.ts) and let the close button live inside the
+   scrolling content pane, so it scrolled out of reach with it. A capped,
+   centered card avoids both: nothing renders in the window's top-left corner,
+   and the header bar (title + close) sits above settings-main rather than
+   inside it, so it never moves. */
 .settings-box {
-  width: 100vw; max-width: none; height: 100vh; max-height: none;
-  padding: 0; overflow: hidden; border-radius: 0; border: none;
+  width: min(900px, 92vw); height: min(680px, 88vh);
+  padding: 0; overflow: hidden; display: flex; flex-direction: column;
 }
-.settings-layout { display: flex; align-items: stretch; height: 100vh; max-height: none; min-height: 0; }
+.settings-head {
+  flex: none; display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 18px; border-bottom: 1px solid var(--border);
+}
+.settings-title { font-family: var(--serif); font-size: 16px; font-weight: 600; }
+.settings-close { flex: none; }
+.settings-layout { display: flex; align-items: stretch; flex: 1; min-height: 0; }
 .settings-nav {
   flex: none; width: 184px; background: var(--bg-card);
   border-right: 1px solid var(--border);
-  padding: 18px 12px; display: flex; flex-direction: column; gap: 2px;
+  padding: 12px; display: flex; flex-direction: column; gap: 2px;
 }
-.settings-nav-title { font-family: var(--serif); font-size: 15px; font-weight: 600; padding: 2px 10px 12px; }
 .settings-nav-item {
   display: flex; align-items: center; gap: 10px;
   padding: 8px 10px; border-radius: 8px; border: none; background: transparent;
@@ -1074,12 +1084,11 @@ a.chip.pr:hover { border-color: currentColor; }
 .settings-nav-item.active { background: var(--accent-soft); color: var(--text); }
 .settings-nav-item .icon { width: 16px; height: 16px; flex: none; }
 .settings-main {
-  flex: 1; min-width: 0; overflow-y: auto; position: relative;
-  padding: 28px min(10vw, 120px); display: flex; flex-direction: column; gap: 16px;
+  flex: 1; min-width: 0; overflow-y: auto;
+  padding: 24px 28px; display: flex; flex-direction: column; gap: 16px;
 }
-.settings-section { display: flex; flex-direction: column; gap: 15px; max-width: 640px; }
+.settings-section { display: flex; flex-direction: column; gap: 15px; max-width: 560px; }
 .settings-section-title { font-family: var(--serif); font-size: 18px; font-weight: 600; }
-.settings-close { position: absolute; top: 14px; right: 14px; }
 
 /* ── remote access (LAN) ── */
 .remote-warning {
