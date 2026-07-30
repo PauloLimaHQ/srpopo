@@ -226,72 +226,140 @@
   // Compact token count, e.g. 12345 -> "12.3k".
   const fmtTokens = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
 
-  // Small, dependency-free markdown → HTML for Claude's own chat text (headings,
-  // lists, code fences/spans, bold/italic, links). Always escapes the source first
-  // and only ever re-introduces tags we generate ourselves — the markdown source
-  // is never trusted to inject arbitrary markup.
-  function mdToHtml(src) {
-    const codeBlocks = [];
-    const text = String(src ?? '').replace(/```[ \t]*(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
-      codeBlocks.push(`<pre class="md-code"><code>${esc(code.replace(/\n$/, ''))}</code></pre>`);
-      return ` B${codeBlocks.length - 1} `;
-    });
+  // Placeholder standing in for a chunk we lift out of the markdown source before
+  // escaping the rest (a fenced block, a code span). Delimited by a private-use
+  // code point so it can never collide with real text — and, unlike the
+  // space-delimited marker this used to use, never eats the space next to it:
+  // "the `foo` file" was rendering as "the<code>foo</code> file".
+  const MD_HOLE = (kind, i) => `\uE000${kind}${i}\uE000`;
 
-    function inline(line) {
-      const spans = [];
-      let s = esc(line).replace(/`([^`]+)`/g, (_, c) => {
-        spans.push(`<code>${c}</code>`);
-        return ` S${spans.length - 1} `;
-      });
-      s = s
-        .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
-        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-        .replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>')
-        .replace(/(^|[^_])_([^_\n]+)_(?!_)/g, '$1<em>$2</em>');
-      return s.replace(/ S(\d+) /g, (_, i) => spans[Number(i)]);
-    }
+  // Lift every `code span` out of the source, rendering it into `out` and leaving
+  // a placeholder behind. Done up front, before the text is split into lines, so a
+  // span that wraps across a line break still comes out as one <code>.
+  const mdLiftCode = (src, out) => String(src ?? '').replace(/`([^`]+)`/g, (_, c) => {
+    out.push(`<code>${esc(c.replace(/\s*\n\s*/g, ' '))}</code>`);
+    return MD_HOLE('S', out.length - 1);
+  });
+
+  // Escape one line of already-lifted markdown, then render its links and
+  // emphasis. Escaping here is what keeps the tags we generate the only markup in
+  // the output — the markdown source never injects its own.
+  const mdEmphasis = (line) => esc(line)
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>')
+    .replace(/(^|[^_])_([^_\n]+)_(?!_)/g, '$1<em>$2</em>');
+
+  // Put the lifted code spans back, once the markup around them has settled.
+  const mdDropCode = (html, spans) => html.replace(/\uE000S(\d+)\uE000/g, (m, i) => spans[Number(i)] ?? m);
+
+  // Inline-only markdown: code spans, links, bold, italics. Use for a one-line
+  // string that shouldn't grow block markup (a clarifying question, a blocker).
+  function mdInline(src) {
+    const spans = [];
+    return mdDropCode(mdEmphasis(mdLiftCode(src, spans)), spans);
+  }
+
+  // Small, dependency-free markdown → HTML for agent-authored text and framed
+  // prompts (headings, nested lists, code fences/spans, quotes, bold/italic,
+  // links). Same escaping contract as mdInline.
+  function mdToHtml(src) {
+    // Drop the shared leading indentation of a fenced block (a fence nested under
+    // a bullet is indented in the source, not in the code it shows).
+    const dedent = (code) => {
+      const lines = code.replace(/\s+$/, '').split('\n');
+      const body = lines.filter((l) => l.trim());
+      if (!body.length) return '';
+      const pad = Math.min(...body.map((l) => l.match(/^ */)[0].length));
+      return lines.map((l) => l.slice(pad)).join('\n');
+    };
+    // Fenced blocks first (their content is code, not markdown), then the code
+    // spans in what's left — both out of the way before anything is split or
+    // escaped.
+    const codeBlocks = [];
+    const spans = [];
+    const text = mdLiftCode(
+      // CRLF normalized first: the block patterns below are line-anchored, and a
+      // trailing \r makes every one of them miss.
+      String(src ?? '').replace(/\r\n?/g, '\n').replace(/```[ \t]*(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+        codeBlocks.push(`<pre class="md-code"><code>${esc(dedent(code))}</code></pre>`);
+        return MD_HOLE('B', codeBlocks.length - 1);
+      }),
+      spans,
+    );
 
     const html = [];
-    let list = null; // { tag: 'ul'|'ol', items: [] }
     let para = [];
+    // Open lists, outermost first. `indent` is the column the item's marker sat
+    // at, so a deeper-indented item nests instead of ending the list. A blank
+    // line never closes a list (only prose does), so bullets separated by blank
+    // lines stay one loose list instead of becoming one list each.
+    const lists = [];
+
+    const indentOf = (ws) => ws.replace(/\t/g, '  ').length;
+    const top = () => lists[lists.length - 1];
     const flushPara = () => { if (para.length) { html.push(`<p>${para.join('<br>')}</p>`); para = []; } };
-    const flushList = () => {
-      if (list) html.push(`<${list.tag}>${list.items.map((it) => `<li>${it}</li>`).join('')}</${list.tag}>`);
-      list = null;
+    const closeItem = () => { if (top()?.liOpen) { html.push('</li>'); top().liOpen = false; } };
+    // Close every open list indented at or past `from` (all of them by default).
+    const closeLists = (from = 0) => {
+      while (lists.length && top().indent >= from) { closeItem(); html.push(`</${lists.pop().tag}>`); }
+    };
+    const openList = (tag, indent) => { html.push(`<${tag}>`); lists.push({ tag, indent, liOpen: false }); };
+    const pushItem = (tag, indent, content) => {
+      flushPara();
+      closeLists(indent + 1); // anything deeper than this item ends here
+      if (!top()) openList(tag, indent);
+      else if (indent >= top().indent + 2) openList(tag, indent); // nests inside the open <li>
+      else if (top().tag !== tag) { closeLists(top().indent); openList(tag, indent); }
+      else closeItem();
+      html.push(`<li>${content}`);
+      top().liOpen = true;
     };
 
     for (const line of text.split('\n')) {
-      const codeRef = line.match(/^ B(\d+) $/);
+      const codeRef = line.trim().match(/^\uE000B(\d+)\uE000$/);
       const heading = line.match(/^(#{1,4})\s+(.+)$/);
       const quote = line.match(/^>\s?(.*)$/);
-      const ul = line.match(/^[-*+]\s+(.+)$/);
-      const ol = line.match(/^\d+\.\s+(.+)$/);
+      const ul = line.match(/^(\s*)[-*+]\s+(.+)$/);
+      const ol = line.match(/^(\s*)\d+\.\s+(.+)$/);
       const hr = /^([-*_])\1{2,}$/.test(line.trim());
+      const indented = /^\s{2,}\S/.test(line);
 
-      if (codeRef) { flushPara(); flushList(); html.push(codeBlocks[Number(codeRef[1])]); } else if (heading) {
-        flushPara(); flushList();
+      if (line.trim() === '') {
+        flushPara();
+      } else if (codeRef) {
+        flushPara();
+        // A fence indented under a bullet belongs to that item; one at the
+        // margin ends the list.
+        if (!(indented && top()?.liOpen)) closeLists();
+        html.push(codeBlocks[Number(codeRef[1])]);
+      } else if (heading) {
+        flushPara(); closeLists();
         const level = Math.min(heading[1].length + 2, 6); // keep headings small inside a chat bubble
-        html.push(`<h${level}>${inline(heading[2])}</h${level}>`);
+        html.push(`<h${level}>${mdEmphasis(heading[2])}</h${level}>`);
       } else if (hr) {
-        flushPara(); flushList(); html.push('<hr>');
+        flushPara(); closeLists(); html.push('<hr>');
       } else if (quote) {
-        flushPara(); flushList(); html.push(`<blockquote>${inline(quote[1])}</blockquote>`);
+        flushPara(); closeLists();
+        html.push(`<blockquote>${mdEmphasis(quote[1])}</blockquote>`);
       } else if (ul) {
-        flushPara();
-        if (!list || list.tag !== 'ul') { flushList(); list = { tag: 'ul', items: [] }; }
-        list.items.push(inline(ul[1]));
+        pushItem('ul', indentOf(ul[1]), mdEmphasis(ul[2]));
       } else if (ol) {
-        flushPara();
-        if (!list || list.tag !== 'ol') { flushList(); list = { tag: 'ol', items: [] }; }
-        list.items.push(inline(ol[1]));
-      } else if (line.trim() === '') {
-        flushPara(); flushList();
+        pushItem('ol', indentOf(ol[1]), mdEmphasis(ol[2]));
+      } else if (indented && top()?.liOpen) {
+        // A wrapped/continued line under the current bullet.
+        html.push(`<br>${mdEmphasis(line.trim())}`);
       } else {
-        flushList(); para.push(inline(line));
+        // Prose ends any open list, indented continuations aside (above).
+        closeLists(); para.push(mdEmphasis(line));
       }
     }
-    flushPara(); flushList();
-    return html.join('');
+    flushPara(); closeLists();
+    // Restore the lifted chunks. A fence that was not alone on its line (e.g.
+    // ```x``` mid-sentence) is restored here too, rather than leaking its
+    // placeholder as text.
+    return mdDropCode(html.join(''), spans)
+      .replace(/\uE000B(\d+)\uE000/g, (m, i) => codeBlocks[Number(i)] ?? m);
   }
 
   function fmtDuration(ms) {
@@ -2022,7 +2090,7 @@
     }
     const g = Math.min(5, Math.max(1, Math.round(Number(cr.grade) || 0)));
     const blockers = (cr.blockers || []).length
-      ? `<ul class="drawer-review-blockers">${cr.blockers.map((b) => `<li>${esc(b)}</li>`).join('')}</ul>`
+      ? `<ul class="drawer-review-blockers md">${cr.blockers.map((b) => `<li>${mdInline(b)}</li>`).join('')}</ul>`
       : '';
     const link = cr.commentUrl
       ? `<a class="chip" href="${esc(cr.commentUrl)}" target="_blank" rel="noopener">${icon('git-pull-request')} review comment</a>`
@@ -2034,7 +2102,7 @@
         <span class="chip grade g${g}" title="Code review grade ${g}/5">${g}/5 — ${esc(GRADE_MEANINGS[g])}</span>
         ${link}
       </div>
-      ${cr.summary ? `<div class="drawer-review-summary">${esc(cr.summary)}</div>` : ''}
+      ${cr.summary ? `<div class="drawer-review-summary md">${mdToHtml(cr.summary)}</div>` : ''}
       ${blockers}`;
   }
 
@@ -2136,7 +2204,7 @@
       const opts = (q.options || []).map((opt, j) => `
         <label class="groom-opt">
           <input type="radio" name="gq-${i}" value="${esc(opt)}"${j === 0 && !q.allowText ? ' checked' : ''}>
-          <span>${esc(opt)}</span>
+          <span>${mdInline(opt)}</span>
         </label>`).join('');
       // A free-text field: an "Other" radio next to options, or a standalone
       // input when the question is open-ended (no options).
@@ -2150,8 +2218,8 @@
           : `<input type="text" class="groom-q-textinput" placeholder="Type your answer…">`
         : '';
       return `
-        <div class="groom-q" data-qi="${i}">
-          <div class="groom-q-text">${i + 1}. ${esc(q.question)}</div>
+        <div class="groom-q md" data-qi="${i}">
+          <div class="groom-q-text">${i + 1}. ${mdInline(q.question)}</div>
           <div class="groom-q-options">${opts}${text}</div>
         </div>`;
     }).join('');
@@ -2289,7 +2357,7 @@
     return `
       <div class="tag">NEEDS INPUT</div>
       <p class="groom-clarify-hint">The orchestrator is paused on this question — answer below to continue.</p>
-      <div class="orch-question">${esc(o.note || 'It asked for input but recorded no question.')}</div>
+      <div class="orch-question md">${mdToHtml(o.note || 'It asked for input but recorded no question.')}</div>
       <form class="orch-reply" id="orchestrate-reply-form">
         <textarea class="orch-reply-input groom-q-textinput" rows="3" placeholder="Type your answer…"></textarea>
         <button type="submit" class="btn primary orch-reply-send">${icon('crown')} Answer &amp; continue</button>
@@ -2523,9 +2591,11 @@
     if (type !== 'text' && type !== 'thought') closeGrokDelta();
     if (type === 'prompt') {
       const tag = ev.groom ? 'GROOMING' : ev.codeReview ? 'CODE REVIEW' : ev.resume ? 'FOLLOW-UP' : 'PROMPT';
+      // The framed prompt is markdown (persona preamble, add-on instructions,
+      // the user's own text) — render it, don't dump the source.
       addHtml(containerFor(ev), `
-        <div class="ev-prompt">
-          <span class="tag">${tag} · run ${ev.run || 1}</span>${esc(ev.text)}
+        <div class="ev-prompt md">
+          <span class="tag">${tag} · run ${ev.run || 1}</span>${mdToHtml(ev.text)}
         </div>`);
     } else if (type === 'system' && ev.subtype === 'init') {
       addHtml(containerFor(ev), `<div class="ev-meta">${icon('zap')} session started · ${esc(ev.model || '')} · ${esc((ev.session_id || '').slice(0, 8))}</div>`);
@@ -3425,7 +3495,7 @@
     for (const b of blocks) {
       if (b.type !== 'text' || !b.text || !b.text.trim()) continue;
       state.askText = state.askText ? `${state.askText}\n\n${b.text}` : b.text;
-      $('#ask-answer').innerHTML = esc(state.askText).replace(/\n/g, '<br>');
+      $('#ask-answer').innerHTML = mdToHtml(state.askText);
     }
   }
 
@@ -3438,7 +3508,7 @@
     const box = $('#ask-answer');
     box.classList.toggle('error', !msg.ok);
     const answer = msg.answer || (msg.ok ? '(no answer)' : 'Ask failed');
-    box.innerHTML = `<div>${esc(answer).replace(/\n/g, '<br>')}</div>` +
+    box.innerHTML = `<div>${mdToHtml(answer)}</div>` +
       (msg.ok ? `<div class="ask-cost">$${(msg.costUsd || 0).toFixed(2)}</div>` : '');
   }
 
