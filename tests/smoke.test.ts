@@ -2846,6 +2846,142 @@ test('index: GET /api/desktop lists the editors, and PATCH only accepts a known 
   }
 });
 
+test('resources: the monitor is off by default and samples nothing until enabled', async () => {
+  const store = require('../server/store');
+  const resources = require('../server/resources');
+  assert.strictEqual(store.DEFAULT_SETTINGS.resourceMonitor, false, 'opt-in: off by default');
+  const prev = store.db.settings.resourceMonitor;
+  store.db.settings.resourceMonitor = false;
+  try {
+    assert.deepStrictEqual(await resources.snapshot(), { enabled: false }, 'no sample while the feature is off');
+  } finally {
+    store.db.settings.resourceMonitor = prev;
+    resources.reset();
+  }
+});
+
+test('resources: an enabled snapshot accounts for this process tree and every live agent child', async () => {
+  const store = require('../server/store');
+  const runner = require('../server/runner');
+  const resources = require('../server/resources');
+  const prev = store.db.settings.resourceMonitor;
+  store.db.settings.resourceMonitor = true;
+  resources.reset();
+  try {
+    const snap = await resources.snapshot();
+    assert.strictEqual(snap.enabled, true);
+    assert.strictEqual(snap.app.pid, process.pid, 'the app tree is rooted at this process');
+    assert.ok(snap.app.processes >= 1 && snap.app.rssBytes > 0, 'this process is accounted for');
+    assert.strictEqual(snap.system.cpuCount >= 1, true, 'the core count is reported');
+    assert.ok(snap.system.memTotalBytes > 0 && snap.system.memUsedBytes > 0, 'system memory is reported');
+    // The live-children list is what agent rows are built from; with no session
+    // running there is nothing to attribute, and the totals are the app alone.
+    assert.deepStrictEqual(runner.liveChildren(), [], 'no agent child is running in the suite');
+    assert.deepStrictEqual(snap.agents, [], 'so no session rows');
+    assert.strictEqual(snap.totals.rssBytes, snap.app.rssBytes, 'totals = app + agents');
+    assert.strictEqual(snap.totals.processes, snap.app.processes);
+    // Cached briefly so several open boards share one process-table read.
+    assert.strictEqual(await resources.snapshot(), snap, 'a fresh snapshot is served from the cache');
+  } finally {
+    store.db.settings.resourceMonitor = prev;
+    resources.reset();
+  }
+});
+
+test('resources: attribute() splits the tree — each agent subtree to its session, the rest to the app', () => {
+  const store = require('../server/store');
+  const resources = require('../server/resources');
+  const MB = 1024 * 1024;
+  // A synthetic process table: the app (100) has a helper (101) plus two agent
+  // children (200, 300); each agent child has a grandchild of its own, and 999 is
+  // an unrelated process that must not be counted at all.
+  const rows = [
+    { pid: 100, ppid: 1, rssBytes: 100 * MB, cpuPercent: 10 },  // the app
+    { pid: 101, ppid: 100, rssBytes: 10 * MB, cpuPercent: 2 },  // a renderer/terminal
+    { pid: 200, ppid: 100, rssBytes: 200 * MB, cpuPercent: 40 }, // agent child A
+    { pid: 201, ppid: 200, rssBytes: 50 * MB, cpuPercent: 20 },  // A's own subprocess
+    { pid: 300, ppid: 100, rssBytes: 60 * MB, cpuPercent: 4 },   // agent child B
+    { pid: 301, ppid: 300, rssBytes: 5 * MB, cpuPercent: 1 },    // B's subprocess
+    { pid: 999, ppid: 1, rssBytes: 900 * MB, cpuPercent: 90 },   // somebody else's
+  ];
+  const task = {
+    id: store.id(), title: 'A real task', agent: 'codex', repoId: 'r', repoName: 'n', status: 'running',
+  };
+  store.db.tasks.push(task as never);
+  try {
+    const live = [
+      { id: task.id, pid: 200, startedAt: '2026-07-30T00:00:00.000Z' },
+      { id: 'an-ephemeral-ask-session', pid: 300, startedAt: null },
+      { id: 'already-exited', pid: 4242, startedAt: null }, // pid gone from the table
+    ];
+    // 4 cores, so a CPU figure is a quarter of the raw per-core percentages.
+    const { app, agents, totals } = resources.attribute(rows, 100, live, 4);
+
+    // The app keeps itself + the helper, and neither agent branch.
+    assert.strictEqual(app.pid, 100);
+    assert.strictEqual(app.processes, 2, 'the agent subtrees are pruned from the app tree');
+    assert.strictEqual(app.rssBytes, 110 * MB);
+    assert.strictEqual(app.cpuPercent, 3, '(10 + 2) / 4 cores');
+
+    // Busiest session first, each carrying its own subtree.
+    assert.strictEqual(agents.length, 3);
+    assert.strictEqual(agents[0].id, task.id, 'the heaviest session is listed first');
+    assert.strictEqual(agents[0].kind, 'task');
+    assert.strictEqual(agents[0].title, 'A real task');
+    assert.strictEqual(agents[0].agent, 'codex', 'the backend comes from the task');
+    assert.strictEqual(agents[0].processes, 2, 'the child and its own subprocess');
+    assert.strictEqual(agents[0].rssBytes, 250 * MB);
+    assert.strictEqual(agents[0].cpuPercent, 15, '(40 + 20) / 4 cores');
+    // An ask session is never persisted, so it falls through to the generic label.
+    assert.strictEqual(agents[1].kind, 'ask');
+    assert.strictEqual(agents[1].cpuPercent, 1.3, '(4 + 1) / 4 cores');
+    // A child whose pid already exited is reported as zeroes, not dropped.
+    assert.strictEqual(agents[2].id, 'already-exited');
+    assert.strictEqual(agents[2].processes, 0);
+    assert.strictEqual(agents[2].cpuPercent, null, 'no CPU figure rather than a fake 0');
+
+    // App + agents partition the same tree — the unrelated pid 999 is nowhere.
+    assert.strictEqual(totals.processes, 6);
+    assert.strictEqual(totals.rssBytes, 425 * MB);
+    assert.strictEqual(totals.cpuPercent, 19.3, '(10+2+40+20+4+1) / 4 cores');
+  } finally {
+    store.db.tasks = store.db.tasks.filter((t: { id: string }) => t.id !== task.id);
+  }
+});
+
+test('index: GET /api/resources follows the setting, and PATCH toggles it', async () => {
+  const store = require('../server/store');
+  const index = require('../server/index');
+  const resources = require('../server/resources');
+  const prev = store.db.settings.resourceMonitor;
+  const { server, port } = await index.start(0);
+  const base = `http://127.0.0.1:${port}`;
+  const patch = (body: unknown) => fetch(`${base}/api/settings`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  try {
+    store.db.settings.resourceMonitor = false;
+    assert.deepStrictEqual(await (await fetch(`${base}/api/resources`)).json(), { enabled: false },
+      'the route reports disabled rather than erroring');
+
+    const on = await (await patch({ resourceMonitor: true })).json();
+    assert.strictEqual(on.resourceMonitor, true, 'the flag is in the public settings');
+    const snap = await (await fetch(`${base}/api/resources`)).json();
+    assert.strictEqual(snap.enabled, true, 'and the route now samples');
+    assert.strictEqual(snap.app.pid, process.pid);
+    assert.ok(Array.isArray(snap.agents), 'sessions are listed (empty here)');
+
+    const off = await (await patch({ resourceMonitor: false })).json();
+    assert.strictEqual(off.resourceMonitor, false, 'turning it back off sticks');
+    assert.deepStrictEqual(await (await fetch(`${base}/api/resources`)).json(), { enabled: false },
+      'and sampling stops immediately, cache included');
+  } finally {
+    await new Promise<void>((r) => server.close(() => r()));
+    store.db.settings.resourceMonitor = prev;
+    resources.reset();
+  }
+});
+
 test('index: the reveal/editor routes validate the repo and path before launching anything', async () => {
   const store = require('../server/store');
   const index = require('../server/index');

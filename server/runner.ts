@@ -33,8 +33,9 @@ function adapterFor(agent: TaskAgent | undefined): AgentAdapter {
 }
 
 // A live child, tagged so the exit handler can tell a user-requested stop
-// (SIGTERM we sent) from a natural exit.
-type RunningChild = ChildProcess & { wasStopped?: boolean };
+// (SIGTERM we sent) from a natural exit. `startedAt` is stamped at spawn for the
+// resource monitor (see liveChildren).
+type RunningChild = ChildProcess & { wasStopped?: boolean; startedAt?: string };
 
 // taskId / groomingId -> child process (tasks and groomings share the pool, so
 // runningCount measures every live agent child against the parallel cap).
@@ -71,6 +72,24 @@ function isRunning(taskId: string): boolean {
 // in index.ts measures against.
 function runningCount(): number {
   return running.size;
+}
+
+// The live agent children, for the resource monitor (server/resources.ts): the
+// pid of each spawned CLI, keyed by the task / grooming / orchestration / ask
+// session it belongs to. Read-only — nothing here may be used to kill a child
+// (that's runner.stop, which also tags the child as user-stopped).
+interface LiveChild {
+  id: string;
+  pid: number | null;
+  startedAt: string | null;
+}
+
+function liveChildren(): LiveChild[] {
+  return [...running.entries()].map(([id, child]) => ({
+    id,
+    pid: child.pid ?? null,
+    startedAt: child.startedAt || null,
+  }));
 }
 
 function emitTask(task: Task): void {
@@ -150,6 +169,7 @@ function launch<T extends SessionRecord>(rec: T, { adapter, args, workDir, promp
     env: adapter.childEnv(rec.model),
     stdio: ['pipe', 'pipe', 'pipe'],
   });
+  child.startedAt = now();
   running.set(rec.id, child);
 
   child.stdin?.on('error', () => {}); // the child may exit before reading stdin
@@ -804,6 +824,7 @@ export {
   stopAll,
   isRunning,
   runningCount,
+  liveChildren,
   adapterFor,
   setBaseUrl,
 };

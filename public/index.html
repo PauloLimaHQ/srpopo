@@ -29,9 +29,14 @@
     </div>
     <div class="topbar-actions">
       <span id="health" class="health-chip" title="Agent CLI status">checking…</span>
+      <!-- Live CPU/memory chip. Hidden unless Settings → General → Resource monitor
+           is on; opens the breakdown panel below. -->
+      <button id="btn-resources" class="res-chip hidden" title="Resource monitor"
+              aria-label="Resource monitor" aria-haspopup="dialog" aria-expanded="false">
+        <span class="i" data-icon="activity"></span><span id="resource-chip-text">—</span>
+      </button>
       <span class="topbar-sep" aria-hidden="true"></span>
       <button class="btn ghost" id="btn-palette" title="Search & commands"><span class="i" data-icon="command"></span></button>
-      <button class="btn ghost" id="btn-theme" title="Theme: System" aria-label="Toggle theme"></button>
       <button class="btn ghost" id="btn-settings" title="Settings" aria-label="Settings"><span class="i" data-icon="settings"></span></button>
       <span class="topbar-sep" aria-hidden="true"></span>
       <button class="btn ghost btn-collapsible" id="btn-repos" title="Repos" aria-label="Repos"><span class="i" data-icon="folder"></span><span class="btn-label">Repos</span></button>
@@ -72,6 +77,18 @@
        button opened it; only shown when no default editor is configured yet (the
        pick is then remembered as the default). -->
   <div id="ide-menu" class="quick-menu hidden" role="menu" aria-label="Open in IDE"></div>
+
+  <!-- Resource monitor panel, anchored under the top-bar chip. Polls
+       GET /api/resources while open (see server/resources.ts); it is a passive
+       read-out — nothing here can stop or change a session. -->
+  <div id="resource-panel" class="res-panel hidden" role="dialog" aria-label="Resource monitor">
+    <div class="res-panel-head">
+      <span class="res-panel-title"><span class="i" data-icon="activity"></span>Resource monitor</span>
+      <button class="btn icon" id="resource-panel-close" title="Close" aria-label="Close"><span class="i" data-icon="x"></span></button>
+    </div>
+    <div id="resource-panel-body" class="res-panel-body"></div>
+    <p class="res-panel-foot" id="resource-panel-foot"></p>
+  </div>
 
   <!-- Autonomous Mode live status banner (shown only while a session runs) -->
   <div id="autonomous-banner" class="autonomous-banner hidden"></div>
@@ -618,6 +635,18 @@
           <section class="settings-section" data-section="general">
             <h2 class="settings-section-title">General</h2>
             <fieldset class="addons">
+              <legend>Appearance</legend>
+              <label>Theme <span class="field-hint">— follow your OS, or pin one</span>
+                <select id="setting-theme">
+                  <option value="system">System</option>
+                  <option value="light">Light</option>
+                  <option value="dark">Dark</option>
+                </select>
+              </label>
+              <p class="addon-hint">Remembered on this device (in the browser, not in <code>db.json</code>), so
+                the desktop app and a phone on the LAN can each use their own.</p>
+            </fieldset>
+            <fieldset class="addons">
               <legend>Notifications</legend>
               <label class="check addon">
                 <input type="checkbox" id="setting-notifications" />
@@ -646,6 +675,19 @@
                 <input id="setting-max-parallel" type="number" min="1" max="20" step="1" />
               </label>
               <p class="addon-hint">Caps how many agent sessions run at once so they don't starve each other of CPU. 3 is a good default on a typical laptop.</p>
+            </fieldset>
+            <fieldset class="addons">
+              <legend>Resource monitor</legend>
+              <label class="check addon">
+                <input type="checkbox" id="setting-resource-monitor" />
+                <span class="addon-text">
+                  <span class="addon-label">Show live CPU &amp; memory usage</span>
+                  <span class="addon-hint">Adds a chip to the top bar with what Sr. Popo and the agent sessions it
+                    spawned are costing this machine right now — click it for a per-session breakdown. Off by
+                    default because it polls the OS process table; nothing is sampled while it's off, and nothing
+                    leaves your machine.</span>
+                </span>
+              </label>
             </fieldset>
             <fieldset class="addons">
               <legend>Project memory</legend>
