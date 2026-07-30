@@ -40,17 +40,61 @@
       <button class="btn ghost" id="btn-settings" title="Settings" aria-label="Settings"><span class="i" data-icon="settings"></span></button>
       <span class="topbar-sep" aria-hidden="true"></span>
       <button class="btn ghost btn-collapsible" id="btn-repos" title="Repos" aria-label="Repos"><span class="i" data-icon="folder"></span><span class="btn-label">Repos</span></button>
-      <button class="btn ghost btn-collapsible" id="btn-ask" title="Ask Sr. Popo" aria-label="Ask Sr. Popo"><span class="i" data-icon="message-circle-question"></span><span class="btn-label">Ask Sr. Popo</span></button>
-      <button class="btn ghost hidden btn-collapsible" id="btn-brief" title="Brief an Idea" aria-label="Brief an Idea"><span class="i" data-icon="lightbulb"></span><span class="btn-label">Brief an Idea</span></button>
-      <button class="btn ghost hidden btn-collapsible" id="btn-orchestrate" title="Orchestrate a Goal" aria-label="Orchestrate a Goal"><span class="i" data-icon="crown"></span><span class="btn-label">Orchestrate a Goal</span></button>
-      <button class="btn ghost hidden btn-collapsible" id="btn-linear" title="From Linear" aria-label="From Linear"><span class="i" data-icon="linear"></span><span class="btn-label">From Linear</span></button>
-      <button class="btn ghost hidden btn-collapsible" id="btn-specs" title="From Specs" aria-label="From Specs"><span class="i" data-icon="folder"></span><span class="btn-label">From Specs</span></button>
-      <button class="btn primary btn-collapsible" id="btn-new-task" title="New task" aria-label="New task"><span class="i" data-icon="plus"></span><span class="btn-label">New Task</span></button>
+      <span class="topbar-sep" aria-hidden="true"></span>
+      <!-- Primary "start work" split button: the main half creates a task
+           directly; the caret opens a menu of the other ways to start
+           (grouped here instead of six flat toolbar buttons). -->
+      <div class="split-btn" id="new-split">
+        <button class="btn primary btn-collapsible split-btn-main" id="btn-new-task" title="New task" aria-label="New task"><span class="i" data-icon="plus"></span><span class="btn-label">New Task</span></button>
+        <button class="btn primary split-btn-caret" id="btn-new-caret" title="More ways to start" aria-label="More ways to start work" aria-haspopup="menu" aria-expanded="false"><span class="i" data-icon="chevron-down"></span></button>
+      </div>
     </div>
   </header>
 
+  <!-- "Start work" menu opened by the New Task split button's caret — the other
+       entry points (Ask / Brief / Orchestrate / Linear / Specs) live here instead
+       of as separate top-bar buttons. Plugin-gated items keep their own `hidden`
+       class; the menu container's `hidden` is toggled independently for open/close. -->
+  <div id="new-menu" class="quick-menu hidden" role="menu" aria-label="Start new work">
+    <button class="quick-menu-item" id="btn-ask" title="Ask Sr. Popo" aria-label="Ask Sr. Popo">
+      <span class="i" data-icon="message-circle-question"></span>
+      <span class="quick-menu-item-body">
+        <span class="quick-menu-item-label">Ask Sr. Popo</span>
+        <span class="quick-menu-item-hint">Free-form Q&amp;A, no task created</span>
+      </span>
+    </button>
+    <button class="quick-menu-item hidden" id="btn-brief" title="Brief an Idea" aria-label="Brief an Idea">
+      <span class="i" data-icon="lightbulb"></span>
+      <span class="quick-menu-item-body">
+        <span class="quick-menu-item-label">Brief an Idea</span>
+        <span class="quick-menu-item-hint">Groom a rough idea into ready tasks</span>
+      </span>
+    </button>
+    <button class="quick-menu-item hidden" id="btn-orchestrate" title="Orchestrate a Goal" aria-label="Orchestrate a Goal">
+      <span class="i" data-icon="crown"></span>
+      <span class="quick-menu-item-body">
+        <span class="quick-menu-item-label">Orchestrate a Goal</span>
+        <span class="quick-menu-item-hint">Break a goal into coordinated tasks</span>
+      </span>
+    </button>
+    <button class="quick-menu-item hidden" id="btn-linear" title="From Linear" aria-label="From Linear">
+      <span class="i" data-icon="linear"></span>
+      <span class="quick-menu-item-body">
+        <span class="quick-menu-item-label">From Linear</span>
+        <span class="quick-menu-item-hint">Pull in a Linear issue as a task</span>
+      </span>
+    </button>
+    <button class="quick-menu-item hidden" id="btn-specs" title="From Specs" aria-label="From Specs">
+      <span class="i" data-icon="folder"></span>
+      <span class="quick-menu-item-body">
+        <span class="quick-menu-item-label">From Specs</span>
+        <span class="quick-menu-item-hint">Turn a spec file into a task</span>
+      </span>
+    </button>
+  </div>
+
   <div id="workspace-header" class="workspace-header hidden">
-    <button class="btn ghost btn-collapsible" id="workspace-back" title="Back to Super View" aria-label="Back to Super View"><span class="i" data-icon="arrow-left"></span><span class="btn-label">Super View</span></button>
+    <button class="btn ghost icon" id="workspace-back" title="Back to Super View" aria-label="Back to Super View"><span class="i" data-icon="arrow-left"></span></button>
     <div class="workspace-header-title">
       <button class="workspace-switcher" id="workspace-switcher" aria-haspopup="menu" aria-expanded="false" title="Switch workspace">
         <span id="workspace-title" class="workspace-title"></span>
@@ -65,12 +109,15 @@
         <div id="workspace-popover-list" class="ws-popover-list"></div>
       </div>
     </div>
-    <button class="btn ghost hidden btn-collapsible" id="btn-autonomous" title="Autonomous Mode" aria-label="Autonomous Mode"><span class="i" data-icon="bot"></span><span class="btn-label">Autonomous</span></button>
-    <button class="btn ghost icon" id="workspace-memory" title="Project memory" aria-label="Project memory"><span class="i" data-icon="brain"></span></button>
-    <button class="btn ghost icon" id="workspace-terminal" title="Open a terminal here" aria-label="Open terminal"><span class="i" data-icon="terminal"></span></button>
-    <button class="btn ghost icon" id="workspace-reveal" title="Reveal in file manager" aria-label="Reveal in file manager"><span class="i" data-icon="folder-open"></span></button>
-    <button class="btn ghost icon" id="workspace-ide" title="Open in IDE" aria-label="Open in IDE" aria-haspopup="menu" aria-expanded="false"><span class="i" data-icon="code"></span></button>
-    <button class="btn ghost icon" id="workspace-info" title="Workspace details" aria-label="Workspace details"><span class="i" data-icon="info"></span></button>
+    <button class="autonomous-toggle hidden" id="btn-autonomous" title="Autonomous Mode" aria-label="Autonomous Mode"><span class="i" data-icon="bot"></span><span class="btn-label">Autonomous</span></button>
+    <span class="topbar-sep" aria-hidden="true"></span>
+    <div class="workspace-tools">
+      <button class="btn ghost icon" id="workspace-memory" title="Project memory" aria-label="Project memory"><span class="i" data-icon="brain"></span></button>
+      <button class="btn ghost icon" id="workspace-terminal" title="Open a terminal here" aria-label="Open terminal"><span class="i" data-icon="terminal"></span></button>
+      <button class="btn ghost icon" id="workspace-reveal" title="Reveal in file manager" aria-label="Reveal in file manager"><span class="i" data-icon="folder-open"></span></button>
+      <button class="btn ghost icon" id="workspace-ide" title="Open in IDE" aria-label="Open in IDE" aria-haspopup="menu" aria-expanded="false"><span class="i" data-icon="code"></span></button>
+      <button class="btn ghost icon" id="workspace-info" title="Workspace details" aria-label="Workspace details"><span class="i" data-icon="info"></span></button>
+    </div>
   </div>
 
   <!-- Editor picker for the "Open in IDE" quick action. Anchored under whichever

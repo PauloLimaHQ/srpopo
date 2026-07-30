@@ -1086,6 +1086,38 @@
     closeIdeMenu();
   });
 
+  // ---- "New" menu (the New Task split button's caret) ----
+  // The other ways to start work (Ask / Brief / Orchestrate / Linear / Specs)
+  // live here instead of as separate top-bar buttons; each keeps its own click
+  // handler below, this just anchors/shows the menu and closes it on a pick.
+  function newMenuOpen() { return !$('#new-menu').classList.contains('hidden'); }
+  function openNewMenu() {
+    const menu = $('#new-menu');
+    const anchor = $('#btn-new-caret');
+    menu.classList.remove('hidden');
+    const rect = anchor.getBoundingClientRect();
+    const width = menu.offsetWidth;
+    menu.style.top = `${Math.round(rect.bottom + 6)}px`;
+    menu.style.left = `${Math.round(Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8)))}px`;
+    anchor.setAttribute('aria-expanded', 'true');
+  }
+  function closeNewMenu() {
+    $('#new-menu').classList.add('hidden');
+    $('#btn-new-caret').setAttribute('aria-expanded', 'false');
+  }
+  $('#btn-new-caret').addEventListener('click', (e) => {
+    e.stopPropagation();
+    newMenuOpen() ? closeNewMenu() : openNewMenu();
+  });
+  $('#new-menu').addEventListener('click', (e) => {
+    if (e.target.closest('.quick-menu-item')) closeNewMenu();
+  });
+  document.addEventListener('click', (e) => {
+    if (!newMenuOpen()) return;
+    if (e.target.closest('#new-menu') || e.target === $('#btn-new-caret') || $('#btn-new-caret').contains(e.target)) return;
+    closeNewMenu();
+  });
+
   // ---------- resource monitor ----------
   // Opt-in (Settings → General → Resource monitor). While on, the top-bar chip
   // shows what Sr. Popo + its agent sessions are costing this machine, and
@@ -4529,11 +4561,11 @@
     const sess = autonomousForWorkspace();
     if (installed && inWorkspace) {
       btn.innerHTML = sess
-        ? `${icon('square')} <span class="btn-label">Stop Autonomous</span>`
+        ? `${icon('square')} <span class="btn-label">Stop Autonomous</span> <span class="autonomous-toggle-dot"></span>`
         : `${icon('bot')} <span class="btn-label">Autonomous</span>`;
       btn.title = sess ? 'Stop Autonomous Mode' : 'Autonomous Mode';
       btn.setAttribute('aria-label', btn.title);
-      btn.classList.toggle('danger', !!sess);
+      btn.classList.toggle('active', !!sess);
     }
 
     if (!sess) { banner.classList.add('hidden'); banner.innerHTML = ''; return; }
@@ -5428,6 +5460,7 @@
         anchor?.focus();
         return;
       }
+      if (newMenuOpen()) { closeNewMenu(); $('#btn-new-caret').focus(); return; }
       closeDrawer();
       closeContextMenu();
       closeWorkspacePicker();
