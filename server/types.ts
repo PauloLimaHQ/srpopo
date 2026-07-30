@@ -79,6 +79,11 @@ export interface Settings {
   // server/desktop.ts's catalog (`vscode`, `intellij`, `webstorm`, …). Empty
   // until the user picks one, either here or from the button's own picker.
   defaultEditor: string;
+  // Opt-in live CPU/memory monitor for the app and the agent sessions it spawned
+  // (see server/resources.ts). Off by default: sampling shells out to the OS
+  // process table on a poll, so nothing runs until the user asks for it. When
+  // on, the board shows a top-bar chip with a breakdown panel behind it.
+  resourceMonitor: boolean;
 }
 
 // The redacted, board-facing view of Settings. Omits the raw Linear token and
@@ -103,6 +108,7 @@ export interface PublicSettings {
   customModels: CustomModel[];
   memory: boolean;
   defaultEditor: string;
+  resourceMonitor: boolean;
 }
 
 // A marketplace plugin as the UI lists it. The full catalog lives in

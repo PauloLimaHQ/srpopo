@@ -183,6 +183,74 @@ body {
 .health-chip.ok { color: var(--green); border-color: var(--green-soft); }
 .health-chip.bad { color: var(--red); border-color: var(--red-soft); }
 
+/* ── resource monitor (opt-in; Settings → General) ──
+   A top-bar chip with the app+agents CPU/memory read-out, and the breakdown
+   panel it opens. Both are passive read-outs — see server/resources.ts. */
+.res-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11px; font-family: var(--mono);
+  padding: 4px 10px; border-radius: 20px; cursor: pointer;
+  background: var(--bg-card); border: 1px solid var(--border);
+  color: var(--text-dim); white-space: nowrap;
+  transition: background .15s, border-color .15s, color .15s;
+}
+.res-chip:hover { background: var(--bg-hover); color: var(--text); }
+.res-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.res-chip[aria-expanded="true"] { color: var(--text); border-color: var(--accent); background: var(--accent-soft); }
+.res-chip .icon { width: 13px; height: 13px; }
+/* Busy machine — the chip is the only always-visible signal, so it warms up. */
+.res-chip.warm { color: var(--conflict); border-color: var(--conflict-soft); }
+.res-chip.hot { color: var(--red); border-color: var(--red-soft); }
+
+.res-panel {
+  position: fixed; z-index: 60; width: 340px; max-width: calc(100vw - 16px);
+  background: var(--bg-raised); border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: var(--shadow-menu);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.res-panel-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 10px 10px 10px 12px; border-bottom: 1px solid var(--border);
+}
+.res-panel-title { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 600; }
+.res-panel-title .icon { width: 15px; height: 15px; color: var(--accent); }
+.res-panel-body { padding: 4px 0; max-height: min(62vh, 460px); overflow-y: auto; }
+.res-panel-foot {
+  padding: 8px 12px; border-top: 1px solid var(--border);
+  font-size: 11px; line-height: 1.45; color: var(--text-dim);
+}
+.res-group-title {
+  padding: 8px 12px 4px; font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--text-dim);
+}
+.res-row { padding: 6px 12px 8px; }
+.res-row + .res-row { border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent); }
+.res-row.total { border-top: 1px solid var(--border); }
+.res-row-head { display: flex; align-items: baseline; gap: 8px; }
+.res-row-label {
+  display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1;
+  font-size: 12px; color: var(--text);
+}
+.res-row-label .icon { width: 13px; height: 13px; flex: none; color: var(--text-dim); }
+.res-row-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.res-row.total .res-row-name { font-weight: 600; }
+.res-row-figs { display: flex; gap: 10px; font-family: var(--mono); font-size: 11px; flex: none; }
+.res-row-figs .res-cpu { color: var(--text); min-width: 42px; text-align: right; }
+.res-row-figs .res-mem { color: var(--text-dim); min-width: 58px; text-align: right; }
+.res-row-sub { margin-top: 2px; font-size: 10.5px; color: var(--text-dim); }
+.res-meter {
+  margin-top: 5px; height: 5px; border-radius: 4px; overflow: hidden;
+  background: color-mix(in srgb, var(--border) 70%, transparent);
+}
+.res-meter > span { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
+.res-meter.mem > span { background: var(--text-dim); }
+.res-empty { padding: 4px 12px 10px; font-size: 11.5px; color: var(--text-dim); }
+.res-note {
+  padding: 7px 10px; margin: 6px 12px 8px; border-radius: 8px;
+  font-size: 11.5px; line-height: 1.45;
+  color: var(--conflict); background: var(--conflict-soft);
+}
+
 /* ── icons (Lucide inline SVG — see icons.js; no emojis in the UI) ── */
 /* Icons inherit currentColor and sit on the text baseline. `.i` wraps the
    static [data-icon] placeholders that icons.js hydrates on load. */
@@ -320,6 +388,10 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
   .topbar { gap: 6px; }
   .topbar-actions { gap: 2px; }
   .topbar-sep:first-child { display: none; }
+  /* The monitor chip collapses to its icon; the numbers are one tap away in the
+     panel, and the top bar never wraps. */
+  #resource-chip-text { display: none; }
+  .res-chip { padding: 4px 7px; }
 }
 
 /* ── Autonomous Mode banner (live session status under the workspace header) ── */

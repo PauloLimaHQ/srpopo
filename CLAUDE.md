@@ -37,6 +37,7 @@ static with **no build step** (see Conventions).
 | `server/mcp.ts` | **Board MCP server** (see "MCP server" below). Streamable-HTTP MCP endpoint mounted on the Express app at `POST /mcp` so outside MCP clients can drive the board while Sr. Popo runs. |
 | `server/git.ts` | Worktree lifecycle (`git worktree add/remove`). |
 | `server/desktop.ts` | Desktop hand-offs for the workspace quick actions: reveal a checkout in the OS file manager, or open it in the user's IDE (see "Workspace quick actions"). |
+| `server/resources.ts` | Opt-in resource monitor: samples the OS process table and reports what the app and each live agent session cost this machine (see "Resource monitor"). |
 | `server/github.ts` | `gh` CLI integration: read-only lookup of a task's pull request, its merge-safety check, the merge itself, and the `mergeable/<n>` grade label. |
 | `server/reviewer.ts` | Meta-prompt + verdict parser for the **Code Review** stage (see "Code Review" below). |
 | `server/pr-refresh.ts` | Background sweep that keeps validation-column tasks' PR status current (broadcasts a `pr` bus event on change) so a PR merged/closed outside Sr. Popo shows up without opening the task. |
@@ -395,6 +396,39 @@ starts empty: the first click on **Open in IDE** opens an anchored picker of the
 editors and remembers the pick as the default, so the button works without a detour through
 Settings. `POST /api/repos/:id/editor` returns **409** (not 400) when no editor is
 configured — that's the board's signal to open the picker rather than toast an error.
+
+## Resource monitor (how much of this machine we're using)
+
+Running several agents at once is the whole point of Sr. Popo, so the board can show
+what that costs: `server/resources.ts` samples the OS process table and reports CPU +
+memory for **this app** and for **each live agent session**, attributed per
+task/grooming/orchestration/ask card.
+
+- **Opt-in.** `Settings > resourceMonitor` (Settings → General → Resource monitor,
+  default **off**). Nothing is sampled while it's off — `GET /api/resources` answers
+  `{ enabled: false }` rather than an error, which is also what tells the board to hide
+  its chip. Turning it off calls `resources.reset()` so a re-enable starts from a clean
+  CPU baseline instead of a stale delta.
+- **How it's attributed.** `runner.liveChildren()` hands over the pid of every live
+  agent child (the shared `running` map, so tasks *and* grooming/orchestration/ask
+  sessions). Each child's **subtree** is that session's usage; the rest of the tree
+  rooted at `process.pid` — board, server, in-app terminals, Electron helpers — is the
+  app's. The two partition the same tree, so nothing is double-counted.
+- **Units.** CPU is a share of the machine's **total** capacity (all cores), so the
+  system, app, and session numbers are comparable. Memory is RSS summed per process
+  (shared pages count once per process) — the same caveat every activity monitor has.
+- **Platforms.** `ps` on macOS/Linux; a `Get-CimInstance Win32_Process` query on
+  Windows, where per-process CPU is derived from cumulative-time deltas (so a cold
+  start takes a throwaway baseline first). A platform that can't answer degrades to
+  `null` figures plus a `note`, never a failed request.
+- **UX.** A top-bar chip (`#btn-resources`) next to the health chip shows
+  `CPU · memory` for app + agents and warms/reddens with machine load; clicking it
+  opens the breakdown panel (`#resource-panel`). Poll-based, not SSE — this is sampled
+  state, not an event: 6s with just the chip, 2s while the panel is open, paused on a
+  hidden tab, and parked after a few failed polls until the SSE stream reconnects.
+  The panel is a passive read-out; stopping a session is still the card's job.
+
+No new runtime dependency, nothing persisted, nothing leaves the machine (invariant #4).
 
 ## MCP server: drive the board from outside
 

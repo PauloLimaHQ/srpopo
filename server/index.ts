@@ -35,6 +35,7 @@ import * as framing from './framing';
 import * as terminal from './terminal';
 import * as desktop from './desktop';
 import * as usage from './usage';
+import * as resources from './resources';
 import * as taskService from './tasks';
 import * as mcp from './mcp';
 import * as memory from './memory';
@@ -237,6 +238,7 @@ function publicSettings(): PublicSettings {
     customModels: db.settings.customModels || [],
     memory: !!db.settings.memory,
     defaultEditor: db.settings.defaultEditor || '',
+    resourceMonitor: !!db.settings.resourceMonitor,
   };
 }
 
@@ -542,6 +544,12 @@ app.patch('/api/settings', (req: Request, res: Response) => {
   if ('autoResolveConflicts' in req.body) db.settings.autoResolveConflicts = !!req.body.autoResolveConflicts;
   if ('assignPrToSelf' in req.body) db.settings.assignPrToSelf = !!req.body.assignPrToSelf;
   if ('memory' in req.body) db.settings.memory = !!req.body.memory;
+  // The opt-in resource monitor. Turning it off also drops the cached sample and
+  // CPU baselines, so re-enabling starts from a fresh delta rather than a stale one.
+  if ('resourceMonitor' in req.body) {
+    db.settings.resourceMonitor = !!req.body.resourceMonitor;
+    if (!db.settings.resourceMonitor) resources.reset();
+  }
   // The "Open in IDE" quick action's editor. Only a known catalog id sticks;
   // an empty string clears it (back to the button asking which editor to use).
   if ('defaultEditor' in req.body) {
@@ -607,6 +615,21 @@ app.get('/api/personas', (req: Request, res: Response) => res.json(personas.cata
 // /api/settings (installedPlugins), keeping settings' single writer.
 app.get('/api/plugins', (req: Request, res: Response) =>
   res.json({ plugins: plugins.catalog(), installed: plugins.sanitize(db.settings.installedPlugins) }));
+
+// ---------- resources ----------
+
+// Live CPU/memory snapshot for this app and the agent sessions it spawned (see
+// server/resources.ts). Poll-based: the board asks for it while its monitor chip
+// is visible, and snapshots are cached briefly so several boards share one
+// sample. Returns `{ enabled: false }` — not an error — while the feature is off
+// in Settings, which is also what tells the board to hide the chip.
+app.get('/api/resources', async (req: Request, res: Response) => {
+  try {
+    res.json(await resources.snapshot());
+  } catch (e) {
+    err(res, 500, `Could not sample resources: ${(e as Error).message}`);
+  }
+});
 
 // ---------- usage ----------
 
