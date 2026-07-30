@@ -1049,9 +1049,15 @@ a.chip.pr:hover { border-color: currentColor; }
   .attachment-strip { max-height: 76px; }
 }
 
-/* ── settings: Claude-desktop two-pane (sidebar nav + content) ── */
-.settings-box { width: min(780px, 96vw); padding: 0; overflow: hidden; }
-.settings-layout { display: flex; align-items: stretch; max-height: 90vh; min-height: 460px; }
+/* ── settings: full-screen dialog (Claude-desktop two-pane: sidebar nav + content) ──
+   Unlike the other modals (a centered card), Settings takes the whole viewport —
+   there's enough content across its sections that a fixed-width card either
+   scrolls constantly or wastes the rest of the screen. */
+.settings-box {
+  width: 100vw; max-width: none; height: 100vh; max-height: none;
+  padding: 0; overflow: hidden; border-radius: 0; border: none;
+}
+.settings-layout { display: flex; align-items: stretch; height: 100vh; max-height: none; min-height: 0; }
 .settings-nav {
   flex: none; width: 184px; background: var(--bg-card);
   border-right: 1px solid var(--border);
@@ -1069,9 +1075,9 @@ a.chip.pr:hover { border-color: currentColor; }
 .settings-nav-item .icon { width: 16px; height: 16px; flex: none; }
 .settings-main {
   flex: 1; min-width: 0; overflow-y: auto; position: relative;
-  padding: 22px 26px; display: flex; flex-direction: column; gap: 16px;
+  padding: 28px min(10vw, 120px); display: flex; flex-direction: column; gap: 16px;
 }
-.settings-section { display: flex; flex-direction: column; gap: 15px; }
+.settings-section { display: flex; flex-direction: column; gap: 15px; max-width: 640px; }
 .settings-section-title { font-family: var(--serif); font-size: 18px; font-weight: 600; }
 .settings-close { position: absolute; top: 14px; right: 14px; }
 
