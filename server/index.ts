@@ -442,20 +442,22 @@ function probeAgentBin(bin: string): Promise<string | null> {
   });
 }
 
-// Health reports every agent backend, not just Claude: either CLI is enough to
-// run a task, so `ok` means "at least one backend is available" — a Codex-only
-// install is healthy.
+// Health reports every agent backend, not just Claude: any one CLI is enough to
+// run a task, so `ok` means "at least one backend is available" — a Codex-only or
+// Grok-only install is healthy.
 app.get('/api/health', async (req: Request, res: Response) => {
-  const [claudeVersion, codexVersion] = await Promise.all([
+  const [claudeVersion, codexVersion, grokVersion] = await Promise.all([
     probeAgentBin(runner.CLAUDE_BIN),
     probeAgentBin(runner.CODEX_BIN),
+    probeAgentBin(runner.GROK_BIN),
   ]);
-  const ok = !!(claudeVersion || codexVersion);
+  const ok = !!(claudeVersion || codexVersion || grokVersion);
   res.json({
     ok,
     claude: claudeVersion,
     codex: codexVersion,
-    error: ok ? null : `No agent CLI found (${runner.CLAUDE_BIN}, ${runner.CODEX_BIN})`,
+    grok: grokVersion,
+    error: ok ? null : `No agent CLI found (${runner.CLAUDE_BIN}, ${runner.CODEX_BIN}, ${runner.GROK_BIN})`,
     node: process.version,
     version: appVersion,
   });
@@ -1497,7 +1499,7 @@ app.patch('/api/tasks/:id', (req: Request, res: Response) => {
     if (key in req.body) {
       if (key === 'agent') {
         // Only the known backends; anything else stays whatever it was (default 'claude').
-        if (req.body.agent === 'claude' || req.body.agent === 'codex') task.agent = req.body.agent;
+        if (taskService.isAgent(req.body.agent)) task.agent = req.body.agent;
       } else if (key === 'addons') {
         task.addons = addons.sanitize(req.body.addons);
       } else if (key === 'prDraft') {

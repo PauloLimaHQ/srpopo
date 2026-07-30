@@ -182,8 +182,8 @@ function discoverSpecs(repoPath: string): RepoSpecFile[] {
 // content with inlinePrompt below.
 //
 // Deliberately plain prose with a backticked path rather than a `@file` mention:
-// `@` is Claude-CLI-specific, and a task's backend is switchable to Codex after
-// import (see CLAUDE.md, "Agent backends"). "Read the spec at `path`" is a plain
+// `@` is Claude-CLI-specific, and a task's backend is switchable to Codex or Grok
+// after import (see CLAUDE.md, "Agent backends"). "Read the spec at `path`" is a plain
 // instruction both backends act on with their own Read tool.
 function referencePrompt(relPath: string): string {
   return [

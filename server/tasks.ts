@@ -19,9 +19,14 @@ import type { Task, TaskAgent } from './types';
 
 // Which backends a task may run against (see server/agents/*). Anything else
 // falls back to the default so a stray value can't produce an unrunnable task.
-const AGENTS: TaskAgent[] = ['claude', 'codex'];
-function sanitizeAgent(value: unknown): TaskAgent {
+const AGENTS: TaskAgent[] = ['claude', 'codex', 'grok'];
+export function sanitizeAgent(value: unknown): TaskAgent {
   return AGENTS.includes(value as TaskAgent) ? (value as TaskAgent) : 'claude';
+}
+// Is this a backend we can actually run? Used by PATCH /api/tasks/:id, which must
+// leave a task's agent alone rather than silently reset it to the default.
+export function isAgent(value: unknown): value is TaskAgent {
+  return AGENTS.includes(value as TaskAgent);
 }
 
 // The user-supplied fields a new task is built from. Everything is validated /

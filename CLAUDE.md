@@ -7,9 +7,9 @@ Guidance for Claude Code (and any AI agent) working in this repository.
 Sr. Popo is a **local orchestrator hub for coding-agent tasks**. You queue prompts
 against your own git repositories on a Kanban board, dispatch them, and watch each
 agent session stream live — tool calls, subagents, cost, and the final diff — from one
-place. Each task picks its backend: **Claude Code** (the default) or **OpenAI Codex**
-(see "Agent backends"). It runs entirely on the user's machine and drives their
-existing **subscription** login (never an API key).
+place. Each task picks its backend: **Claude Code** (the default), **OpenAI Codex**
+or **xAI Grok** (see "Agent backends"). It runs entirely on the user's machine and
+drives their existing **subscription** login (never an API key).
 
 The whole point is to let a developer run **many agent sessions in parallel** and
 review the results calmly, instead of babysitting one terminal at a time.
@@ -27,10 +27,11 @@ static with **no build step** (see Conventions).
 |---|---|
 | `server/index.ts` | Express REST API + static UI host. Binds `127.0.0.1` only. |
 | `server/runner.ts` | Spawns/kills an agent CLI and streams its output. Provider-agnostic: it drives an `AgentAdapter` and reacts to normalized events (see "Agent backends"). |
-| `server/agents/types.ts` | The `AgentAdapter` interface + `NormalizedEvent`/`NormalizedResult` — the seam that lets a task run on `claude` or `codex`. |
+| `server/agents/types.ts` | The `AgentAdapter` interface + `NormalizedEvent`/`NormalizedResult`/`PromptDelivery` — the seam that lets a task run on `claude`, `codex` or `grok`. |
 | `server/agents/claude.ts` | `ClaudeAdapter`: the `claude` CLI backend (bin, subscription env stripping, `buildArgs`/`groomArgs`, permission-bridge wiring, `stream-json` `parseLine`). A verbatim lift of the old inline runner behavior. |
 | `server/agents/codex.ts` | `CodexAdapter`: the OpenAI Codex CLI backend (`codex exec --json`, stdin prompt, sandbox/approval mapping, `OPENAI_API_KEY` stripping, JSONL `parseLine`). |
-| `server/agents/env.ts` | Shared nested-session env scrubbing both adapters build on. |
+| `server/agents/grok.ts` | `GrokAdapter`: the xAI Grok CLI backend (`grok --output-format streaming-json`, **temp-file prompt**, permission-mode mapping, `--allow` rules, `XAI_API_KEY` stripping, NDJSON `parseLine`). |
+| `server/agents/env.ts` | Shared nested-session env scrubbing every adapter builds on. |
 | `server/store.ts` | JSON persistence (`db.json`) + append-only per-task NDJSON logs. |
 | `server/tasks.ts` | Task lifecycle service (`createTask`/`dispatchTask` + capacity gate) shared by the REST API and the MCP server, so both queue/run tasks identically. |
 | `server/mcp.ts` | **Board MCP server** (see "MCP server" below). Streamable-HTTP MCP endpoint mounted on the Express app at `POST /mcp` so outside MCP clients can drive the board while Sr. Popo runs. |
@@ -164,16 +165,17 @@ settled with the reason `left-in-validation:grade-<n>` and left for the human. T
 engine also treats `code_review` exactly like `running` in `onBus` (still in flight), so
 it never drops ownership of a task while the reviewer holds the card.
 
-## Agent backends (Claude & Codex)
+## Agent backends (Claude, Codex & Grok)
 
-A task carries `task.agent` (`'claude'` — the default — or `'codex'`). `runner.ts`
-is provider-agnostic: it picks an **`AgentAdapter`** (`server/agents/*`) by
-`task.agent` and reacts only to `NormalizedEvent`s the adapter's `parseLine`
+A task carries `task.agent` (`'claude'` — the default — `'codex'` or `'grok'`).
+`runner.ts` is provider-agnostic: it picks an **`AgentAdapter`** (`server/agents/*`)
+by `task.agent` and reacts only to `NormalizedEvent`s the adapter's `parseLine`
 produces. The adapter owns everything provider-specific — the binary, the
-subscription-only env stripping, `buildArgs`/`groomArgs`, and the JSONL
-normalizer. Adding a backend means adding an adapter; the runner doesn't change.
-Both backends keep Sr. Popo's ergonomics: local-only, **subscription login (never
-an API key)**, streamed to the board, no new runtime dependency.
+subscription-only env stripping, `buildArgs`/`groomArgs`, how the prompt is
+delivered, and the JSONL normalizer. Adding a backend means adding an adapter; the
+runner doesn't change. Every backend keeps Sr. Popo's ergonomics: local-only,
+**subscription login (never an API key)**, streamed to the board, no new runtime
+dependency.
 
 - **`ClaudeAdapter`** — `claude -p --output-format stream-json`. Strips
   `ANTHROPIC_API_KEY`; owns the interactive permission bridge
@@ -188,10 +190,47 @@ an API key)**, streamed to the board, no new runtime dependency.
   Grooming always runs on Claude. Codex subscription runs report **tokens, not a
   dollar cost**, so the usage ledger records tokens with `costUsd: 0` and the UI
   shows "—" for cost rather than a misleading $0.
+- **`GrokAdapter`** — `grok --output-format streaming-json` (subscription auth is
+  `grok login`). Strips `XAI_API_KEY`. Three things make it the odd one out:
+  - **The prompt is not on stdin.** Grok's headless mode ignores piped stdin (it
+    falls through to the TUI and dies with "Device not configured"), so the adapter
+    implements the optional `AgentAdapter.promptArgs` hook: it writes the prompt to
+    a **0600 temp file** outside the repo and returns `--prompt-file <path>` plus a
+    `cleanup` the runner calls when the child exits. `--prompt-file` rather than an
+    inline `-p` on purpose — a framed prompt can exceed the OS argv limit (32 KB for
+    a whole Windows command line), which would break the biggest tasks. This is the
+    only reason `launch()` knows about prompt delivery at all; every other backend
+    takes the default stdin path.
+  - **Permission modes map almost 1:1** (Grok takes `acceptEdits` / `plan` /
+    `bypassPermissions` verbatim), with one deliberate translation: Sr. Popo's
+    `default` means "ask", and a headless run has nobody to ask, so it becomes Grok's
+    **`dontAsk`** — which *denies* anything outside the allow-list instead of waiting
+    on a prompt that can never be shown. That reproduces `claude -p`'s auto-deny.
+    `plan` additionally gets `--sandbox read-only`; a **resume never re-passes
+    `--sandbox`**, because Grok pins a session's profile at creation and refuses a
+    resume that passes a different one. Like Codex there is no per-tool approval
+    hook, so the board's Allow/Deny prompt UI is hidden for Grok tasks.
+  - `--allow` takes **one rule per flag** but understands the same `Tool(pattern)`
+    syntax Claude does (`--allowedTools` is a documented compat alias), so the task's
+    merged allow-list — user patterns + package-manager defaults + add-on tools —
+    carries over verbatim via `claude.effectiveAllowedTools`.
+  Its streaming JSON has **no tool-call events** (only `text`/`thought` deltas, `end`,
+  `error`), so a Grok run has no subagent tracking and its timeline is the response
+  text; the board folds consecutive deltas into one block. The **session id arrives on
+  `end`**, i.e. at the end of the run, so a run that dies earlier can't be resumed.
+  Its spend fields already use the exact names `server/usage.ts` reads, so the `end`
+  event goes to the ledger untouched — but a subscription run usually reports **no
+  dollar cost** (Grok stamps cost for API-key traffic), and an absent cost means
+  "unreported", never free, so the UI shows "—" plus tokens whenever `costUsd` is 0.
 
 The Codex JSONL schema (`thread.started` → session id, `item.completed`,
 `turn.completed`/`turn.failed`) was verified against a live `codex exec --json`
 run — see the header comment in `server/agents/codex.ts` for the captured shapes.
+Grok's flags, its headless-vs-TUI stdin behavior and its `error` event were verified
+against a live `grok 0.2.114`; its **success-path `end` event is the documented
+shape, not a captured one** (the machine it was written on wasn't signed in to Grok)
+— `server/agents/grok.ts`'s header says exactly which is which. If you change that
+parsing, re-verify against a signed-in run.
 
 ## Non-negotiable invariants
 
@@ -201,11 +240,12 @@ would require it.
 1. **Bind to `127.0.0.1` only.** Never expose the server on `0.0.0.0` or a LAN address.
    There is no auth layer; localhost binding *is* the security boundary.
 2. **Never use an API key.** Each backend's adapter strips its provider key from every
-   spawned task — `ANTHROPIC_API_KEY` for Claude, `OPENAI_API_KEY` for Codex — so runs
-   always use the subscription login (`claude` / `codex login`). Keep them stripped.
+   spawned task — `ANTHROPIC_API_KEY` for Claude, `OPENAI_API_KEY` for Codex,
+   `XAI_API_KEY` for Grok — so runs always use the subscription login (`claude` /
+   `codex login` / `grok login`). Keep them stripped.
 3. **Strip nested-session env** (`CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`) so Sr. Popo can
-   itself be launched from Claude Code without confusing the child. Shared by both
-   backends (`server/agents/env.ts`).
+   itself be launched from Claude Code without confusing the child. Shared by every
+   backend (`server/agents/env.ts`).
 4. **Data stays local and per-user.** `SRPOPO_DATA_DIR` (Electron `userData`) holds
    `db.json` + `logs/`. Don't send task content anywhere off-machine.
 5. **Renderer stays sandboxed.** `contextIsolation: true`, `nodeIntegration: false`.
@@ -274,6 +314,12 @@ the run and it picks its own hat before starting. The two are mutually exclusive
 ignored at dispatch, and the board's card chip shows one or the other, never both.
 
 ## Interactive permissions (ask instead of auto-deny)
+
+This whole section is **Claude-only**: `--permission-prompt-tool` is a `claude` CLI
+feature, and neither Codex nor Grok exposes an approval hook to bridge (see "Agent
+backends"), so their runs are governed by a sandbox / permission mode instead and the
+board hides the Allow/Deny UI, the "asks" chip and AUTO MODE for them (one predicate,
+`hasPermissionBridge`, in `public/app.js`).
 
 A headless `claude -p` run auto-**denies** any tool it isn't told to allow, so a task
 can otherwise "finish" without doing the work. `promptPermissions` defaults to `true`

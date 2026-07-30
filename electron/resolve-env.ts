@@ -29,12 +29,15 @@ function knownClaudeCandidates(): string[] {
 }
 
 // Extra directories worth having on PATH even if the shell probe fails — the
-// same install locations as above, minus the binary name.
+// same install locations as above, minus the binary name, plus the ones the other
+// agent CLIs use (only CLAUDE_BIN gets pinned below; `codex` and `grok` are
+// resolved off this PATH, and Grok's managed install lives in ~/.grok/bin).
 function extraPathDirs(): string[] {
   const home = os.homedir();
   return [
     path.join(home, '.local', 'bin'),
     path.join(home, '.claude', 'local'),
+    path.join(home, '.grok', 'bin'),
     '/opt/homebrew/bin',
     '/usr/local/bin',
     path.join(home, '.npm-global', 'bin'),

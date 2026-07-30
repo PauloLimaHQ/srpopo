@@ -1295,12 +1295,30 @@ test('models: suggestModel maps complexity to a model within the given backend o
   assert.strictEqual(models.suggestModel('codex', 'complex'), 'gpt-5.6-terra');
   assert.strictEqual(models.suggestModel('codex', undefined), 'gpt-5.6-sol', 'missing complexity defaults to standard');
 
-  // Never crosses backends: no Claude alias appears in a Codex suggestion or vice versa.
-  const claudeNames = ['haiku', 'sonnet', 'opus'];
-  const codexNames = ['gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra'];
-  for (const c of ['simple', 'standard', 'complex']) {
-    assert.ok(!codexNames.includes(models.suggestModel('claude', c)));
-    assert.ok(!claudeNames.includes(models.suggestModel('codex', c)));
+  // Grok's ramp has two rungs: grok-build carries everyday work, grok-4.5 the
+  // complex tasks.
+  assert.strictEqual(models.suggestModel('grok', 'simple'), 'grok-build');
+  assert.strictEqual(models.suggestModel('grok', 'standard'), 'grok-build');
+  assert.strictEqual(models.suggestModel('grok', 'complex'), 'grok-4.5');
+  assert.strictEqual(models.suggestModel('grok', undefined), 'grok-build', 'missing complexity defaults to standard');
+
+  // An unknown backend still resolves (to the Claude ramp) rather than returning
+  // undefined and putting a bogus --model on a real run.
+  assert.strictEqual(models.suggestModel('bogus' as never, 'complex'), 'opus', 'an unknown agent falls back to Claude');
+
+  // Never crosses backends: a suggestion only ever names the asked-for backend's models.
+  const byAgent: Record<string, string[]> = {
+    claude: ['haiku', 'sonnet', 'opus'],
+    codex: ['gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra'],
+    grok: ['grok-build', 'grok-4.5'],
+  };
+  for (const [agent, own] of Object.entries(byAgent)) {
+    const foreign = Object.entries(byAgent).filter(([a]) => a !== agent).flatMap(([, names]) => names);
+    for (const c of ['simple', 'standard', 'complex']) {
+      const picked = models.suggestModel(agent, c);
+      assert.ok(own.includes(picked), `${agent}/${c} suggests one of its own models`);
+      assert.ok(!foreign.includes(picked), `${agent}/${c} never suggests another backend's model`);
+    }
   }
 });
 
@@ -1908,9 +1926,13 @@ test('claude adapter: reviewArgs is read-only + gh-comment only, never resumed a
   assert.ok(!args.includes('--resume'), 'a code review is always a fresh, unbiased session');
   assert.ok(!args.includes('--permission-prompt-tool'), 'no interactive bridge — the allow-list is the boundary');
   assert.ok(!args.includes('--mcp-config'), 'and no MCP servers at all');
-  // A Codex task is still reviewed by Claude, so its model name must not leak into
-  // `claude --model`.
+  // Every task is reviewed by Claude, whatever backend implemented it, so another
+  // backend's model name must not leak into `claude --model`.
   assert.ok(!claude.reviewArgs({ model: 'gpt-5.6-sol', agent: 'codex' }).includes('--model'), 'a codex model falls back to the CLI default');
+  assert.ok(!claude.reviewArgs({ model: 'grok-build', agent: 'grok' }).includes('--model'), 'a grok model falls back to the CLI default');
+  // A Claude task's own model is still honored, including when `agent` predates the field.
+  assert.ok(claude.reviewArgs({ model: 'opus', agent: 'claude' }).includes('opus'), 'a claude model is used');
+  assert.ok(claude.reviewArgs({ model: 'opus' }).includes('opus'), 'an unset agent is treated as claude');
 });
 
 test('reviewer: applyVerdict writes a well-formed codeReview onto the task', () => {
@@ -2042,19 +2064,22 @@ test('index: GET /api/health probes every agent backend, not just Claude', async
   const index = require('../server/index');
   const prevClaude = process.env.CLAUDE_BIN;
   const prevCodex = process.env.CODEX_BIN;
+  const prevGrok = process.env.GROK_BIN;
   const { server, port } = await index.start(0);
   try {
     const body = await (await fetch(`http://127.0.0.1:${port}/api/health`)).json();
-    // Both backends are reported (null when a CLI isn't installed on this machine).
+    // Every backend is reported (null when a CLI isn't installed on this machine).
     assert.ok('claude' in body, 'the claude backend is reported');
     assert.ok('codex' in body, 'the codex backend is reported');
-    // ok means "at least one backend is available" — a Codex-only install is healthy.
-    assert.strictEqual(body.ok, !!(body.claude || body.codex), 'ok is true iff some agent CLI answered');
+    assert.ok('grok' in body, 'the grok backend is reported');
+    // ok means "at least one backend is available" — a Grok-only install is healthy.
+    assert.strictEqual(body.ok, !!(body.claude || body.codex || body.grok), 'ok is true iff some agent CLI answered');
     if (!body.ok) assert.match(body.error, /No agent CLI found/, 'the error names no agent, not just claude');
   } finally {
     await new Promise<void>((r) => server.close(() => r()));
     if (prevClaude === undefined) delete process.env.CLAUDE_BIN; else process.env.CLAUDE_BIN = prevClaude;
     if (prevCodex === undefined) delete process.env.CODEX_BIN; else process.env.CODEX_BIN = prevCodex;
+    if (prevGrok === undefined) delete process.env.GROK_BIN; else process.env.GROK_BIN = prevGrok;
   }
 });
 
@@ -2062,11 +2087,12 @@ test('runner: adapterFor selects the backend by task.agent and defaults to claud
   const runner = require('../server/runner');
   assert.strictEqual(runner.adapterFor('claude').id, 'claude', 'claude selects the Claude adapter');
   assert.strictEqual(runner.adapterFor('codex').id, 'codex', 'codex selects the Codex adapter');
+  assert.strictEqual(runner.adapterFor('grok').id, 'grok', 'grok selects the Grok adapter');
   assert.strictEqual(runner.adapterFor(undefined).id, 'claude', 'an unset agent falls back to claude');
   assert.strictEqual(runner.adapterFor('bogus').id, 'claude', 'an unknown agent falls back to claude');
 });
 
-test('tasks: createTask defaults agent to claude and accepts codex', () => {
+test('tasks: createTask defaults agent to claude and accepts codex and grok', () => {
   const store = require('../server/store');
   const tasks = require('../server/tasks');
   const repo = { id: store.id(), path: '/tmp/agent-repo', name: 'o/agent', branch: null, addedAt: store.now() };
@@ -2078,8 +2104,15 @@ test('tasks: createTask defaults agent to claude and accepts codex', () => {
   const cdx = tasks.createTask({ repoId: repo.id, title: 'Codex agent', prompt: 'do it', agent: 'codex' });
   assert.strictEqual(cdx.agent, 'codex', 'a codex agent is kept');
 
+  const grk = tasks.createTask({ repoId: repo.id, title: 'Grok agent', prompt: 'do it', agent: 'grok' });
+  assert.strictEqual(grk.agent, 'grok', 'a grok agent is kept');
+
   const bad = tasks.createTask({ repoId: repo.id, title: 'Bad agent', prompt: 'do it', agent: 'gpt' });
   assert.strictEqual(bad.agent, 'claude', 'an unknown agent is sanitized to claude');
+
+  // isAgent is what PATCH /api/tasks/:id gates on, so it must agree with createTask.
+  assert.ok(tasks.isAgent('grok') && tasks.isAgent('codex') && tasks.isAgent('claude'));
+  assert.ok(!tasks.isAgent('gpt') && !tasks.isAgent(undefined), 'unknown backends are rejected, not defaulted');
 });
 
 test('agents/codex: buildArgs streams exec --json over stdin, maps sandbox, and resumes', () => {
@@ -2183,6 +2216,267 @@ test('agents/codex: parseLine normalizes the verified exec --json event schema',
   // ...but a non-fatal item-level error (e.g. a model-metadata note) is not.
   const note = codex.parseLine('{"type":"item.completed","item":{"id":"item_0","type":"error","message":"metadata note"}}');
   assert.ok(!note.result, 'a non-fatal item error does not fail the run');
+});
+
+test('agents/grok: buildArgs streams NDJSON, maps every permission mode, and resumes', () => {
+  const grok = require('../server/agents/grok');
+
+  // Fresh acceptEdits run: streaming NDJSON, the model, the mode passed straight
+  // through, and the safe package-manager defaults as one --allow per rule.
+  const fresh = grok.buildArgs({ permissionMode: 'acceptEdits', model: 'grok-build' }, false);
+  assert.deepStrictEqual(
+    fresh,
+    [
+      '--output-format', 'streaming-json',
+      '-m', 'grok-build',
+      '--permission-mode', 'acceptEdits',
+      '--allow', 'Bash(npm:*)', '--allow', 'Bash(pnpm:*)', '--allow', 'Bash(yarn:*)',
+    ],
+    'a fresh run streams streaming-json with the mode and one --allow per rule',
+  );
+  // The prompt is NOT in buildArgs — Grok's headless mode ignores stdin, so it
+  // arrives via promptArgs (see below), not as an argument built here.
+  assert.ok(!fresh.includes('-p') && !fresh.includes('--prompt-file'), 'buildArgs carries no prompt');
+
+  // Sr. Popo's 'default' means "ask", and a headless run has nobody to ask — it
+  // maps onto dontAsk, which DENIES rather than prompting (what `claude -p` does).
+  const ask = grok.buildArgs({ permissionMode: 'default' }, false);
+  assert.ok(ask.includes('dontAsk') && !ask.includes('default'), "'default' becomes dontAsk, never a hanging prompt");
+  assert.deepStrictEqual(grok.permissionArgs(undefined, false), ['--permission-mode', 'dontAsk'], 'an unset mode is dontAsk too');
+
+  // Plan mode is backed by the kernel-enforced read-only sandbox, not the mode alone.
+  const plan = grok.buildArgs({ permissionMode: 'plan' }, false);
+  assert.ok(plan.includes('--permission-mode') && plan.includes('plan'), 'plan passes the mode through');
+  assert.deepStrictEqual(plan.slice(plan.indexOf('--sandbox'), plan.indexOf('--sandbox') + 2), ['--sandbox', 'read-only'], 'plan adds a read-only sandbox');
+
+  // Bypass is the always-approve mode, and gets no sandbox.
+  const bypass = grok.buildArgs({ permissionMode: 'bypassPermissions' }, false);
+  assert.ok(bypass.includes('bypassPermissions'), 'bypass passes the mode through');
+  assert.ok(!bypass.includes('--sandbox'), 'no sandbox flag under bypass');
+
+  // Resume appends --resume <id> and must NEVER re-pass --sandbox: Grok pins a
+  // session's profile at creation and refuses a resume that passes a different one.
+  const resume = grok.buildArgs({ sessionId: 'sess-uuid', permissionMode: 'plan' }, true);
+  assert.deepStrictEqual(resume.slice(-2), ['--resume', 'sess-uuid'], 'resume names the session');
+  assert.ok(!resume.includes('--sandbox'), 'a resume reuses the session\'s saved sandbox profile');
+
+  // No model selected → no -m flag (account default).
+  assert.ok(!grok.buildArgs({ permissionMode: 'acceptEdits' }, false).includes('-m'), 'default model omits -m');
+  assert.ok(!grok.buildArgs({ permissionMode: 'acceptEdits', model: 'default' }, false).includes('-m'), '"default" omits -m');
+});
+
+test('agents/grok: allowArgs carries the task allow-list over as one --allow per rule', () => {
+  const grok = require('../server/agents/grok');
+  // Grok's --allow takes ONE rule per flag and understands Claude's Tool(pattern)
+  // syntax, so add-on tools and the user's own patterns port over verbatim. The
+  // "open a PR" add-on is what makes this matter: without it a headless run would
+  // silently finish without pushing.
+  const args = grok.allowArgs({ allowedTools: 'Bash(cargo test:*)', addons: ['pull_request'] });
+  const rules = args.filter((_: string, i: number) => i % 2 === 1);
+  assert.deepStrictEqual(args.filter((_: string, i: number) => i % 2 === 0), rules.map(() => '--allow'), 'every rule gets its own --allow');
+  assert.ok(rules.includes('Bash(cargo test:*)'), "the user's own pattern survives, spaces and all");
+  assert.ok(rules.includes('Bash(gh:*)') && rules.includes('Bash(git push:*)'), 'the PR add-on\'s tools are allowed');
+  assert.ok(rules.includes('Bash(npm:*)'), 'the package-manager defaults are still there');
+  assert.strictEqual(new Set(rules).size, rules.length, 'no rule is passed twice');
+});
+
+test('agents/grok: the prompt travels in a temp file, since headless Grok ignores stdin', () => {
+  const grok = require('../server/agents/grok');
+  const fs = require('fs');
+  const os = require('os');
+
+  const prompt = 'Fix the flaky test.\n\nIt fails on CI only.';
+  const delivered = grok.promptArgs(prompt);
+  assert.strictEqual(delivered.args[0], '--prompt-file', 'the prompt is passed as a file, not inline with -p');
+  const file = delivered.args[1];
+
+  // In the OS temp dir, never in the repo — a prompt file inside the worktree
+  // would show up in the task's own diff.
+  assert.ok(file.startsWith(fs.realpathSync(os.tmpdir())) || file.startsWith(os.tmpdir()), 'written to the temp dir');
+  assert.strictEqual(fs.readFileSync(file, 'utf8'), prompt, 'the prompt round-trips verbatim');
+  // 0600: a prompt is the user's task content in a possibly world-readable dir.
+  assert.strictEqual(fs.statSync(file).mode & 0o777, 0o600, 'readable only by this user');
+
+  // Two runs never share a file (concurrent sessions are the normal case here).
+  const other = grok.promptArgs(prompt);
+  assert.notStrictEqual(other.args[1], file, 'each run gets its own file');
+
+  delivered.cleanup();
+  other.cleanup();
+  assert.ok(!fs.existsSync(file), 'cleanup deletes the temp prompt file');
+  // The runner calls cleanup from both the error and exit paths, so it must be safe twice.
+  delivered.cleanup();
+});
+
+test('agents/grok: groomArgs is read-only research with nothing able to prompt', () => {
+  const grok = require('../server/agents/grok');
+  const args = grok.groomArgs({ model: 'default', sessionId: null });
+  // Grok's --tools takes its INTERNAL tool ids, not Claude's tool names.
+  assert.ok(args.includes('--tools') && args.includes('read_file,grep,list_dir'), 'only the read-only research tools');
+  assert.ok(args.includes('--sandbox') && args.includes('read-only'), 'grooming runs in a read-only sandbox');
+  assert.ok(args.includes('dontAsk'), 'nothing outside that set can prompt — it is denied');
+  assert.ok(!args.includes('--prompt-file'), 'the prompt is appended by promptArgs, not here');
+
+  // Resuming keeps the session's own saved sandbox profile (passing a different
+  // one is refused by the CLI), so --sandbox is dropped on a resume.
+  const resumed = grok.groomArgs({ model: 'default', sessionId: 'g-1' }, true);
+  assert.deepStrictEqual(resumed.slice(-2), ['--resume', 'g-1']);
+  assert.ok(!resumed.includes('--sandbox'), 'a resumed grooming reuses the saved profile');
+});
+
+test('agents/grok: childEnv strips XAI_API_KEY and the nested-session markers', () => {
+  const grok = require('../server/agents/grok');
+  const prevKey = process.env.XAI_API_KEY;
+  const prevNested = process.env.CLAUDECODE;
+  process.env.XAI_API_KEY = 'xai-leak';
+  process.env.CLAUDECODE = '1';
+  try {
+    const env = grok.childEnv('grok-build');
+    assert.ok(!('XAI_API_KEY' in env), 'subscription-only: the xAI key never reaches a grok run');
+    assert.ok(!('CLAUDECODE' in env), 'nested-session marker stripped');
+    assert.ok(!('CLAUDE_CODE_ENTRYPOINT' in env), 'nested-session entrypoint stripped');
+  } finally {
+    if (prevKey === undefined) delete process.env.XAI_API_KEY; else process.env.XAI_API_KEY = prevKey;
+    if (prevNested === undefined) delete process.env.CLAUDECODE; else process.env.CLAUDECODE = prevNested;
+  }
+});
+
+test('agents/grok: parseLine normalizes the streaming-json event schema', () => {
+  const grok = require('../server/agents/grok');
+
+  // Blank line → null (nothing to record).
+  assert.strictEqual(grok.parseLine('  '), null, 'blank lines are skipped');
+
+  // A non-JSON line is logged verbatim as a raw event, no semantics.
+  const raw = grok.parseLine('not json');
+  assert.deepStrictEqual(raw.log, { type: 'raw', text: 'not json' }, 'unparsable lines fall back to raw');
+  assert.ok(!raw.session && !raw.result, 'raw lines carry no session/result');
+
+  // text / thought deltas are logged for the timeline and drive nothing.
+  const chunk = grok.parseLine('{"type":"text","data":"Here\'s"}');
+  assert.ok(!chunk.result && !chunk.session, 'a response delta is not a result');
+  assert.strictEqual(chunk.log.data, "Here's", 'the delta is logged verbatim');
+  assert.ok(!grok.parseLine('{"type":"thought","data":"hmm"}').result, 'a reasoning delta is not a result either');
+
+  // `end` is BOTH the session identity and the result — unlike Claude/Codex, Grok
+  // reports its session id only here, at the very end of the run.
+  const end = grok.parseLine(JSON.stringify({
+    type: 'end',
+    stopReason: 'EndTurn',
+    sessionId: 'abc123',
+    num_turns: 7,
+    usage: { input_tokens: 7210, cache_read_input_tokens: 41000, output_tokens: 1893, total_tokens: 50103 },
+    modelUsage: {
+      'grok-build': { inputTokens: 7210, outputTokens: 1893, cacheReadInputTokens: 41000, modelCalls: 7, costUSD: 0.0127 },
+      'grok-4.5': { inputTokens: 10, outputTokens: 2, cacheReadInputTokens: 0, modelCalls: 1, costUSD: 0.0001 },
+    },
+    total_cost_usd: 0.0127,
+  }));
+  assert.strictEqual(end.result.isError, false, 'end is a success');
+  assert.strictEqual(end.session.sessionId, 'abc123', 'the session id comes off the end event');
+  // The resolved model is the busiest modelUsage row, so a subagent on another
+  // model doesn't get mistaken for the main one.
+  assert.strictEqual(end.session.model, 'grok-build', 'the busiest model is reported as resolved');
+  assert.strictEqual(end.result.numTurns, 7);
+  assert.strictEqual(end.result.durationMs, null, 'Grok reports no duration');
+  assert.strictEqual(end.result.costUsd, 0.0127, 'a stamped cost is kept');
+  // Grok's spend field names already match server/usage.ts, so the event is handed
+  // to the ledger untouched rather than remapped.
+  assert.strictEqual(end.result.usageEvent, end.log, 'the end event IS the usage event');
+
+  // A subscription run usually reports tokens with no cost at all. That must read
+  // as "unreported" (0 here, "—" in the UI), never as a $0 bill.
+  const noCost = grok.parseLine('{"type":"end","sessionId":"s2","num_turns":1,"usage":{"input_tokens":5,"output_tokens":1}}');
+  assert.strictEqual(noCost.result.costUsd, 0, 'an absent cost reads as 0');
+  assert.strictEqual(noCost.session.model, null, 'no modelUsage → no resolved model claim');
+
+  // error → a failure result carrying the CLI's message (verified live against
+  // grok 0.2.114: this is the shape of a not-signed-in run).
+  const errored = grok.parseLine('{"type":"error","message":"Not signed in."}');
+  assert.strictEqual(errored.result.isError, true, 'an error event fails the run');
+  assert.strictEqual(errored.result.errorReason, 'Not signed in.', 'the reason is surfaced to the card');
+
+  // Notices Grok may emit mid-run are logged but terminate nothing.
+  for (const type of ['max_turns_reached', 'auto_compact_started', 'auto_compact_completed']) {
+    const note = grok.parseLine(JSON.stringify({ type }));
+    assert.ok(!note.result, `${type} does not end the run`);
+    assert.strictEqual(note.log.type, type, `${type} is logged for the timeline`);
+  }
+});
+
+// The one piece of the Grok work that isn't a pure function: launch() has to
+// deliver the prompt differently per backend. Stubbing child_process.spawn (which
+// the CommonJS build resolves through the module object, so a patch takes effect)
+// lets us assert the real spawn call without ever starting an agent CLI.
+function withSpawnStub() {
+  const cp = require('child_process');
+  const { EventEmitter } = require('events');
+  const { Readable } = require('stream');
+  const real = cp.spawn;
+  const calls: { bin: string; args: string[]; stdin: string; child: any }[] = [];
+  cp.spawn = (bin: string, args: string[]) => {
+    const child: any = new EventEmitter();
+    let stdin = '';
+    const call = { bin, args, get stdin() { return stdin; }, child };
+    child.stdout = Readable.from([]);
+    child.stderr = Readable.from([]);
+    child.stdin = { on() {}, write(chunk: string) { stdin += String(chunk); }, end() {} };
+    child.kill = () => {};
+    calls.push(call);
+    return child;
+  };
+  return { calls, restore: () => { cp.spawn = real; } };
+}
+
+test('runner: a Grok run gets its prompt in a file (not stdin), and the file is cleaned up', () => {
+  const runner = require('../server/runner');
+  const fs = require('fs');
+  const task = mkTask('grok-run-1', 'ready', 'repoA', { agent: 'grok', model: 'grok-build' });
+  const restoreStore = withStore([task], 3);
+  const { calls, restore } = withSpawnStub();
+  try {
+    runner.dispatch(task as never, 'PROMPT BODY');
+    assert.strictEqual(calls.length, 1, 'exactly one child spawned');
+    const { args, stdin, child } = calls[0];
+
+    // Grok's headless mode ignores piped stdin (verified against the real CLI), so
+    // the prompt must NOT go there — it travels in the --prompt-file appended after
+    // everything buildArgs produced.
+    assert.strictEqual(stdin, '', 'nothing is written to a Grok run\'s stdin');
+    const at = args.indexOf('--prompt-file');
+    assert.ok(at > -1, 'the run carries a --prompt-file');
+    assert.strictEqual(at, args.length - 2, 'prompt delivery is appended last');
+    const file = args[at + 1];
+    assert.strictEqual(fs.readFileSync(file, 'utf8'), 'PROMPT BODY', 'the file holds the prompt the runner was given');
+    // buildArgs' own flags are still there, ahead of the prompt.
+    assert.ok(args.includes('streaming-json') && args.includes('grok-build'));
+
+    // The temp file lives exactly as long as the child does.
+    child.emit('exit', 0, null);
+    assert.ok(!fs.existsSync(file), 'the prompt file is deleted once the run exits');
+  } finally {
+    restore();
+    restoreStore();
+  }
+});
+
+test('runner: Claude and Codex runs still get their prompt on stdin, with no prompt file', () => {
+  const runner = require('../server/runner');
+  for (const agent of ['claude', 'codex']) {
+    const task = mkTask(`stdin-run-${agent}`, 'ready', 'repoA', { agent });
+    const restoreStore = withStore([task], 3);
+    const { calls, restore } = withSpawnStub();
+    try {
+      runner.dispatch(task as never, 'PROMPT BODY');
+      const { args, stdin, child } = calls[0];
+      assert.strictEqual(stdin, 'PROMPT BODY', `${agent} still reads the prompt from stdin`);
+      assert.ok(!args.includes('--prompt-file'), `${agent} gets no prompt file`);
+      child.emit('exit', 0, null);
+    } finally {
+      restore();
+      restoreStore();
+    }
+  }
 });
 
 test('agents/claude: parseLine normalizes init, subagent open/close, and result', () => {
