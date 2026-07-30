@@ -89,6 +89,37 @@ async function displayName(repoPath: string): Promise<string> {
   }
 }
 
+// Converts a git remote URL into its https web URL, e.g. both
+// "git@github.com:anplabs/platform.git" and "https://github.com/anplabs/platform.git"
+// become "https://github.com/anplabs/platform". Returns null for a remote that
+// doesn't fit the host/org/repo shape (e.g. a bare local path used as a remote).
+function parseRemoteWebUrl(url: string): string | null {
+  const trimmed = url.trim().replace(/\.git$/, '');
+  const scpMatch = trimmed.match(/^[\w.-]+@([\w.-]+):(.+)$/);
+  if (scpMatch) {
+    const [, host, slug] = scpMatch;
+    return /^[^/]+\/[^/]+$/.test(slug) ? `https://${host}/${slug}` : null;
+  }
+  try {
+    const u = new URL(trimmed);
+    const slug = u.pathname.replace(/^\/+/, '');
+    return /^[^/]+\/[^/]+$/.test(slug) ? `https://${u.host}/${slug}` : null;
+  } catch {
+    return null;
+  }
+}
+
+// The repo's `origin` remote as a browsable web URL (e.g. its GitHub repo page),
+// or null with no remote or one that isn't a recognizable hosted URL.
+async function remoteWebUrl(repoPath: string): Promise<string | null> {
+  try {
+    const url = await git(repoPath, ['remote', 'get-url', 'origin']);
+    return parseRemoteWebUrl(url);
+  } catch {
+    return null;
+  }
+}
+
 // Lists the repo's local branches (sorted most-recently-committed first) plus
 // whichever one is currently checked out, so the UI can offer a base-branch
 // picker. Returns empty/null on any git failure rather than throwing.
@@ -233,6 +264,7 @@ export {
   headSha,
   isTracked,
   displayName,
+  remoteWebUrl,
   addWorktree,
   removeWorktree,
   mergeBranch,

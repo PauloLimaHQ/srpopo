@@ -701,7 +701,8 @@ app.post('/api/repos', async (req: Request, res: Response) => {
 app.get('/api/repos/:id/branch', async (req: Request, res: Response) => {
   const repo = db.repos.find((r) => r.id === req.params.id);
   if (!repo) return err(res, 404, 'Repo not found');
-  res.json({ branch: await git.currentBranch(repo.path) });
+  const [branch, remoteUrl] = await Promise.all([git.currentBranch(repo.path), git.remoteWebUrl(repo.path)]);
+  res.json({ branch, remoteUrl });
 });
 
 // The repo's local branches (plus the current one), so the New Task / Brief
