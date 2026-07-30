@@ -187,79 +187,179 @@
     return '';
   };
 
+  // Read `key` out of a plain object map without falling through to
+  // Object.prototype, so an unexpected key ('constructor', 'toString', …) misses
+  // instead of resolving to an inherited member.
+  const lookup = (map, key) => (Object.prototype.hasOwnProperty.call(map, key) ? map[key] : null);
+
+  // Which backend a task runs on. Tasks created before the field existed have no
+  // `agent`, and those are Claude — so read it through here, never raw.
+  const agentOf = (t) => (t && t.agent) || 'claude';
+
+  // How the board labels each non-default backend (Claude cards stay unbadged, as
+  // they were before there was more than one backend).
+  const AGENT_BADGE = {
+    codex: { label: 'Codex', icon: 'cpu', title: 'Runs on the OpenAI Codex CLI' },
+    grok: { label: 'Grok', icon: 'cpu', title: 'Runs on the xAI Grok CLI' },
+  };
+  const agentBadge = (t) => lookup(AGENT_BADGE, agentOf(t));
+
+  // Only Claude can ask the board to approve a tool mid-run: the interactive
+  // permission bridge is a `claude` CLI feature (--permission-prompt-tool, see
+  // server/permissions.ts). Codex is governed by its sandbox and Grok by its
+  // permission mode plus allow rules, and neither has an approval hook to route
+  // here — so the Allow/Deny prompts, the "asks" chip and AUTO MODE are all
+  // Claude-only. One predicate so those three can never drift apart.
+  const hasPermissionBridge = (t) => agentOf(t) === 'claude';
+
   // Input + output tokens accumulated across a task's runs (task.modelUsage is
-  // keyed by model; both Claude and Codex populate it — see server/usage.ts).
+  // keyed by model; every backend populates it — see server/usage.ts).
   const totalTokens = (t) =>
     Object.values(t.modelUsage || {}).reduce((n, m) => n + (m.inputTokens || 0) + (m.outputTokens || 0), 0);
+
+  // Does this task's spend have to be shown as tokens instead of dollars? Codex
+  // subscription runs never report a dollar cost, and Grok's OAuth path usually
+  // doesn't either (it stamps cost for API-key traffic, and drops every cost
+  // float when a turn's cost was only partial). An absent cost means "unreported",
+  // never "free" — so show "—" plus the token total, never a misleading $0.
+  const tokensOnly = (t) => agentOf(t) === 'codex' || (agentOf(t) === 'grok' && !(t.costUsd > 0));
   // Compact token count, e.g. 12345 -> "12.3k".
   const fmtTokens = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
 
-  // Small, dependency-free markdown → HTML for Claude's own chat text (headings,
-  // lists, code fences/spans, bold/italic, links). Always escapes the source first
-  // and only ever re-introduces tags we generate ourselves — the markdown source
-  // is never trusted to inject arbitrary markup.
-  function mdToHtml(src) {
-    const codeBlocks = [];
-    const text = String(src ?? '').replace(/```[ \t]*(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
-      codeBlocks.push(`<pre class="md-code"><code>${esc(code.replace(/\n$/, ''))}</code></pre>`);
-      return ` B${codeBlocks.length - 1} `;
-    });
+  // Placeholder standing in for a chunk we lift out of the markdown source before
+  // escaping the rest (a fenced block, a code span). Delimited by a private-use
+  // code point so it can never collide with real text — and, unlike the
+  // space-delimited marker this used to use, never eats the space next to it:
+  // "the `foo` file" was rendering as "the<code>foo</code> file".
+  const MD_HOLE = (kind, i) => `\uE000${kind}${i}\uE000`;
 
-    function inline(line) {
-      const spans = [];
-      let s = esc(line).replace(/`([^`]+)`/g, (_, c) => {
-        spans.push(`<code>${c}</code>`);
-        return ` S${spans.length - 1} `;
-      });
-      s = s
-        .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
-        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-        .replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>')
-        .replace(/(^|[^_])_([^_\n]+)_(?!_)/g, '$1<em>$2</em>');
-      return s.replace(/ S(\d+) /g, (_, i) => spans[Number(i)]);
-    }
+  // Lift every `code span` out of the source, rendering it into `out` and leaving
+  // a placeholder behind. Done up front, before the text is split into lines, so a
+  // span that wraps across a line break still comes out as one <code>.
+  const mdLiftCode = (src, out) => String(src ?? '').replace(/`([^`]+)`/g, (_, c) => {
+    out.push(`<code>${esc(c.replace(/\s*\n\s*/g, ' '))}</code>`);
+    return MD_HOLE('S', out.length - 1);
+  });
+
+  // Escape one line of already-lifted markdown, then render its links and
+  // emphasis. Escaping here is what keeps the tags we generate the only markup in
+  // the output — the markdown source never injects its own.
+  const mdEmphasis = (line) => esc(line)
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<em>$2</em>')
+    .replace(/(^|[^_])_([^_\n]+)_(?!_)/g, '$1<em>$2</em>');
+
+  // Put the lifted code spans back, once the markup around them has settled.
+  const mdDropCode = (html, spans) => html.replace(/\uE000S(\d+)\uE000/g, (m, i) => spans[Number(i)] ?? m);
+
+  // Inline-only markdown: code spans, links, bold, italics. Use for a one-line
+  // string that shouldn't grow block markup (a clarifying question, a blocker).
+  function mdInline(src) {
+    const spans = [];
+    return mdDropCode(mdEmphasis(mdLiftCode(src, spans)), spans);
+  }
+
+  // Small, dependency-free markdown → HTML for agent-authored text and framed
+  // prompts (headings, nested lists, code fences/spans, quotes, bold/italic,
+  // links). Same escaping contract as mdInline.
+  function mdToHtml(src) {
+    // Drop the shared leading indentation of a fenced block (a fence nested under
+    // a bullet is indented in the source, not in the code it shows).
+    const dedent = (code) => {
+      const lines = code.replace(/\s+$/, '').split('\n');
+      const body = lines.filter((l) => l.trim());
+      if (!body.length) return '';
+      const pad = Math.min(...body.map((l) => l.match(/^ */)[0].length));
+      return lines.map((l) => l.slice(pad)).join('\n');
+    };
+    // Fenced blocks first (their content is code, not markdown), then the code
+    // spans in what's left — both out of the way before anything is split or
+    // escaped.
+    const codeBlocks = [];
+    const spans = [];
+    const text = mdLiftCode(
+      // CRLF normalized first: the block patterns below are line-anchored, and a
+      // trailing \r makes every one of them miss.
+      String(src ?? '').replace(/\r\n?/g, '\n').replace(/```[ \t]*(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+        codeBlocks.push(`<pre class="md-code"><code>${esc(dedent(code))}</code></pre>`);
+        return MD_HOLE('B', codeBlocks.length - 1);
+      }),
+      spans,
+    );
 
     const html = [];
-    let list = null; // { tag: 'ul'|'ol', items: [] }
     let para = [];
+    // Open lists, outermost first. `indent` is the column the item's marker sat
+    // at, so a deeper-indented item nests instead of ending the list. A blank
+    // line never closes a list (only prose does), so bullets separated by blank
+    // lines stay one loose list instead of becoming one list each.
+    const lists = [];
+
+    const indentOf = (ws) => ws.replace(/\t/g, '  ').length;
+    const top = () => lists[lists.length - 1];
     const flushPara = () => { if (para.length) { html.push(`<p>${para.join('<br>')}</p>`); para = []; } };
-    const flushList = () => {
-      if (list) html.push(`<${list.tag}>${list.items.map((it) => `<li>${it}</li>`).join('')}</${list.tag}>`);
-      list = null;
+    const closeItem = () => { if (top()?.liOpen) { html.push('</li>'); top().liOpen = false; } };
+    // Close every open list indented at or past `from` (all of them by default).
+    const closeLists = (from = 0) => {
+      while (lists.length && top().indent >= from) { closeItem(); html.push(`</${lists.pop().tag}>`); }
+    };
+    const openList = (tag, indent) => { html.push(`<${tag}>`); lists.push({ tag, indent, liOpen: false }); };
+    const pushItem = (tag, indent, content) => {
+      flushPara();
+      closeLists(indent + 1); // anything deeper than this item ends here
+      if (!top()) openList(tag, indent);
+      else if (indent >= top().indent + 2) openList(tag, indent); // nests inside the open <li>
+      else if (top().tag !== tag) { closeLists(top().indent); openList(tag, indent); }
+      else closeItem();
+      html.push(`<li>${content}`);
+      top().liOpen = true;
     };
 
     for (const line of text.split('\n')) {
-      const codeRef = line.match(/^ B(\d+) $/);
+      const codeRef = line.trim().match(/^\uE000B(\d+)\uE000$/);
       const heading = line.match(/^(#{1,4})\s+(.+)$/);
       const quote = line.match(/^>\s?(.*)$/);
-      const ul = line.match(/^[-*+]\s+(.+)$/);
-      const ol = line.match(/^\d+\.\s+(.+)$/);
+      const ul = line.match(/^(\s*)[-*+]\s+(.+)$/);
+      const ol = line.match(/^(\s*)\d+\.\s+(.+)$/);
       const hr = /^([-*_])\1{2,}$/.test(line.trim());
+      const indented = /^\s{2,}\S/.test(line);
 
-      if (codeRef) { flushPara(); flushList(); html.push(codeBlocks[Number(codeRef[1])]); } else if (heading) {
-        flushPara(); flushList();
+      if (line.trim() === '') {
+        flushPara();
+      } else if (codeRef) {
+        flushPara();
+        // A fence indented under a bullet belongs to that item; one at the
+        // margin ends the list.
+        if (!(indented && top()?.liOpen)) closeLists();
+        html.push(codeBlocks[Number(codeRef[1])]);
+      } else if (heading) {
+        flushPara(); closeLists();
         const level = Math.min(heading[1].length + 2, 6); // keep headings small inside a chat bubble
-        html.push(`<h${level}>${inline(heading[2])}</h${level}>`);
+        html.push(`<h${level}>${mdEmphasis(heading[2])}</h${level}>`);
       } else if (hr) {
-        flushPara(); flushList(); html.push('<hr>');
+        flushPara(); closeLists(); html.push('<hr>');
       } else if (quote) {
-        flushPara(); flushList(); html.push(`<blockquote>${inline(quote[1])}</blockquote>`);
+        flushPara(); closeLists();
+        html.push(`<blockquote>${mdEmphasis(quote[1])}</blockquote>`);
       } else if (ul) {
-        flushPara();
-        if (!list || list.tag !== 'ul') { flushList(); list = { tag: 'ul', items: [] }; }
-        list.items.push(inline(ul[1]));
+        pushItem('ul', indentOf(ul[1]), mdEmphasis(ul[2]));
       } else if (ol) {
-        flushPara();
-        if (!list || list.tag !== 'ol') { flushList(); list = { tag: 'ol', items: [] }; }
-        list.items.push(inline(ol[1]));
-      } else if (line.trim() === '') {
-        flushPara(); flushList();
+        pushItem('ol', indentOf(ol[1]), mdEmphasis(ol[2]));
+      } else if (indented && top()?.liOpen) {
+        // A wrapped/continued line under the current bullet.
+        html.push(`<br>${mdEmphasis(line.trim())}`);
       } else {
-        flushList(); para.push(inline(line));
+        // Prose ends any open list, indented continuations aside (above).
+        closeLists(); para.push(mdEmphasis(line));
       }
     }
-    flushPara(); flushList();
-    return html.join('');
+    flushPara(); closeLists();
+    // Restore the lifted chunks. A fence that was not alone on its line (e.g.
+    // ```x``` mid-sentence) is restored here too, rather than leaking its
+    // placeholder as text.
+    return mdDropCode(html.join(''), spans)
+      .replace(/\uE000B(\d+)\uE000/g, (m, i) => codeBlocks[Number(i)] ?? m);
   }
 
   function fmtDuration(ms) {
@@ -1342,8 +1442,9 @@
       `<span class="chip repo">${esc(t.repoName)}</span>`,
     ];
     // Show the backend only for the non-default agent, so Claude cards read the
-    // same as before; Codex gets an explicit badge (no emoji — icons.js glyph).
-    if (t.agent === 'codex') chips.push(`<span class="chip agent-chip" title="Runs on the OpenAI Codex CLI">${icon('cpu')} Codex</span>`);
+    // same as before; Codex and Grok get an explicit badge (no emoji — icons.js glyph).
+    const badge = agentBadge(t);
+    if (badge) chips.push(`<span class="chip agent-chip" title="${badge.title}">${icon(badge.icon)} ${badge.label}</span>`);
     chips.push(`<span class="chip model${modelClass(modelName)}">${esc(modelName)}</span>`);
     if (t.groomingId) chips.push(`<span class="chip grooming-chip" title="Spawned by a grooming">${icon('lightbulb')} groomed</span>`);
     if (t.resolvingConflicts) chips.push(`<span class="chip conflict-chip" title="Auto-resolving merge conflicts with main">${icon('git-branch')} Resolving Conflicts</span>`);
@@ -1823,7 +1924,18 @@
   const timeline = {
     toolRows: new Map(),   // tool_use_id -> tool row element
     subagents: new Map(),  // Task tool_use_id -> { group, body, head }
+    // The Grok text/thought block currently being streamed into, if any:
+    // { kind, text, body }. See appendGrokDelta.
+    stream: null,
   };
+
+  // Drop the per-session render state before (re)playing a timeline, so a drawer
+  // never folds new events into the previous session's elements.
+  function resetTimelineState() {
+    timeline.toolRows.clear();
+    timeline.subagents.clear();
+    timeline.stream = null;
+  }
 
   async function openDrawer(taskId) {
     state.openTaskId = taskId;
@@ -1832,8 +1944,7 @@
     $('#drawer').classList.remove('hidden');
     $('#drawer-overlay').classList.remove('hidden');
     $('#timeline').innerHTML = '<div class="ev-meta">loading session…</div>';
-    timeline.toolRows.clear();
-    timeline.subagents.clear();
+    resetTimelineState();
 
     try {
       const { task, events } = await api('GET', `/api/tasks/${taskId}/logs`);
@@ -1857,8 +1968,7 @@
     $('#drawer').classList.remove('hidden');
     $('#drawer-overlay').classList.remove('hidden');
     $('#timeline').innerHTML = '<div class="ev-meta">loading session…</div>';
-    timeline.toolRows.clear();
-    timeline.subagents.clear();
+    resetTimelineState();
     renderPermissionPrompts(null);
 
     try {
@@ -1881,8 +1991,7 @@
     $('#drawer').classList.remove('hidden');
     $('#drawer-overlay').classList.remove('hidden');
     $('#timeline').innerHTML = '<div class="ev-meta">loading session…</div>';
-    timeline.toolRows.clear();
-    timeline.subagents.clear();
+    resetTimelineState();
     renderPermissionPrompts(null);
 
     try {
@@ -1917,8 +2026,8 @@
     // The AUTO MODE toggle only makes sense when the run asks before each tool,
     // i.e. its permission mode is "Accept edits" — 'bypassPermissions' never
     // prompts, and 'plan'/'default' aren't the accept-edits flow we auto-approve.
-    // Codex has no per-tool approval hook (it's sandbox-governed), so never here.
-    const canAuto = live && task.permissionMode === 'acceptEdits' && task.agent !== 'codex';
+    // Only Claude has an approval hook to auto-answer, so never for the others.
+    const canAuto = live && task.permissionMode === 'acceptEdits' && hasPermissionBridge(task);
     // The box carries that toggle plus the pending prompts. Nothing to show for a
     // task that can't auto-approve and has no prompts.
     if (!canAuto && !list.length) {
@@ -1995,8 +2104,8 @@
     if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
     const task = state.tasks.get(state.openTaskId);
     // Only the "Accept edits" flow exposes AUTO MODE — match renderPermissionPrompts
-    // (Codex is sandbox-governed and never prompts, so it has no AUTO MODE).
-    if (!task || !isLive(task) || task.permissionMode !== 'acceptEdits' || task.agent === 'codex') return;
+    // (the other backends never prompt, so they have no AUTO MODE).
+    if (!task || !isLive(task) || task.permissionMode !== 'acceptEdits' || !hasPermissionBridge(task)) return;
     e.preventDefault();
     toggleAutoApprove(state.openTaskId, !isAutoApprove(state.openTaskId));
   });
@@ -2214,7 +2323,7 @@
     }
     const g = Math.min(5, Math.max(1, Math.round(Number(cr.grade) || 0)));
     const blockers = (cr.blockers || []).length
-      ? `<ul class="drawer-review-blockers">${cr.blockers.map((b) => `<li>${esc(b)}</li>`).join('')}</ul>`
+      ? `<ul class="drawer-review-blockers md">${cr.blockers.map((b) => `<li>${mdInline(b)}</li>`).join('')}</ul>`
       : '';
     const link = cr.commentUrl
       ? `<a class="chip" href="${esc(cr.commentUrl)}" target="_blank" rel="noopener">${icon('git-pull-request')} review comment</a>`
@@ -2226,22 +2335,21 @@
         <span class="chip grade g${g}" title="Code review grade ${g}/5">${g}/5 — ${esc(GRADE_MEANINGS[g])}</span>
         ${link}
       </div>
-      ${cr.summary ? `<div class="drawer-review-summary">${esc(cr.summary)}</div>` : ''}
+      ${cr.summary ? `<div class="drawer-review-summary md">${mdToHtml(cr.summary)}</div>` : ''}
       ${blockers}`;
   }
 
   function renderDrawerHead(t) {
     $('#drawer-title').textContent = t.title;
-    const codex = t.agent === 'codex';
+    const badge = agentBadge(t);
     const meta = [
       `<span class="chip repo">${esc(t.repoName)}</span>`,
     ];
-    if (codex) meta.push(`<span class="chip agent-chip" title="Runs on the OpenAI Codex CLI">${icon('cpu')} Codex</span>`);
+    if (badge) meta.push(`<span class="chip agent-chip" title="${badge.title}">${icon(badge.icon)} ${badge.label}</span>`);
     meta.push(`<span class="chip model${modelClass(t.resolvedModel || t.model)}">${esc(t.resolvedModel || t.model)}</span>`);
     meta.push(`<span class="chip">${esc(t.permissionMode)}</span>`);
-    // Claude asks before unapproved tools; Codex is governed by its sandbox, so
-    // the "asks" chip only makes sense for Claude (no per-tool prompt on Codex).
-    if (t.promptPermissions && !codex) meta.push(`<span class="chip" title="Asks you to approve otherwise-denied tools">${icon('shield')} asks</span>`);
+    // Only Claude asks before an unapproved tool, so the "asks" chip is Claude-only.
+    if (t.promptPermissions && hasPermissionBridge(t)) meta.push(`<span class="chip" title="Asks you to approve otherwise-denied tools">${icon('shield')} asks</span>`);
     if (t.autoCodeReview) meta.push(`<span class="chip addon-chip" title="A fresh reviewer grades this branch in Code Review when the run finishes (needs an open PR)">${icon('search')} grades on finish</span>`);
     if (t.linearIssue && t.linearIssue.identifier) {
       meta.push(`<a class="chip linear-chip" href="${esc(t.linearIssue.url)}" target="_blank" rel="noopener" title="Open in Linear">${icon('linear')} ${esc(t.linearIssue.identifier)}</a>`);
@@ -2257,11 +2365,11 @@
       meta.push(repoBranchChipHtml(t));
     }
     if (t.sessionId) meta.push(`<span class="chip" title="session id">${esc(t.sessionId.slice(0, 8))}…</span>`);
-    if (codex) {
-      // Codex subscription runs report tokens, not a dollar cost — show "—" for
-      // cost (never a misleading $0) plus the token total the ledger recorded.
+    if (tokensOnly(t)) {
+      // This backend reported tokens but no dollar cost — show "—" for cost (never
+      // a misleading $0) plus the token total the ledger recorded.
       const tok = totalTokens(t);
-      meta.push(`<span class="chip cost" title="Codex subscription runs report tokens, not a dollar cost">— cost</span>`);
+      meta.push(`<span class="chip cost" title="This run reported tokens, not a dollar cost">— cost</span>`);
       if (tok > 0) meta.push(`<span class="chip" title="input + output tokens across all runs">${fmtTokens(tok)} tok</span>`);
     } else if (t.costUsd > 0) {
       meta.push(`<span class="chip cost">$${t.costUsd.toFixed(2)} total</span>`);
@@ -2329,7 +2437,7 @@
       const opts = (q.options || []).map((opt, j) => `
         <label class="groom-opt">
           <input type="radio" name="gq-${i}" value="${esc(opt)}"${j === 0 && !q.allowText ? ' checked' : ''}>
-          <span>${esc(opt)}</span>
+          <span>${mdInline(opt)}</span>
         </label>`).join('');
       // A free-text field: an "Other" radio next to options, or a standalone
       // input when the question is open-ended (no options).
@@ -2343,8 +2451,8 @@
           : `<input type="text" class="groom-q-textinput" placeholder="Type your answer…">`
         : '';
       return `
-        <div class="groom-q" data-qi="${i}">
-          <div class="groom-q-text">${i + 1}. ${esc(q.question)}</div>
+        <div class="groom-q md" data-qi="${i}">
+          <div class="groom-q-text">${i + 1}. ${mdInline(q.question)}</div>
           <div class="groom-q-options">${opts}${text}</div>
         </div>`;
     }).join('');
@@ -2482,7 +2590,7 @@
     return `
       <div class="tag">NEEDS INPUT</div>
       <p class="groom-clarify-hint">The orchestrator is paused on this question — answer below to continue.</p>
-      <div class="orch-question">${esc(o.note || 'It asked for input but recorded no question.')}</div>
+      <div class="orch-question md">${mdToHtml(o.note || 'It asked for input but recorded no question.')}</div>
       <form class="orch-reply" id="orchestrate-reply-form">
         <textarea class="orch-reply-input groom-q-textinput" rows="3" placeholder="Type your answer…"></textarea>
         <button type="submit" class="btn primary orch-reply-send">${icon('crown')} Answer &amp; continue</button>
@@ -2676,13 +2784,51 @@
     }
   }
 
+  // Grok streams its answer as `text` / `thought` DELTAS — a few words per event —
+  // rather than whole messages (see server/agents/grok.ts). Rendering one div per
+  // delta would shred the timeline, so consecutive chunks of the same kind fold
+  // into a single growing block, and any other event closes it (see closeGrokDelta)
+  // so everything stays in stream order. Replaying a stored log rebuilds the same
+  // blocks, because the events arrive in the same order they did live.
+  function appendGrokDelta(kind, chunk) {
+    if (!chunk) return;
+    const open = timeline.stream;
+    if (!open || open.kind !== kind) {
+      const html = kind === 'thought'
+        ? `<details class="ev-thinking" open><summary>${icon('brain')} thinking</summary><pre></pre></details>`
+        : '<div class="ev-text md"></div>';
+      const tpl = document.createElement('template');
+      tpl.innerHTML = html;
+      const el = tpl.content.firstElementChild;
+      $('#timeline').appendChild(el);
+      // `body` is what the text goes into; for a thought that's the inner <pre>.
+      timeline.stream = { kind, text: '', body: kind === 'thought' ? el.querySelector('pre') : el };
+    }
+    const block = timeline.stream;
+    block.text += chunk;
+    // Re-render the whole accumulated block: markdown can't be parsed one delta at
+    // a time (a fence or a list only makes sense whole), and a response is small
+    // enough that reformatting it per chunk costs nothing.
+    if (block.kind === 'thought') block.body.textContent = block.text;
+    else block.body.innerHTML = mdToHtml(block.text);
+    scrollTimeline();
+  }
+
+  // Stop folding into the current delta block, so the next event renders after it.
+  function closeGrokDelta() {
+    timeline.stream = null;
+  }
+
   function appendEvent(ev) {
     const type = ev.type;
+    if (type !== 'text' && type !== 'thought') closeGrokDelta();
     if (type === 'prompt') {
       const tag = ev.groom ? 'GROOMING' : ev.codeReview ? 'CODE REVIEW' : ev.resume ? 'FOLLOW-UP' : 'PROMPT';
+      // The framed prompt is markdown (persona preamble, add-on instructions,
+      // the user's own text) — render it, don't dump the source.
       addHtml(containerFor(ev), `
-        <div class="ev-prompt">
-          <span class="tag">${tag} · run ${ev.run || 1}</span>${esc(ev.text)}
+        <div class="ev-prompt md">
+          <span class="tag">${tag} · run ${ev.run || 1}</span>${mdToHtml(ev.text)}
         </div>`);
     } else if (type === 'system' && ev.subtype === 'init') {
       addHtml(containerFor(ev), `<div class="ev-meta">${icon('zap')} session started · ${esc(ev.model || '')} · ${esc((ev.session_id || '').slice(0, 8))}</div>`);
@@ -2726,6 +2872,25 @@
       addHtml($('#timeline'), `<div class="ev-meta perm-log ${allowed ? 'ok' : 'no'}">${icon(auto ? 'zap' : 'shield')} ${verb} ${esc(ev.toolName || 'tool')}${esc(why)}</div>`);
     } else if (type === 'raw') {
       addHtml($('#timeline'), `<div class="ev-stderr">${esc(ev.text)}</div>`);
+    } else if (type === 'text' || type === 'thought') {
+      // Grok response / reasoning deltas.
+      appendGrokDelta(type, ev.data);
+    } else if (type === 'end') {
+      // Grok's terminal event: the session id and the whole spend report. It has
+      // no duration, and a subscription run usually has no dollar cost — show the
+      // tokens, and only add the cost when Grok actually stamped one.
+      const u = ev.usage || {};
+      const cost = ev.total_cost_usd > 0 ? ` · $${ev.total_cost_usd.toFixed(2)}` : '';
+      addHtml($('#timeline'), `
+        <div class="ev-result">
+          ${icon('circle-check')} <span class="md">${esc(ev.stopReason || 'done')}</span>
+          <div class="stats">${u.input_tokens || 0} in · ${u.output_tokens || 0} out · ${u.cache_read_input_tokens || 0} cached · ${ev.num_turns ?? '?'} turns${cost}</div>
+        </div>`);
+    } else if (type === 'max_turns_reached') {
+      addHtml($('#timeline'), `<div class="ev-meta">${icon('square')} Stopped: maximum turns reached</div>`);
+    } else if (typeof type === 'string' && type.startsWith('auto_compact_')) {
+      // Grok compacted its own context mid-run — worth a line, drives nothing.
+      addHtml($('#timeline'), `<div class="ev-meta">${icon('square')} context ${esc(type.replace('auto_compact_', 'compact '))}</div>`);
     } else if (type === 'thread.started') {
       // Codex session start (see server/agents/codex.ts for the JSONL schema).
       addHtml(containerFor(ev), `<div class="ev-meta">${icon('zap')} codex session · ${esc((ev.thread_id || '').slice(0, 8))}</div>`);
@@ -3376,11 +3541,19 @@
     } catch (e) { toast(e.message); }
   }
 
-  // Show only the chosen agent's models in the New-Task model picker and toggle
-  // the Codex permissions hint. Options tagged data-agent (or data-custom, which
+  // What the Permissions choice actually means on a backend that has no per-tool
+  // approval prompt. Claude is absent on purpose — it asks, so the picker already
+  // reads literally there and needs no footnote.
+  const PERM_HINTS = {
+    codex: 'Codex maps this to a sandbox level (read-only / workspace-write); there is no per-tool prompt.',
+    grok: 'Grok maps this to its own permission mode; there is no per-tool prompt, so "Ask by default" denies anything outside the allow-list instead of asking.',
+  };
+
+  // Show only the chosen agent's models in the New-Task model picker and set the
+  // permissions hint for it. Options tagged data-agent (or data-custom, which
   // are Claude/Bedrock models) are shown only for their agent; the untagged
   // "Account default" is always available. Resets to default if the current
-  // selection belongs to the other agent.
+  // selection belongs to another agent.
   function syncAgentModels() {
     const agent = $('#task-agent').value;
     const sel = $('#task-model');
@@ -3389,10 +3562,12 @@
       opt.hidden = a ? a !== agent : false;
     }
     if (sel.selectedOptions[0] && sel.selectedOptions[0].hidden) sel.value = 'default';
-    // Codex has no per-tool approval prompt — its permission mode maps to a
-    // sandbox level. Surface that in the form so the choice isn't misleading.
-    const codex = agent === 'codex';
-    $('#task-perm-codex-hint').classList.toggle('hidden', !codex);
+    // Neither Codex nor Grok has a per-tool approval prompt, and each reinterprets
+    // the permission choice above in its own terms. Say so in the form so the
+    // choice isn't misleading (see server/agents/codex.ts and grok.ts).
+    const hint = $('#task-perm-agent-hint');
+    hint.textContent = lookup(PERM_HINTS, agent) || '';
+    hint.classList.toggle('hidden', !hint.textContent);
   }
   $('#task-agent').addEventListener('change', syncAgentModels);
 
@@ -3553,7 +3728,7 @@
     for (const b of blocks) {
       if (b.type !== 'text' || !b.text || !b.text.trim()) continue;
       state.askText = state.askText ? `${state.askText}\n\n${b.text}` : b.text;
-      $('#ask-answer').innerHTML = esc(state.askText).replace(/\n/g, '<br>');
+      $('#ask-answer').innerHTML = mdToHtml(state.askText);
     }
   }
 
@@ -3566,7 +3741,7 @@
     const box = $('#ask-answer');
     box.classList.toggle('error', !msg.ok);
     const answer = msg.answer || (msg.ok ? '(no answer)' : 'Ask failed');
-    box.innerHTML = `<div>${esc(answer).replace(/\n/g, '<br>')}</div>` +
+    box.innerHTML = `<div>${mdToHtml(answer)}</div>` +
       (msg.ok ? `<div class="ask-cost">$${(msg.costUsd || 0).toFixed(2)}</div>` : '');
   }
 
@@ -5460,13 +5635,13 @@
     try {
       const h = await api('GET', '/api/health');
       const chip = $('#health');
-      // Either backend is enough to run a task; the header only shows the
+      // Any one backend is enough to run a task; the header only shows the
       // status dot — CLI versions live in Settings → About instead.
-      const agents = [h.claude, h.codex].filter(Boolean);
+      const agents = [h.claude, h.codex, h.grok].filter(Boolean);
       chip.textContent = h.ok ? '●' : '● no agent CLI found';
       chip.title = h.ok
         ? `Agent CLIs found:\n${agents.join('\n')}`
-        : 'No agent CLI found — install Claude Code and/or OpenAI Codex';
+        : 'No agent CLI found — install Claude Code, OpenAI Codex and/or xAI Grok';
       chip.classList.add(h.ok ? 'ok' : 'bad');
       const about = $('#setting-about-version');
       if (about && h.version) {

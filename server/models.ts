@@ -2,8 +2,8 @@
  * Canonical per-backend model vocabularies, and the complexity -> model
  * mapping used to suggest an execution model for a groomed task. Kept as a
  * single source of truth so a suggestion never crosses backends — a Claude
- * task only ever gets a Claude model name, a Codex task only ever gets a
- * Codex model name, regardless of which model happened to run the grooming
+ * task only ever gets a Claude model name, a Codex task a Codex one and a Grok
+ * task a Grok one, regardless of which model happened to run the grooming
  * session itself (e.g. grooming with the pricier "fable" doesn't mean the
  * spawned tasks should all execute on fable — most only need "sonnet").
  */
@@ -30,9 +30,26 @@ const CODEX_TIER_MODEL: Record<TaskComplexity, string> = {
   complex: 'gpt-5.6-terra',
 };
 
+// Grok publishes only two models worth pointing coding work at, so the ramp has
+// two rungs rather than three: `grok-build` is the agent-tuned coding model and
+// carries the everyday work, while `grok-4.5` (the CLI's own default for a new
+// session, and the bigger general reasoning model) is reserved for the tasks
+// judged complex.
+const GROK_TIER_MODEL: Record<TaskComplexity, string> = {
+  simple: 'grok-build',
+  standard: 'grok-build',
+  complex: 'grok-4.5',
+};
+
+const TIER_MODELS: Record<TaskAgent, Record<TaskComplexity, string>> = {
+  claude: CLAUDE_TIER_MODEL,
+  codex: CODEX_TIER_MODEL,
+  grok: GROK_TIER_MODEL,
+};
+
 // Suggest an execution model for `agent` given a task's judged complexity.
 // Always resolves within that backend's own vocabulary.
 export function suggestModel(agent: TaskAgent, complexity: TaskComplexity | undefined | null): string {
-  const tiers = agent === 'codex' ? CODEX_TIER_MODEL : CLAUDE_TIER_MODEL;
+  const tiers = TIER_MODELS[agent] || CLAUDE_TIER_MODEL;
   return tiers[complexity || 'standard'] || tiers.standard;
 }

@@ -8,7 +8,8 @@
 
 Queue prompts against your own git repos, drag them to **Running** to dispatch, and
 watch each agent session stream live: tool calls, subagents, cost, and the final diff.
-Pick your backend per task — **Claude Code** or **OpenAI Codex**. It runs entirely on
+Pick your backend per task — **Claude Code**, **OpenAI Codex** or **xAI Grok**. It runs
+entirely on
 your machine and drives your existing **subscription** login — never an API key.
 
 [![Release](https://img.shields.io/github/v/release/PauloLimaHQ/srpopo?label=download&color=orange)](https://github.com/PauloLimaHQ/srpopo/releases/latest)
@@ -50,9 +51,10 @@ Check with:
 ```bash
 claude --version   # Claude Code (the default backend)
 codex --version    # OpenAI Codex (optional, pick it per task)
+grok --version     # xAI Grok (optional, pick it per task)
 ```
 
-Either is enough; install both if you want to choose per task. On first launch, open
+Any one is enough; install several if you want to choose per task. On first launch, open
 **📁 Repos**, add a local git repository, and you're ready to queue a task.
 
 ## What it is
@@ -69,19 +71,20 @@ the background when the window is closed.
 
 - **Kanban board** — `Backlog → Ready → Running → Code Review → Validation → Done`,
   drag a card to Running to dispatch.
-- **Pick the agent per task** — **Claude Code** (default) or **OpenAI Codex**; each
-  task carries its own backend and model, streamed to the same board.
+- **Pick the agent per task** — **Claude Code** (default), **OpenAI Codex** or **xAI
+  Grok**; each task carries its own backend and model, streamed to the same board.
 - **Live session stream** — every prompt, assistant message, and tool call with
   input/output, **subagents** grouped and tracked live, plus duration, turns, and cost.
 - **Runs in parallel** — dispatch many tasks at once; each is its own agent process.
-- **Your subscription, not an API key** — `ANTHROPIC_API_KEY` (Claude) and
-  `OPENAI_API_KEY` (Codex) are stripped from every spawned task, so runs always use
-  your subscription login.
+- **Your subscription, not an API key** — `ANTHROPIC_API_KEY` (Claude),
+  `OPENAI_API_KEY` (Codex) and `XAI_API_KEY` (Grok) are stripped from every spawned
+  task, so runs always use your subscription login.
 - **Isolated worktrees** — optionally run each task on its own `srpopo/<slug>` branch in
   a dedicated git worktree, so parallel work never collides.
 - **Ask-before-running permissions** — a Claude task can prompt you (Allow / Deny)
   before it runs any tool it wasn't pre-authorized for, instead of silently failing.
-  Codex tasks are governed by its sandbox instead (read-only / workspace-write).
+  Codex tasks are governed by its sandbox instead (read-only / workspace-write), and
+  Grok tasks by its permission mode plus allow rules.
 - **Add-ons** — opt-in per-task behaviors like *self code review* and *open a PR*
   (`gh pr create`) at the end of a run.
 - **Brief an Idea** — hand it a rough idea; a read-only grooming session explores the
@@ -100,14 +103,16 @@ the background when the window is closed.
 
 1. **📁 Repos** — register the local git repositories you work in.
 2. **＋ New Task** — pick a repo, write the prompt, and choose:
-   - **Agent** — Claude Code (default) or OpenAI Codex
+   - **Agent** — Claude Code (default), OpenAI Codex or xAI Grok
    - **Model** — the chosen agent's models (or its account default)
-   - **Permissions** — `acceptEdits` (recommended), bypass-all, or plan-only. On Codex
-     these map to a sandbox level rather than per-tool prompts.
+   - **Permissions** — `acceptEdits` (recommended), bypass-all, or plan-only. Only
+     Claude asks per tool: on Codex these map to a sandbox level, and on Grok to its
+     own permission mode (where "ask by default" denies rather than asking).
    - **Worktree** — run isolated on branch `srpopo/<task>`
 3. **Dispatch** — drag the card into **Running** (or hit *Create & Run*). Sr. Popo
-   spawns the agent's CLI (`claude -p --output-format stream-json`, or
-   `codex exec --json`) in the repo/worktree and streams everything live.
+   spawns the agent's CLI (`claude -p --output-format stream-json`,
+   `codex exec --json`, or `grok --output-format streaming-json`) in the repo/worktree
+   and streams everything live.
 4. **Code Review** — opt in per task ("grade the branch when it finishes") and a
    successful run with an open PR flows into **Code Review**: a fresh, read-only
    reviewer agent grades the branch 1–5, comments on the PR, and the server labels it
@@ -151,8 +156,8 @@ npm run server     # http://localhost:7777
 npm run server:dev # same, with watch reload
 ```
 
-Point at a specific CLI with `CLAUDE_BIN=/path/to/claude` or `CODEX_BIN=/path/to/codex`
-(e.g. `CLAUDE_BIN=/path/to/claude npm start`).
+Point at a specific CLI with `CLAUDE_BIN=/path/to/claude`, `CODEX_BIN=/path/to/codex`
+or `GROK_BIN=/path/to/grok` (e.g. `CLAUDE_BIN=/path/to/claude npm start`).
 
 The Node-side code (`server/`, `electron/`, `tests/`) is **TypeScript**; the browser UI
 in `public/` stays vanilla JS with **no build step**.
@@ -195,7 +200,7 @@ localhost only — that binding *is* the security boundary.
 
 - `server/index.ts` — Express API + static UI host (binds `127.0.0.1` only)
 - `server/runner.ts` — spawns/kills the agent CLI and streams it; provider-agnostic
-- `server/agents/` — the `AgentAdapter` seam: `claude.ts` and `codex.ts` backends
+- `server/agents/` — the `AgentAdapter` seam: `claude.ts`, `codex.ts`, `grok.ts` backends
 - `server/git.ts` — worktree lifecycle · `server/github.ts` — read-only PR lookup
 - `server/bus.ts` — SSE fan-out for live board + timeline updates
 - `server/addons.ts` — catalog of opt-in task behaviors

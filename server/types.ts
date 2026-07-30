@@ -158,10 +158,11 @@ export type TaskStatus =
   | 'done'
   | 'failed';
 
-// Which local CLI backend a task runs against. Both are subscription-login,
+// Which local CLI backend a task runs against. All are subscription-login,
 // never-an-API-key spawned local processes (see server/agents/*). 'claude' is
-// the default and the historical behavior; 'codex' drives the OpenAI Codex CLI.
-export type TaskAgent = 'claude' | 'codex';
+// the default and the historical behavior; 'codex' drives the OpenAI Codex CLI
+// and 'grok' the xAI Grok CLI.
+export type TaskAgent = 'claude' | 'codex' | 'grok';
 
 // A grooming card's own lifecycle — separate from tasks. It never becomes a
 // task; it spawns them. `running` (like a task's) is set only by the runner.
@@ -322,7 +323,8 @@ export interface Task {
   repoName: string;
   repoPath: string;
   // Which CLI backend runs this task (see TaskAgent). Defaults to 'claude';
-  // 'codex' runs the OpenAI Codex CLI instead. Selects the runner's AgentAdapter.
+  // 'codex' runs the OpenAI Codex CLI and 'grok' the xAI Grok CLI instead.
+  // Selects the runner's AgentAdapter.
   agent: TaskAgent;
   addons: string[];
   // When the `pull_request` add-on (server/addons.ts) is selected, whether the

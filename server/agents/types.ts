@@ -5,9 +5,10 @@
  * that turns one line of the child's JSONL stream into a `NormalizedEvent`.
  *
  * The runner stays provider-agnostic: it spawns `adapter.bin` with
- * `adapter.buildArgs(...)`, writes the prompt to stdin, and reacts only to the
- * normalized events — session id, subagent open/close, and the terminal result.
- * Adding a backend means adding an adapter; the runner does not change.
+ * `adapter.buildArgs(...)`, delivers the prompt (stdin by default, see
+ * `promptArgs`), and reacts only to the normalized events — session id, subagent
+ * open/close, and the terminal result. Adding a backend means adding an adapter;
+ * the runner does not change.
  */
 import type { Grooming, Task, TaskAgent, LogEvent } from '../types';
 
@@ -56,6 +57,16 @@ export interface NormalizedEvent {
   result?: NormalizedResult;
 }
 
+// How a backend that can't read its prompt from stdin receives it instead — the
+// extra CLI args carrying it, plus an optional teardown. See AgentAdapter.promptArgs.
+export interface PromptDelivery {
+  // Appended to the run's args, after everything buildArgs/groomArgs produced.
+  args: string[];
+  // Called exactly once by the runner after the child exits (or fails to spawn),
+  // e.g. to delete a temp prompt file. Must not throw.
+  cleanup?: () => void;
+}
+
 export interface AgentAdapter {
   // Which backend this is (matches Task.agent).
   readonly id: TaskAgent;
@@ -71,6 +82,12 @@ export interface AgentAdapter {
   // CLI args for a read-only grooming session. `resume` continues the same
   // session after the developer answers the session's clarifying questions.
   groomArgs(grooming: Pick<Grooming, 'model' | 'sessionId'>, resume?: boolean): string[];
+  // How the prompt reaches the child. Omitted by backends that read it from
+  // stdin, which is what the runner does by default (Claude, Codex). A backend
+  // whose headless mode ignores stdin (Grok) implements this instead: the runner
+  // appends the returned args to the command line, leaves stdin empty, and calls
+  // `cleanup` once the child is gone.
+  promptArgs?(prompt: string): PromptDelivery;
   // Normalize one NDJSON line into a NormalizedEvent, or null for a blank line.
   parseLine(line: string): NormalizedEvent | null;
 }

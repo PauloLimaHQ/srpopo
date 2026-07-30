@@ -14,18 +14,22 @@ import * as permissions from './permissions';
 import * as usage from './usage';
 import * as claude from './agents/claude';
 import * as codex from './agents/codex';
+import * as grok from './agents/grok';
 import { ClaudeAdapter } from './agents/claude';
 import { CodexAdapter } from './agents/codex';
+import { GrokAdapter } from './agents/grok';
 import type { AgentAdapter, NormalizedResult } from './agents/types';
 import type { GroomSpec } from './groomer';
 import type { AskSession, Grooming, LogEvent, Orchestration, PrInfo, Task, TaskAgent } from './types';
 
 // The registered agent backends, keyed by Task.agent. Claude is the default and
-// the historical behavior; codex drives the OpenAI Codex CLI. Grooming always
-// runs against Claude (a Grooming has no agent field) — see groom().
+// the historical behavior; codex drives the OpenAI Codex CLI and grok the xAI
+// Grok CLI. Grooming always runs against Claude (a Grooming has no agent field)
+// — see groom().
 const ADAPTERS: Record<TaskAgent, AgentAdapter> = {
   claude: ClaudeAdapter,
   codex: CodexAdapter,
+  grok: GrokAdapter,
 };
 
 function adapterFor(agent: TaskAgent | undefined): AgentAdapter {
@@ -164,16 +168,43 @@ function launch<T extends SessionRecord>(rec: T, { adapter, args, workDir, promp
 
   record(rec, promptEvent);
 
-  const child: RunningChild = spawn(adapter.bin, args, {
-    cwd: workDir,
-    env: adapter.childEnv(rec.model),
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
-  child.startedAt = now();
+  // Most backends read the prompt from stdin. One whose headless mode ignores it
+  // (Grok) hands back extra args carrying the prompt instead, plus a cleanup for
+  // whatever they point at — see AgentAdapter.promptArgs.
+  const delivery = adapter.promptArgs ? adapter.promptArgs(prompt) : null;
+  let cleanedUp = false;
+  const cleanupPrompt = (): void => {
+    if (cleanedUp || !delivery || !delivery.cleanup) return;
+    cleanedUp = true;
+    try {
+      delivery.cleanup();
+    } catch (e) {
+      // Losing a temp file is not worth failing a finished run over.
+      console.warn('[runner] prompt cleanup failed:', (e as Error).message);
+    }
+  };
+
+  let child: RunningChild;
+  try {
+    child = spawn(adapter.bin, delivery ? [...args, ...delivery.args] : args, {
+      cwd: workDir,
+      env: adapter.childEnv(rec.model),
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+  } catch (e) {
+    // A synchronous spawn failure (bad workDir, bad options) never reaches the
+    // 'error'/'exit' handlers below, so clean up here before rethrowing —
+    // otherwise a prompt file would be left behind in the temp dir.
+    cleanupPrompt();
+    throw e;
+  }
+  child.startedAt = now(); // for the resource monitor's session rows (liveChildren)
   running.set(rec.id, child);
 
   child.stdin?.on('error', () => {}); // the child may exit before reading stdin
-  child.stdin?.write(prompt);
+  // Only write the prompt when stdin IS the delivery channel; either way close it
+  // so a child that does read stdin sees EOF instead of waiting on us.
+  if (!delivery) child.stdin?.write(prompt);
   child.stdin?.end();
 
   let sawResult: NormalizedResult | null = null;
@@ -226,6 +257,9 @@ function launch<T extends SessionRecord>(rec: T, { adapter, args, workDir, promp
 
   child.on('error', (err) => {
     running.delete(rec.id);
+    // The child never started, so nothing will read the prompt file. ('exit' may
+    // or may not follow an 'error'; cleanupPrompt is idempotent either way.)
+    cleanupPrompt();
     rec.status = 'failed';
     rec.lastOutcome = 'error';
     rec.lastError = `Failed to launch ${adapter.label}: ${err.message}`;
@@ -237,6 +271,7 @@ function launch<T extends SessionRecord>(rec: T, { adapter, args, workDir, promp
 
   child.on('exit', (code, signal) => {
     running.delete(rec.id);
+    cleanupPrompt();
     // Deny any prompts still waiting — the child that asked is gone.
     permissions.rejectForTask(rec.id, 'Run ended');
     rec.finishedAt = now();
@@ -844,5 +879,6 @@ export const {
   CLAUDE_BIN,
 } = claude;
 
-// The Codex binary, for the health probe (GET /api/health checks every backend).
+// The non-Claude binaries, for the health probe (GET /api/health checks every backend).
 export const { CODEX_BIN } = codex;
+export const { GROK_BIN } = grok;
