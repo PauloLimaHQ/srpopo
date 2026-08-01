@@ -1446,8 +1446,8 @@
     if (!confirm(`Remove worktree?\n${wtPath}\n\nThis discards any uncommitted changes in it.`)) return;
     const repoId = state.view.repoId;
     try {
-      await api('POST', `/api/repos/${repoId}/worktrees/remove`, { path: wtPath });
-      toast('Worktree removed', 'info');
+      const { leftover } = await api('POST', `/api/repos/${repoId}/worktrees/remove`, { path: wtPath });
+      toast(leftover ? 'Worktree removed — some files were left on disk' : 'Worktree removed', 'info');
       await refreshRepoWorktreesCard(repoId, true);
     } catch (e2) {
       toast(e2.message || 'Failed to remove worktree', 'error');
@@ -1837,9 +1837,18 @@
   // the task where it is; confirming with nothing checked just moves it; any
   // checked step runs (merge before worktree removal, so `gh` still has the
   // worktree to run in) before the move.
+  //
+  // `completed` remembers which steps already succeeded, so retrying after a
+  // failed step resumes from that step instead of merging (or removing the
+  // worktree) a second time.
   let doneModalCtx = null;
   function openDoneModal(t, options) {
-    doneModalCtx = { task: t, options };
+    doneModalCtx = { task: t, options, completed: new Set() };
+    $('#done-modal-progress').classList.add('hidden');
+    $('#done-modal-progress').innerHTML = '';
+    $('#done-modal-options').classList.remove('hidden');
+    $('#done-modal-confirm').textContent = 'Move to Done';
+    $('#done-modal-cancel').disabled = false;
     $('#done-modal-sub').textContent =
       `“${t.title}” — choose any wrap-up steps to run, then it moves to Done.`;
     $('#done-modal-options').innerHTML = options.map((o) =>
@@ -1874,83 +1883,112 @@
   // one row per step, so a slow merge/worktree-removal reads as "working on it"
   // instead of a frozen dialog. `renderDoneProgress` re-renders the whole list on
   // every state change; call it again after mutating a step's `state`.
+  // A failed step keeps its row (marked, with the error under it) so the list
+  // stays a truthful record of what did and didn't happen.
   function renderDoneProgress(steps) {
     $('#done-modal-options').classList.add('hidden');
     const progress = $('#done-modal-progress');
     progress.classList.remove('hidden');
     progress.innerHTML = steps.map((s) => {
-      const cls = s.state === 'active' ? 'active' : s.state === 'done' ? 'done' : '';
-      const glyph = s.state === 'done' ? icon('check') : s.state === 'active' ? '<span class="spinner"></span>' : '';
-      return `<div class="done-progress-step ${cls}"><span class="icon-slot">${glyph}</span><span>${esc(s.label)}</span></div>`;
+      const cls = s.state === 'active' ? 'active' : s.state === 'done' ? 'done' : s.state === 'error' ? 'error' : '';
+      const glyph = s.state === 'done' ? icon('check')
+        : s.state === 'error' ? icon('triangle-alert')
+        : s.state === 'active' ? '<span class="spinner"></span>' : '';
+      const detail = s.state === 'error' && s.error
+        ? `<span class="done-progress-error">${esc(s.error)}</span>` : '';
+      return `<div class="done-progress-step ${cls}"><span class="icon-slot">${glyph}</span>` +
+        `<span class="done-progress-text"><span>${esc(s.label)}</span>${detail}</span></div>`;
     }).join('');
   }
 
   $('#done-modal-confirm').addEventListener('click', async () => {
     if (!doneModalCtx) return;
-    const { task } = doneModalCtx;
-    const checked = new Set(
-      [...document.querySelectorAll('#done-modal-options input[data-done-opt]:checked')]
-        .map((el) => el.dataset.doneOpt),
-    );
+    const { task, completed } = doneModalCtx;
+    // Read the boxes only on the first pass: after a failure the progress list
+    // (not the checkboxes) is what's on screen, and `steps` already holds the
+    // plan the user confirmed.
+    if (!doneModalCtx.steps) {
+      const checked = new Set(
+        [...document.querySelectorAll('#done-modal-options input[data-done-opt]:checked')]
+          .map((el) => el.dataset.doneOpt),
+      );
+      // Merge first: worktree removal below would take away the dir `gh` runs in.
+      const steps = [];
+      if (checked.has('merge-pr')) {
+        steps.push({ id: 'merge-pr', label: 'Merging your pull request…', state: 'pending' });
+      }
+      if (checked.has('merge-direct')) {
+        steps.push({ id: 'merge-direct', label: 'Merging your branch…', state: 'pending' });
+      }
+      if (checked.has('delete-worktree')) {
+        steps.push({ id: 'delete-worktree', label: 'Deleting your worktree…', state: 'pending' });
+      }
+      steps.push({ id: 'move', label: 'Moving task to Done…', state: 'pending' });
+      doneModalCtx.steps = steps;
+    }
+    const steps = doneModalCtx.steps;
     const btn = $('#done-modal-confirm');
     btn.disabled = true;
     $('#done-modal-cancel').disabled = true;
-
-    // Merge first: worktree removal below would take away the dir `gh` runs in.
-    const steps = [];
-    if (checked.has('merge-pr')) {
-      steps.push({ id: 'merge-pr', label: 'Merging your pull request…', state: 'pending' });
-    }
-    if (checked.has('merge-direct')) {
-      steps.push({ id: 'merge-direct', label: 'Merging your branch…', state: 'pending' });
-    }
-    if (checked.has('delete-worktree')) {
-      steps.push({ id: 'delete-worktree', label: 'Deleting your worktree…', state: 'pending' });
-    }
-    steps.push({ id: 'move', label: 'Moving task to Done…', state: 'pending' });
     renderDoneProgress(steps);
 
+    // A step that already succeeded is never run again — retrying a failed
+    // merge must not merge the branch (or drop the worktree) a second time.
+    // Returns whether it actually ran, so the toasts don't repeat either.
     async function runStep(id, fn) {
       const step = steps.find((s) => s.id === id);
+      if (!step || completed.has(id)) return false;
       step.state = 'active';
+      step.error = null;
       renderDoneProgress(steps);
-      await fn();
+      try {
+        await fn();
+      } catch (e) {
+        step.state = 'error';
+        step.error = e.message;
+        renderDoneProgress(steps);
+        throw e;
+      }
+      completed.add(id);
       step.state = 'done';
       renderDoneProgress(steps);
+      return true;
     }
 
     try {
-      if (checked.has('merge-pr')) {
-        await runStep('merge-pr', async () => {
-          await api('POST', `/api/tasks/${task.id}/pr/merge`);
-          state.prByTask.delete(task.id); // force a fresh PR status next render
-        });
-        toast('Pull request merged', 'info');
-      }
-      if (checked.has('merge-direct')) {
-        await runStep('merge-direct', async () => {
-          await api('POST', `/api/tasks/${task.id}/merge`);
-        });
-        toast('Branch merged directly (no PR)', 'info');
-      }
-      if (checked.has('delete-worktree')) {
-        await runStep('delete-worktree', async () => {
-          await api('POST', `/api/tasks/${task.id}/worktree/remove`);
-        });
-        toast('Worktree removed', 'info');
-      }
+      const mergedPr = await runStep('merge-pr', async () => {
+        await api('POST', `/api/tasks/${task.id}/pr/merge`);
+        state.prByTask.delete(task.id); // force a fresh PR status next render
+      });
+      if (mergedPr) toast('Pull request merged', 'info');
+
+      const mergedDirect = await runStep('merge-direct', async () => {
+        await api('POST', `/api/tasks/${task.id}/merge`);
+      });
+      if (mergedDirect) toast('Branch merged directly (no PR)', 'info');
+
+      let leftover = false;
+      const removed = await runStep('delete-worktree', async () => {
+        ({ leftover } = await api('POST', `/api/tasks/${task.id}/worktree/remove`));
+      });
+      // git drops the worktree even when a build cache (or anything else
+      // writing into it) stops it from deleting every file — say so instead of
+      // claiming a clean removal.
+      if (removed) toast(leftover ? 'Worktree removed — some files were left on disk' : 'Worktree removed', 'info');
+
       await runStep('move', async () => {
         await api('PATCH', `/api/tasks/${task.id}`, { status: 'done' });
       });
       $('#modal-done').classList.add('hidden');
       doneModalCtx = null;
     } catch (e) {
+      // The progress list stays up with the failed step marked, so it's clear
+      // which steps did land; Retry picks up from there.
       toast(e.message, 'error');
+      btn.textContent = 'Retry';
     } finally {
       btn.disabled = false;
       $('#done-modal-cancel').disabled = false;
-      $('#done-modal-options').classList.remove('hidden');
-      $('#done-modal-progress').classList.add('hidden');
     }
   });
 
@@ -2211,7 +2249,10 @@
         run: async () => { await navigator.clipboard.writeText(t.worktreePath); toast('Worktree path copied', 'info'); } });
       if (!isLive(t)) {
         actions.push({ id: 'rm-wt', label: 'Remove worktree', cls: 'ghost danger',
-          run: async () => { await api('POST', `/api/tasks/${t.id}/worktree/remove`); toast('Worktree removed', 'info'); } });
+          run: async () => {
+            const { leftover } = await api('POST', `/api/tasks/${t.id}/worktree/remove`);
+            toast(leftover ? 'Worktree removed — some files were left on disk' : 'Worktree removed', 'info');
+          } });
       }
     }
     return actions;

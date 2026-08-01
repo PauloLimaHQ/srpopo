@@ -764,18 +764,22 @@ app.post('/api/repos/:id/worktrees/remove', async (req: Request, res: Response) 
   if (!repo) return err(res, 404, 'Repo not found');
   const wtPath = String(req.body?.path || '');
   const live = await git.listWorktrees(repo.path);
-  if (!live.some((w) => w.path === wtPath)) return err(res, 404, 'Worktree not found');
-  const task = db.tasks.find((t) => t.worktreePath === wtPath);
+  const task = db.tasks.find((t) => t.worktreePath === wtPath && t.repoId === repo.id);
+  // Either a worktree git still knows about, or one this server recorded on a
+  // task — never a path the client made up. A task-owned path that git no
+  // longer lists is stale rather than unknown, and clearing it is exactly what
+  // this route is for.
+  if (!live.some((w) => w.path === wtPath) && !task) return err(res, 404, 'Worktree not found');
   if (task && runner.isRunning(task.id)) return err(res, 409, 'Stop the task first');
   try {
-    await git.removeWorktree(repo.path, wtPath);
+    const { leftover } = await git.removeWorktree(repo.path, wtPath);
     if (task) {
       task.worktreePath = null;
       task.updatedAt = now();
       broadcast({ type: 'task', task });
     }
     save();
-    res.json({ ok: true });
+    res.json({ ok: true, leftover });
   } catch (e) {
     err(res, 500, (e as Error).message);
   }
@@ -1768,18 +1772,24 @@ app.post('/api/tasks/:id/archive', (req: Request, res: Response) => {
   res.json({ ok: true });
 });
 
+// Drop a task's worktree. Idempotent on purpose: a task whose worktree is
+// already gone (removed from the Workspace list, by hand, or by a previous call
+// that deregistered it while failing to delete every file — see
+// git.removeWorktree) answers 200 with the path cleared rather than an error,
+// so the Move-to-Done flow is never blocked by a wrap-up step that has in fact
+// already happened. `leftover` says whether files survived on disk.
 app.post('/api/tasks/:id/worktree/remove', async (req: Request, res: Response) => {
   const task = getTask(req.params.id);
   if (!task) return err(res, 404, 'Task not found');
   if (runner.isRunning(task.id)) return err(res, 409, 'Stop the task first');
-  if (!task.worktreePath) return err(res, 400, 'Task has no worktree');
+  if (!task.worktreePath) return res.json({ ...task, leftover: false });
   try {
-    await git.removeWorktree(task.repoPath, task.worktreePath);
+    const { leftover } = await git.removeWorktree(task.repoPath, task.worktreePath);
     task.worktreePath = null;
     task.updatedAt = now();
     save();
     broadcast({ type: 'task', task });
-    res.json(task);
+    res.json({ ...task, leftover });
   } catch (e) {
     err(res, 500, (e as Error).message);
   }

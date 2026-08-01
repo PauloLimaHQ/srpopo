@@ -1364,9 +1364,15 @@ a.chip.pr:hover { border-color: currentColor; }
   background: var(--bg-card); font-size: 13px; color: var(--text-dim);
 }
 .done-progress-step .icon-slot { display: flex; align-items: center; justify-content: center; width: 12px; height: 12px; flex: none; }
+.done-progress-step .icon-slot .icon { width: 12px; height: 12px; }
+.done-progress-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .done-progress-step.active { color: var(--text); border-color: var(--accent); }
 .done-progress-step.done { color: var(--text-dim); }
 .done-progress-step.done .icon-slot { color: var(--green); }
+/* A step that failed keeps its row, with git/gh's own message under the label. */
+.done-progress-step.error { color: var(--red); border-color: var(--red); background: var(--red-soft); align-items: flex-start; }
+.done-progress-step.error .icon-slot { color: var(--red); margin-top: 3px; }
+.done-progress-error { font-size: 11px; color: var(--text-dim); word-break: break-word; }
 
 .field-label { font-size: 12px; color: var(--text-dim); }
 .icon-btn {

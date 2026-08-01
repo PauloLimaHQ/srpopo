@@ -78,7 +78,7 @@ interface Deps {
   // Merge the task's PR.
   merge(task: Task): Promise<{ ok: boolean; message?: string; reason?: string }>;
   // Drop a task's worktree once it's merged (best-effort, mirrors move-to-done).
-  removeWorktree(repoPath: string, wtPath: string): Promise<void>;
+  removeWorktree(repoPath: string, wtPath: string): Promise<unknown>;
   // Count of live `claude` children across the whole app (the concurrency cap
   // measures against this — the same notion index.ts's atCapacity uses).
   runningCount(): number;

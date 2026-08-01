@@ -311,6 +311,53 @@ test('git: listBranches/createBranch/checkoutBranch and worktree base off a chos
   await assert.rejects(() => git.createBranch(repo, 'feature/x'), 'creating an existing branch throws');
 });
 
+// The Move-to-Done flow removes a worktree right after merging, and `git
+// worktree remove` deregisters the worktree even when it can't delete every
+// file under it (a build daemon writing into the checkout is the usual
+// culprit) — exiting non-zero all the same. Treating that as a failure left the
+// task pointing at a worktree that no longer existed and blocked the move, and
+// the retry then hit "is not a working tree" instead.
+test('git: removeWorktree survives a partial delete and is idempotent', async () => {
+  const git = require('../server/git');
+  const { execFileSync } = require('child_process');
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'srpopo-wt-rm-'));
+  const g = (...args: string[]) => execFileSync('git', ['-C', repo, ...args]).toString().trim();
+  g('init', '-q');
+  g('config', 'user.email', 't@t.co');
+  g('config', 'user.name', 't');
+  g('commit', '-q', '--allow-empty', '-m', 'init');
+
+  // A clean removal reports nothing left on disk.
+  const clean = await git.addWorktree(repo, 'clean', 'slug');
+  assert.strictEqual(await git.isWorktreeRegistered(repo, clean.wtPath), true, 'the worktree is registered');
+  assert.deepStrictEqual(await git.removeWorktree(repo, clean.wtPath), { leftover: false }, 'nothing left behind');
+  assert.strictEqual(await git.isWorktreeRegistered(repo, clean.wtPath), false, 'and it is deregistered');
+
+  // Removing it again is a no-op rather than "is not a working tree".
+  assert.deepStrictEqual(await git.removeWorktree(repo, clean.wtPath), { leftover: false }, 'a second removal succeeds');
+
+  // A directory git can't empty (no write permission) makes `git worktree
+  // remove` exit non-zero *after* deregistering the worktree: the removal still
+  // counts, and the surviving files are reported rather than swallowed. Only
+  // assertable where file modes actually block a delete — not on Windows, and
+  // not as root, which ignores them.
+  const modesApply = process.platform !== 'win32' && (typeof process.getuid !== 'function' || process.getuid() !== 0);
+  if (modesApply) {
+    const stuck = await git.addWorktree(repo, 'stuck', 'slug');
+    const locked = path.join(stuck.wtPath, 'cache');
+    fs.mkdirSync(locked);
+    fs.writeFileSync(path.join(locked, 'f.bin'), 'x');
+    fs.chmodSync(locked, 0o500);
+    try {
+      assert.deepStrictEqual(await git.removeWorktree(repo, stuck.wtPath), { leftover: true }, 'leftover files are reported');
+      assert.strictEqual(await git.isWorktreeRegistered(repo, stuck.wtPath), false, 'the worktree is gone from git');
+    } finally {
+      fs.chmodSync(locked, 0o700);
+      fs.rmSync(stuck.wtPath, { recursive: true, force: true });
+    }
+  }
+});
+
 test('github: module exports prForTask, mergePrForTask, and a pure parsePrList helper', () => {
   const github = require('../server/github');
   assert.strictEqual(typeof github.prForTask, 'function', 'prForTask is exported');
