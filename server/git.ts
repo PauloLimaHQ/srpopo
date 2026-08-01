@@ -189,8 +189,46 @@ async function addWorktree(
   return { wtPath, branch };
 }
 
-async function removeWorktree(repoPath: string, wtPath: string): Promise<void> {
-  await git(repoPath, ['worktree', 'remove', '--force', wtPath]);
+// Whether git still tracks `wtPath` as a worktree of `repoPath` — the only
+// authority on "does this worktree still exist", since the directory can
+// outlive the registration (and vice versa).
+async function isWorktreeRegistered(repoPath: string, wtPath: string): Promise<boolean> {
+  try {
+    const out = await git(repoPath, ['worktree', 'list', '--porcelain']);
+    return out.split('\n').some((line) => line.startsWith('worktree ') && line.slice('worktree '.length).trim() === wtPath);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Drop a worktree, and report whether files were left behind on disk.
+ *
+ * `git worktree remove` deletes the checkout and *then* deregisters it, and it
+ * deregisters even when the delete only partly succeeded — a build daemon
+ * writing into the directory while git walks it (an `.nx`/`node_modules` cache
+ * is the classic one), a file git can't unlink — in which case it still exits
+ * non-zero with "failed to delete '<path>'". Treating that exit code as a
+ * failure was wrong twice over: the worktree really is gone from git, so the
+ * caller kept a `worktreePath` pointing at nothing, and the *next* attempt
+ * failed differently ("is not a working tree"), which is what made the
+ * Move-to-Done flow look like it was merging and removing twice.
+ *
+ * So: an error only counts as a failure while git still has the worktree
+ * registered (locked worktree, bad path, …). Otherwise the removal stands and
+ * we report `leftover: true` when the directory survived, so the caller can say
+ * so rather than pretend the disk is clean.
+ */
+async function removeWorktree(repoPath: string, wtPath: string): Promise<{ leftover: boolean }> {
+  try {
+    await git(repoPath, ['worktree', 'remove', '--force', wtPath]);
+  } catch (e) {
+    // Belt and braces for git versions that leave the admin entry behind when
+    // the checkout is already gone; harmless when there's nothing to prune.
+    await git(repoPath, ['worktree', 'prune']).catch(() => { /* best effort */ });
+    if (await isWorktreeRegistered(repoPath, wtPath)) throw e;
+  }
+  return { leftover: fs.existsSync(wtPath) };
 }
 
 // Merges `branch` straight into `baseBranch` inside `repoPath` with a plain
@@ -267,6 +305,7 @@ export {
   remoteWebUrl,
   addWorktree,
   removeWorktree,
+  isWorktreeRegistered,
   mergeBranch,
   worktreeStatus,
   listWorktrees,
