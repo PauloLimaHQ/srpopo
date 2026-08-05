@@ -53,6 +53,14 @@ const DEFAULT_SETTINGS: Settings = {
   // Off by default: the resource monitor polls the OS process table, so it only
   // samples once the user turns it on in Settings (see server/resources.ts).
   resourceMonitor: false,
+  // On by default: a task's session should see Sr. Popo's own MCP servers and
+  // nothing else. Inheriting the user's global MCP config costs a child process
+  // + a full tool schema set per session, multiplied by every parallel run.
+  isolateMcpServers: true,
+  // Auto by default: each `claude` child gets a heap budget derived from this
+  // machine's RAM and the parallel-session cap, so several sessions can't each
+  // size themselves against the whole machine and push it into swap.
+  sessionMemoryMb: 'auto',
 };
 
 let db: Db = { repos: [], tasks: [], groomings: [], orchestrations: [], settings: { ...DEFAULT_SETTINGS } };

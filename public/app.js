@@ -14,7 +14,7 @@
     addons: [],       // catalog of optional task behaviors (from /api/addons)
     personas: [],     // catalog of expert personas (from /api/personas)
     plugins: [],      // marketplace catalog (from /api/plugins)
-    settings: { notifications: true, sounds: true, maxParallelSessions: 3, installedPlugins: [], mergeStrategy: 'merge', minMergeGrade: 4, remoteAccess: false, remoteAccessConfigured: false, customModels: [] }, // user preferences (from /api/settings)
+    settings: { notifications: true, sounds: true, maxParallelSessions: 3, installedPlugins: [], mergeStrategy: 'merge', minMergeGrade: 4, remoteAccess: false, remoteAccessConfigured: false, customModels: [], isolateMcpServers: true, sessionMemoryMb: 'auto', sessionMemoryAutoMb: 0 }, // user preferences (from /api/settings)
     filters: { search: '' }, // board filters (free-text only — repo scope comes from state.view)
     view: { mode: 'super' }, // { mode: 'super' } | { mode: 'workspace', repoId }
     prByTask: new Map(), // taskId -> 'loading' | { pr, reason } from /api/tasks/:id/pr
@@ -4901,6 +4901,18 @@
     }
   }
 
+  // The per-session memory budget + MCP isolation controls. "Auto" is labeled
+  // with what it actually works out to on this machine (the server derives it
+  // from total RAM and the parallel-session cap), so the choice is legible.
+  function renderSessionMemorySetting() {
+    const auto = state.settings.sessionMemoryAutoMb;
+    const autoOption = $('#setting-session-memory').querySelector('option[value="auto"]');
+    autoOption.textContent = auto ? `Auto (${(auto / 1024).toFixed(auto % 1024 ? 1 : 0)} GB per session)` : 'Auto';
+    const value = state.settings.sessionMemoryMb;
+    $('#setting-session-memory').value = value === undefined || value === 'auto' ? 'auto' : String(value);
+    $('#setting-isolate-mcp').checked = state.settings.isolateMcpServers !== false;
+  }
+
   // `section` may be a string ('general' | 'plugins') or a DOM event (from the
   // header button); anything non-string falls back to the General section.
   function openSettingsModal(section) {
@@ -4914,6 +4926,7 @@
     $('#setting-assign-pr-to-self').checked = !!state.settings.assignPrToSelf;
     $('#setting-memory').checked = !!state.settings.memory;
     $('#setting-resource-monitor').checked = resourceMonitorOn();
+    renderSessionMemorySetting();
     $('#setting-theme').value = currentTheme();
     renderEditorSetting();
     renderPlugins();
@@ -5080,7 +5093,17 @@
     const n = Math.min(20, Math.max(1, Math.trunc(Number(e.target.value)) || 1));
     e.target.value = n;
     await saveSettings({ maxParallelSessions: n });
+    // "Auto" is derived from this cap, so its label moves with it.
+    renderSessionMemorySetting();
     renderBoard();
+  });
+  $('#setting-session-memory').addEventListener('change', async (e) => {
+    const value = e.target.value === 'auto' ? 'auto' : Number(e.target.value);
+    await saveSettings({ sessionMemoryMb: value });
+    renderSessionMemorySetting();
+  });
+  $('#setting-isolate-mcp').addEventListener('change', async (e) => {
+    await saveSettings({ isolateMcpServers: e.target.checked });
   });
   $('#setting-merge-strategy').addEventListener('change', async (e) => {
     await saveSettings({ mergeStrategy: e.target.value });
@@ -5553,6 +5576,7 @@
           $('#setting-assign-pr-to-self').checked = !!state.settings.assignPrToSelf;
           $('#setting-memory').checked = !!state.settings.memory;
           $('#setting-resource-monitor').checked = resourceMonitorOn();
+          renderSessionMemorySetting();
           updateNotifNote();
           renderEditorSetting();
           renderPlugins();

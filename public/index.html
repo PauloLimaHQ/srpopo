@@ -728,6 +728,35 @@
                 <input id="setting-max-parallel" type="number" min="1" max="20" step="1" />
               </label>
               <p class="addon-hint">Caps how many agent sessions run at once so they don't starve each other of CPU. 3 is a good default on a typical laptop.</p>
+              <label>Per-session memory budget <span class="field-hint">— how much RAM one agent session may size itself against</span>
+                <select id="setting-session-memory">
+                  <option value="auto">Auto</option>
+                  <option value="1024">1 GB</option>
+                  <option value="2048">2 GB</option>
+                  <option value="4096">4 GB</option>
+                  <option value="6144">6 GB</option>
+                  <option value="8192">8 GB</option>
+                  <option value="0">No budget</option>
+                </select>
+              </label>
+              <p class="addon-hint">The <code>claude</code> CLI grows its memory to fit the machine it thinks it has,
+                so several parallel sessions each plan to use all of it — which is how a busy board ends up swapping
+                and freezing. This hands each session a budget instead. <strong>Auto</strong> divides a share of this
+                machine's RAM by the cap above.</p>
+            </fieldset>
+            <fieldset class="addons">
+              <legend>Agent isolation</legend>
+              <label class="check addon">
+                <input type="checkbox" id="setting-isolate-mcp" />
+                <span class="addon-text">
+                  <span class="addon-label">Don't load my own MCP servers into agent sessions</span>
+                  <span class="addon-hint">Every session Sr. Popo spawns otherwise connects to all the MCP servers
+                    your <code>claude</code> install is configured with — a child process each for local ones, plus
+                    every one of their tools described in every request. Sessions still get the servers Sr. Popo
+                    registers itself (tool approvals, and the board tools an orchestration drives). Turn this off if
+                    a task genuinely needs your own MCP servers.</span>
+                </span>
+              </label>
             </fieldset>
             <fieldset class="addons">
               <legend>Resource monitor</legend>

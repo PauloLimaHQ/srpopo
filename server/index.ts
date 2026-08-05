@@ -239,6 +239,12 @@ function publicSettings(): PublicSettings {
     memory: !!db.settings.memory,
     defaultEditor: db.settings.defaultEditor || '',
     resourceMonitor: !!db.settings.resourceMonitor,
+    // On unless explicitly turned off, matching the arg builder's own reading of
+    // the flag (server/agents/claude.ts) so the checkbox can't disagree with it.
+    isolateMcpServers: db.settings.isolateMcpServers !== false,
+    sessionMemoryMb: db.settings.sessionMemoryMb ?? 'auto',
+    // Derived, so the board can show what "Auto" means on this machine today.
+    sessionMemoryAutoMb: runner.autoSessionMemoryMb(),
   };
 }
 
@@ -540,6 +546,25 @@ app.patch('/api/settings', (req: Request, res: Response) => {
       return err(res, 400, 'minMergeGrade must be a whole number between 1 and 5');
     }
     db.settings.minMergeGrade = grade;
+  }
+  // Whether a spawned session inherits the user's own MCP servers. On by default;
+  // turning it off is the escape hatch for a workflow that needs them (see
+  // mcpIsolationArgs in server/agents/claude.ts).
+  if ('isolateMcpServers' in req.body) db.settings.isolateMcpServers = !!req.body.isolateMcpServers;
+  // The per-session heap budget: 'auto' (derived from this machine), 0 (no
+  // budget), or a size in MB. The floor is deliberately generous — a too-small
+  // budget would fail every run, which is worse than the problem it solves.
+  if ('sessionMemoryMb' in req.body) {
+    const raw = req.body.sessionMemoryMb;
+    if (raw === 'auto') {
+      db.settings.sessionMemoryMb = 'auto';
+    } else {
+      const mb = Math.trunc(Number(raw));
+      if (!Number.isFinite(mb) || mb < 0 || (mb > 0 && mb < 512) || mb > 65536) {
+        return err(res, 400, "sessionMemoryMb must be 'auto', 0 (no budget), or between 512 and 65536 MB");
+      }
+      db.settings.sessionMemoryMb = mb;
+    }
   }
   if ('autoResolveConflicts' in req.body) db.settings.autoResolveConflicts = !!req.body.autoResolveConflicts;
   if ('assignPrToSelf' in req.body) db.settings.assignPrToSelf = !!req.body.assignPrToSelf;

@@ -925,6 +925,73 @@ test('runner: promptPermissions wires the approval MCP bridge (and skips it on b
   assert.ok(!off.includes('--permission-prompt-tool'), 'no prompt tool when not opted in');
 });
 
+test('claude adapter: every session is isolated from the user\'s own MCP servers', () => {
+  const runner = require('../server/runner');
+  const claude = require('../server/agents/claude');
+  const store = require('../server/store');
+
+  assert.strictEqual(store.DEFAULT_SETTINGS.isolateMcpServers, true, 'MCP isolation defaults on');
+
+  const prev = store.db.settings.isolateMcpServers;
+  try {
+    store.db.settings.isolateMcpServers = true;
+    // Each builder isolates: a task keeps its own permission bridge, an
+    // orchestration its board server, and grooming/review end up with none.
+    const task = runner.buildArgs({ id: 'abc123', permissionMode: 'acceptEdits', promptPermissions: true }, false);
+    assert.ok(task.includes('--strict-mcp-config'), 'a dispatched task is isolated');
+    assert.ok(task.includes('--mcp-config'), 'and still registers the permission bridge');
+    assert.ok(claude.groomArgs({ model: 'default', sessionId: null }).includes('--strict-mcp-config'), 'grooming is isolated');
+    assert.ok(claude.reviewArgs({ model: 'default', agent: 'claude' }).includes('--strict-mcp-config'), 'code review is isolated');
+    const orch = claude.orchestrateArgs({ model: 'default', sessionId: null }, false);
+    assert.ok(orch.includes('--strict-mcp-config'), 'an orchestration is isolated');
+    assert.ok(orch.includes('--mcp-config'), 'and still registers the board server');
+
+    // The escape hatch: off means the flag is gone everywhere, nothing else moves.
+    store.db.settings.isolateMcpServers = false;
+    assert.ok(!runner.buildArgs({ id: 'abc123', permissionMode: 'acceptEdits' }, false).includes('--strict-mcp-config'));
+    assert.ok(!claude.groomArgs({ model: 'default', sessionId: null }).includes('--strict-mcp-config'));
+    assert.ok(!claude.reviewArgs({ model: 'default', agent: 'claude' }).includes('--strict-mcp-config'));
+    assert.ok(!claude.orchestrateArgs({ model: 'default', sessionId: null }, false).includes('--strict-mcp-config'));
+  } finally {
+    store.db.settings.isolateMcpServers = prev;
+  }
+});
+
+test('claude adapter: a session gets a JS heap budget (the CLI is a Bun binary, not Node)', () => {
+  const runner = require('../server/runner');
+  const store = require('../server/store');
+  const prev = store.db.settings.sessionMemoryMb;
+  const prevCap = store.db.settings.maxParallelSessions;
+  try {
+    assert.strictEqual(store.DEFAULT_SETTINGS.sessionMemoryMb, 'auto', 'the budget defaults to auto');
+
+    store.db.settings.sessionMemoryMb = 2048;
+    const env = runner.buildTaskEnv('default');
+    assert.strictEqual(env.BUN_JSC_forceRAMSize, String(2048 * 1024 * 1024), 'sized against the budget');
+    assert.strictEqual(env.BUN_JSC_gcMaxHeapSize, String(4096 * 1024 * 1024), 'with a ceiling above it');
+    // Invariant #2 + #3 still hold with the budget layered on.
+    assert.strictEqual(env.ANTHROPIC_API_KEY, undefined, 'no API key reaches the child');
+    assert.strictEqual(env.CLAUDECODE, undefined, 'nested-session markers stay stripped');
+
+    // Auto scales down as more sessions share the machine, and stays in bounds.
+    store.db.settings.sessionMemoryMb = 'auto';
+    store.db.settings.maxParallelSessions = 1;
+    const roomy = runner.autoSessionMemoryMb();
+    store.db.settings.maxParallelSessions = 8;
+    const crowded = runner.autoSessionMemoryMb();
+    assert.ok(roomy >= crowded, 'a crowded board budgets each session less');
+    assert.ok(crowded >= 1024 && roomy <= 6144, 'auto stays between the 1 GB floor and the 6 GB ceiling');
+    assert.strictEqual(runner.buildTaskEnv('default').BUN_JSC_forceRAMSize, String(runner.autoSessionMemoryMb() * 1024 * 1024));
+
+    // Off means no budget at all — the old behavior, for anyone who wants it.
+    store.db.settings.sessionMemoryMb = 0;
+    assert.strictEqual(runner.buildTaskEnv('default').BUN_JSC_forceRAMSize, undefined, 'no budget when turned off');
+  } finally {
+    store.db.settings.sessionMemoryMb = prev;
+    store.db.settings.maxParallelSessions = prevCap;
+  }
+});
+
 test('usage: applyResult records a per-model ledger row and accumulates task.modelUsage', () => {
   const usage = require('../server/usage');
   const store = require('../server/store');
@@ -3312,6 +3379,44 @@ test('resources: attribute() splits the tree — each agent subtree to its sessi
     assert.strictEqual(totals.cpuPercent, 19.3, '(10+2+40+20+4+1) / 4 cores');
   } finally {
     store.db.tasks = store.db.tasks.filter((t: { id: string }) => t.id !== task.id);
+  }
+});
+
+test('index: PATCH /api/settings round-trips the session budget + MCP isolation and rejects nonsense', async () => {
+  const store = require('../server/store');
+  const index = require('../server/index');
+  const runner = require('../server/runner');
+  const prevMem = store.db.settings.sessionMemoryMb;
+  const prevIso = store.db.settings.isolateMcpServers;
+  const { server, port } = await index.start(0);
+  const base = `http://127.0.0.1:${port}`;
+  const patch = (body: unknown) => fetch(`${base}/api/settings`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  try {
+    const shown = await (await fetch(`${base}/api/settings`)).json();
+    assert.strictEqual(shown.sessionMemoryMb, 'auto', 'the board sees the stored value');
+    assert.strictEqual(shown.sessionMemoryAutoMb, runner.autoSessionMemoryMb(),
+      'plus what auto resolves to on this machine, so the UI can label it');
+    assert.strictEqual(shown.isolateMcpServers, true, 'isolation is on by default');
+
+    const set = await (await patch({ sessionMemoryMb: 4096, isolateMcpServers: false })).json();
+    assert.strictEqual(set.sessionMemoryMb, 4096);
+    assert.strictEqual(set.isolateMcpServers, false);
+    assert.strictEqual(runner.buildTaskEnv('default').BUN_JSC_forceRAMSize, String(4096 * 1024 * 1024),
+      'and the next session is spawned with it');
+
+    assert.strictEqual((await patch({ sessionMemoryMb: 0 })).status, 200, '0 (no budget) is allowed');
+    assert.strictEqual((await patch({ sessionMemoryMb: 'auto' })).status, 200, "'auto' is allowed");
+    // A budget too small to run anything is worse than none — rejected, not clamped.
+    assert.strictEqual((await patch({ sessionMemoryMb: 64 })).status, 400, 'an unusably small budget is rejected');
+    assert.strictEqual((await patch({ sessionMemoryMb: -1 })).status, 400, 'a negative budget is rejected');
+    assert.strictEqual((await patch({ sessionMemoryMb: 'lots' })).status, 400, 'garbage is rejected');
+    assert.strictEqual(store.db.settings.sessionMemoryMb, 'auto', 'a rejected patch changes nothing');
+  } finally {
+    await new Promise<void>((r) => server.close(() => r()));
+    store.db.settings.sessionMemoryMb = prevMem;
+    store.db.settings.isolateMcpServers = prevIso;
   }
 });
 

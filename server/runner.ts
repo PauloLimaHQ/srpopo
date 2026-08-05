@@ -870,6 +870,10 @@ export {
 export const {
   buildArgs,
   buildTaskEnv,
+  memoryEnv,
+  sessionMemoryMb,
+  autoSessionMemoryMb,
+  mcpIsolationArgs,
   childEnv,
   normalizeAllowedTools,
   mergeAllowedTools,

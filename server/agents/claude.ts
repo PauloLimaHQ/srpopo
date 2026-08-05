@@ -7,6 +7,7 @@
  * seam) leaves Claude runs byte-for-byte identical while letting other backends
  * plug in — see server/agents/codex.ts.
  */
+import os from 'os';
 import path from 'path';
 
 import { db } from '../store';
@@ -89,11 +90,64 @@ function modelEnv(model: string | undefined): NodeJS.ProcessEnv {
   return out;
 }
 
-// The full environment a run's `claude` child gets: the base childEnv() plus any
-// custom-model vars (modelEnv) on top. ANTHROPIC_API_KEY is dropped by both, so a
-// custom model can never restore it — invariant #2 holds regardless of model.
+// Bounds on the derived ('auto') per-session heap budget. The floor keeps a
+// session workable on a small machine; the ceiling stops a big machine from
+// handing one session more than it could ever sensibly need.
+const AUTO_MEMORY_MIN_MB = 1024;
+const AUTO_MEMORY_MAX_MB = 6144;
+// Share of total RAM the agent sessions may plan to use between them. The rest
+// is the OS, the app itself, the user's editor and their running dev servers.
+const AUTO_MEMORY_SHARE = 0.4;
+
+// What `sessionMemoryMb: 'auto'` works out to on this machine: an equal slice of
+// AUTO_MEMORY_SHARE of RAM for each of the maxParallelSessions slots, clamped.
+function autoSessionMemoryMb(): number {
+  const totalMb = os.totalmem() / (1024 * 1024);
+  const slots = Math.max(1, Math.trunc(db.settings.maxParallelSessions) || 1);
+  const share = (totalMb * AUTO_MEMORY_SHARE) / slots;
+  return Math.round(Math.min(AUTO_MEMORY_MAX_MB, Math.max(AUTO_MEMORY_MIN_MB, share)));
+}
+
+// The configured per-session budget in MB, resolved to a number. 0 means "no
+// budget" — either because the user turned it off or because the stored value is
+// nonsense, which should never silently become a tiny cap that fails every run.
+function sessionMemoryMb(): number {
+  const setting = db.settings.sessionMemoryMb;
+  if (setting === 'auto' || setting === undefined) return autoSessionMemoryMb();
+  const mb = Math.trunc(Number(setting));
+  return Number.isFinite(mb) && mb > 0 ? mb : 0;
+}
+
+/*
+ * The heap budget handed to a `claude` child.
+ *
+ * The CLI ships as a Bun (JavaScriptCore) binary, so the Node knobs — NODE_OPTIONS,
+ * --max-old-space-size — do nothing to it. JSC instead sizes its GC heuristics
+ * against the RAM it believes the machine has, which means every parallel session
+ * independently assumes it may grow into all of it; that is how a board full of
+ * running tasks ends up swapping. `BUN_JSC_forceRAMSize` tells each child how much
+ * RAM to size itself against (the working lever: it collects earlier and more
+ * often), and `BUN_JSC_gcMaxHeapSize` sets a ceiling above it as a backstop.
+ *
+ * Both names are validated by the binary (an unknown BUN_JSC_* var makes it exit),
+ * so this is a supported knob, not a guess. An explicit BUN_JSC_* already in the
+ * environment always wins — someone tuning by hand outranks the setting.
+ */
+function memoryEnv(): NodeJS.ProcessEnv {
+  const mb = sessionMemoryMb();
+  if (mb <= 0) return {};
+  const out: NodeJS.ProcessEnv = {};
+  if (!process.env.BUN_JSC_forceRAMSize) out.BUN_JSC_forceRAMSize = String(mb * 1024 * 1024);
+  if (!process.env.BUN_JSC_gcMaxHeapSize) out.BUN_JSC_gcMaxHeapSize = String(mb * 2 * 1024 * 1024);
+  return out;
+}
+
+// The full environment a run's `claude` child gets: the base childEnv(), the heap
+// budget, plus any custom-model vars (modelEnv) on top. ANTHROPIC_API_KEY is
+// dropped by childEnv and modelEnv both, so a custom model can never restore it —
+// invariant #2 holds regardless of model.
 function buildTaskEnv(model: string | undefined): NodeJS.ProcessEnv {
-  return { ...childEnv(), ...modelEnv(model) };
+  return { ...childEnv(), ...memoryEnv(), ...modelEnv(model) };
 }
 
 // Normalize a free-text allow-list into a clean comma-joined string for
@@ -149,6 +203,28 @@ function effectiveAllowedTools(task: Partial<Task>): string {
   );
 }
 
+/*
+ * `--strict-mcp-config`: only the MCP servers we passed on `--mcp-config` load,
+ * never the user's global/project ones.
+ *
+ * Without it, EVERY spawned session also connects to whatever the developer has
+ * configured in their own `claude` install — each stdio server is another child
+ * process per session, each remote one another connection, and all of their tool
+ * schemas ride along in every single request. Multiplied by maxParallelSessions
+ * that is a large, invisible chunk of what an agent session costs this machine.
+ * A Sr. Popo run is a headless, scripted session with an explicit allow-list; the
+ * MCP servers it is meant to use are the ones we register ourselves.
+ *
+ * Every arg builder ends with this so the behavior is uniform: a task keeps the
+ * permission bridge, an orchestration keeps the board server, and a grooming or
+ * review session (which registers nothing) ends up with no MCP servers at all.
+ * Settings > isolateMcpServers turns it off for anyone who does want the global
+ * set inherited.
+ */
+function mcpIsolationArgs(): string[] {
+  return db.settings.isolateMcpServers === false ? [] : ['--strict-mcp-config'];
+}
+
 function buildArgs(task: Partial<Task>, resume: boolean): string[] {
   const args = ['-p', '--output-format', 'stream-json', '--verbose'];
   if (task.model && task.model !== 'default') args.push('--model', task.model);
@@ -162,6 +238,7 @@ function buildArgs(task: Partial<Task>, resume: boolean): string[] {
     args.push('--permission-prompt-tool', PERMISSION_TOOL);
     args.push('--mcp-config', permissionMcpConfig(task));
   }
+  args.push(...mcpIsolationArgs());
   if (resume && task.sessionId) args.push('--resume', task.sessionId);
   return args;
 }
@@ -178,6 +255,7 @@ function groomArgs(grooming: Pick<Grooming, 'model' | 'sessionId'>, resume = fal
   const args = ['-p', '--output-format', 'stream-json', '--verbose'];
   if (grooming.model && grooming.model !== 'default') args.push('--model', grooming.model);
   args.push('--allowedTools', RESEARCH_TOOLS);
+  args.push(...mcpIsolationArgs());
   if (resume && grooming.sessionId) args.push('--resume', grooming.sessionId);
   return args;
 }
@@ -204,6 +282,7 @@ function reviewArgs(task: Pick<Task, 'model' | 'agent'>): string[] {
   // not a valid `--model` here — those fall back to the CLI's default model.
   if (task.model && task.model !== 'default' && (task.agent || 'claude') === 'claude') args.push('--model', task.model);
   args.push('--allowedTools', mergeAllowedTools(RESEARCH_TOOLS, REVIEW_TOOLS));
+  args.push(...mcpIsolationArgs());
   return args;
 }
 
@@ -238,6 +317,7 @@ function orchestrateArgs(orchestration: Pick<Orchestration, 'model' | 'sessionId
   if (orchestration.model && orchestration.model !== 'default') args.push('--model', orchestration.model);
   args.push('--allowedTools', mergeAllowedTools(RESEARCH_TOOLS, BOARD_TOOLS));
   args.push('--mcp-config', boardMcpConfig());
+  args.push(...mcpIsolationArgs());
   if (resume && orchestration.sessionId) args.push('--resume', orchestration.sessionId);
   return args;
 }
@@ -317,6 +397,10 @@ export {
   resolvedBaseUrl,
   childEnv,
   buildTaskEnv,
+  memoryEnv,
+  sessionMemoryMb,
+  autoSessionMemoryMb,
+  mcpIsolationArgs,
   buildArgs,
   groomArgs,
   orchestrateArgs,

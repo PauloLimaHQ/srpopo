@@ -430,6 +430,37 @@ task/grooming/orchestration/ask card.
 
 No new runtime dependency, nothing persisted, nothing leaves the machine (invariant #4).
 
+## What a session is allowed to cost this machine
+
+Running many agents at once is the point, so a single session must not be free to
+grow into the whole machine. Two controls in `server/agents/claude.ts` bound what
+one `claude` child costs; both apply to *every* Claude session (dispatch, grooming,
+Code Review, orchestration, memory distillation, Ask), and both are in Settings →
+General → Concurrency / Agent isolation.
+
+- **Per-session memory budget** (`Settings.sessionMemoryMb`, default `'auto'`).
+  The `claude` CLI ships as a **Bun/JavaScriptCore binary, not Node** — `NODE_OPTIONS`
+  and `--max-old-space-size` do nothing to it, and JSC sizes its GC heuristics against
+  the RAM it thinks the machine has. Every parallel session therefore assumes it may
+  grow into all of it, which is how a busy board ends up swapping. `memoryEnv()` hands
+  each child `BUN_JSC_forceRAMSize` (the working lever — it collects earlier) plus
+  `BUN_JSC_gcMaxHeapSize` at 2× as a ceiling. Both names are validated by the binary
+  (an unknown `BUN_JSC_*` makes it exit), so they're supported knobs, not guesses.
+  `'auto'` is 40% of RAM split across `maxParallelSessions`, clamped to 1–6 GB; `0`
+  turns the budget off; an explicit `BUN_JSC_*` in the environment always wins.
+- **MCP isolation** (`Settings.isolateMcpServers`, default **on**). Every arg builder
+  ends with `--strict-mcp-config` (`mcpIsolationArgs()`), so a session loads only the
+  MCP servers *we* register — the permission bridge for a task, the board server for an
+  orchestration, none at all for grooming and Code Review. Without it each session also
+  connects to the developer's own global/project MCP servers: a child process per local
+  one, per session, and every one of their tools described in every request. Measured on
+  a typical install, that was **122 tools from 7 servers vs 29 with isolation on**.
+  Turning it off is the escape hatch for a task that genuinely needs them.
+
+Neither is a hard stop — a runaway session is still a runaway session, just a bounded
+one. Killing it is `runner.stop`'s job, and the resource monitor above is where you
+watch for it.
+
 ## MCP server: drive the board from outside
 
 Sr. Popo exposes its own board as an **MCP server** for as long as it's running, so

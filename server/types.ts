@@ -84,6 +84,23 @@ export interface Settings {
   // process table on a poll, so nothing runs until the user asks for it. When
   // on, the board shows a top-bar chip with a breakdown panel behind it.
   resourceMonitor: boolean;
+  // When on (the default), every spawned `claude` session runs with
+  // `--strict-mcp-config`, so it sees only the MCP servers Sr. Popo registers
+  // itself (the permission bridge, the board server) and none of the user's
+  // global/project ones. Those are loaded into EVERY session otherwise — each
+  // stdio server is another child process per session, and their tool schemas
+  // ride along in every request, which is a large part of what makes parallel
+  // sessions cost so much memory. See server/agents/claude.ts.
+  isolateMcpServers: boolean;
+  // Per-session JS heap budget for `claude` children, in MB. The CLI is a
+  // Bun/JavaScriptCore binary whose GC sizes itself against *total machine RAM*,
+  // so N parallel sessions each assume they may grow into the whole machine;
+  // this hands each one a budget instead (BUN_JSC_forceRAMSize +
+  // BUN_JSC_gcMaxHeapSize — see memoryEnv in server/agents/claude.ts).
+  //   'auto' — derive it from this machine's RAM and maxParallelSessions (default)
+  //   0      — no budget (the old behavior)
+  //   n      — that many MB
+  sessionMemoryMb: number | 'auto';
 }
 
 // The redacted, board-facing view of Settings. Omits the raw Linear token and
@@ -109,6 +126,11 @@ export interface PublicSettings {
   memory: boolean;
   defaultEditor: string;
   resourceMonitor: boolean;
+  isolateMcpServers: boolean;
+  sessionMemoryMb: number | 'auto';
+  // What 'auto' resolves to on this machine right now (MB), so the board can
+  // label the Auto option honestly instead of guessing. Derived, never stored.
+  sessionMemoryAutoMb: number;
 }
 
 // A marketplace plugin as the UI lists it. The full catalog lives in
