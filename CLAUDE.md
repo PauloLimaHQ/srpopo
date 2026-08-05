@@ -32,6 +32,7 @@ static with **no build step** (see Conventions).
 | `server/agents/codex.ts` | `CodexAdapter`: the OpenAI Codex CLI backend (`codex exec --json`, stdin prompt, sandbox/approval mapping, `OPENAI_API_KEY` stripping, JSONL `parseLine`). |
 | `server/agents/grok.ts` | `GrokAdapter`: the xAI Grok CLI backend (`grok --output-format streaming-json`, **temp-file prompt**, permission-mode mapping, `--allow` rules, `XAI_API_KEY` stripping, NDJSON `parseLine`). |
 | `server/agents/env.ts` | Shared nested-session env scrubbing every adapter builds on. |
+| `server/spawnCompat.ts` | `spawnCompat`: a `child_process.spawn` drop-in that also launches `.cmd`/`.bat` shims on Windows (npm-installed CLIs and editor launchers) by routing through a correctly-escaped `cmd.exe /d /s /c` — used everywhere a binary is launched by bare name instead of the raw `spawn`. |
 | `server/store.ts` | JSON persistence (`db.json`) + append-only per-task NDJSON logs. |
 | `server/tasks.ts` | Task lifecycle service (`createTask`/`dispatchTask` + capacity gate) shared by the REST API and the MCP server, so both queue/run tasks identically. |
 | `server/mcp.ts` | **Board MCP server** (see "MCP server" below). Streamable-HTTP MCP endpoint mounted on the Express app at `POST /mcp` so outside MCP clients can drive the board while Sr. Popo runs. |
@@ -368,13 +369,22 @@ handshake against a real run — the smoke suite covers the pieces but not the l
 
 ## Workspace quick actions (terminal / file manager / IDE)
 
-The workspace header carries a row of "work on this here" escape hatches, all acting on a
+The workspace header carries the "work on this here" escape hatches, all acting on a
 **checkout** — the repo root, or one of the live worktrees listed in the Workspace details
 modal (each row has the same three buttons):
 
 - **Terminal** — the in-app shell (`server/terminal.ts`), docked at the bottom.
 - **Reveal** — the OS file manager (`open` / `explorer` / `xdg-open`).
 - **Open in IDE** — VS Code or a JetBrains IDE.
+
+**How they're surfaced.** Only **Terminal** is a labeled button in the header; Reveal, Open
+in IDE, Project memory and Workspace details live behind the adjacent **"…" overflow menu**
+(`#workspace-menu`, a `.quick-menu` like the "New Task ▾" one), where each gets a written
+name and a line of what it does. They were once five unlabeled glyphs fused into a segmented
+pill, which read as a toggle group and said nothing about what any of them did — don't put
+a new workspace action back into the header as a bare icon; add a `.quick-menu-item` to that
+menu (and, if it's worth a keystroke, a `paletteCommands()` entry under `state.view.repoId`,
+where all five are also reachable from ⌘K).
 
 The last two live in `server/desktop.ts` and are exposed as `POST /api/repos/:id/reveal`
 and `POST /api/repos/:id/editor` (plus `GET /api/desktop`, which tells the board what this

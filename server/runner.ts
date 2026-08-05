@@ -1,7 +1,7 @@
-import { spawn } from 'child_process';
 import type { ChildProcess } from 'child_process';
 import readline from 'readline';
 
+import { spawnCompat } from './spawnCompat';
 import { db, save, now, appendLog } from './store';
 import { broadcast } from './bus';
 import * as groomer from './groomer';
@@ -186,7 +186,7 @@ function launch<T extends SessionRecord>(rec: T, { adapter, args, workDir, promp
 
   let child: RunningChild;
   try {
-    child = spawn(adapter.bin, delivery ? [...args, ...delivery.args] : args, {
+    child = spawnCompat(adapter.bin, delivery ? [...args, ...delivery.args] : args, {
       cwd: workDir,
       env: adapter.childEnv(rec.model),
       stdio: ['pipe', 'pipe', 'pipe'],

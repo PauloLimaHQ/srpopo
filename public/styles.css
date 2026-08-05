@@ -379,6 +379,9 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
   display: flex; align-items: center; gap: 12px;
   padding: 12px 24px; border-bottom: 1px solid var(--border); background: var(--bg-raised);
 }
+/* One control height across the whole row — Back, Autonomous and the workspace
+   actions used to be three different sizes stacked side by side. */
+.workspace-header .btn { min-height: 32px; }
 .workspace-header-title { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; position: relative; }
 .workspace-title { font-family: var(--serif); font-size: 16px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -387,7 +390,7 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
    glance instead of blending into the icon row next to it. */
 .autonomous-toggle {
   display: inline-flex; align-items: center; gap: 7px; flex: none;
-  padding: 6px 13px; border-radius: 20px; cursor: pointer;
+  min-height: 32px; padding: 6px 13px; border-radius: 20px; cursor: pointer;
   border: 1px solid var(--border); background: var(--bg-card); color: var(--text-dim);
   font: inherit; font-size: 12px; font-weight: 600; white-space: nowrap;
   transition: background .15s, border-color .15s, color .15s;
@@ -402,18 +405,15 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
   animation: autonomous-pulse 1.4s ease-in-out infinite;
 }
 
-/* ── workspace quick-action group (memory/terminal/reveal/IDE/info) ──
-   A single bordered pill with hairline dividers reads as one toolbar instead
-   of five loose icon buttons floating in the header. */
-.workspace-tools {
-  display: flex; align-items: stretch; flex: none;
-  background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px;
-  overflow: hidden;
-}
-.workspace-tools .btn.icon {
-  border: none; border-radius: 0; background: none; padding: 7px 10px;
-}
-.workspace-tools .btn.icon + .btn.icon { border-left: 1px solid var(--border); }
+/* ── workspace actions (Terminal + the "…" overflow menu) ──
+   Five undifferentiated glyphs fused into one segmented pill read as a toggle
+   group and told you nothing about what they did. Instead: the one in-flow
+   action keeps a written label, everything else moves behind a standard
+   overflow menu where each entry gets a name and a hint. */
+.workspace-tools { display: flex; align-items: center; gap: 6px; flex: none; }
+.workspace-tools .btn { padding: 6px 13px; }
+.workspace-tools .btn.icon { padding: 6px 9px; }
+.workspace-tools .btn[aria-expanded="true"] { background: var(--bg-hover); border-color: var(--card-hover-border); }
 
 /* ── responsive header: collapse text labels to icon-only under medium
    widths so the toolbar never wraps or overflows as the window is resized
@@ -427,7 +427,10 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
   .btn-collapsible { padding: 8px 10px; }
   .workspace-header { padding: 10px 16px; gap: 8px; }
   .autonomous-toggle .btn-label { display: none; }
-  .autonomous-toggle { padding: 7px 9px; }
+  .autonomous-toggle { padding: 6px 9px; }
+  /* Terminal collapses to its glyph like the top bar's buttons; it keeps its
+     tooltip/aria-label, and every other action is named in the "…" menu. */
+  .workspace-tools .btn-collapsible { padding: 6px 9px; }
 }
 
 @media (max-width: 620px) {
@@ -513,7 +516,9 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
 .worktree-dot.dirty { background: var(--accent); }
 .worktree-branch { font-family: var(--mono); font-size: 11px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .worktree-task-link { cursor: pointer; }
-.worktree-row .btn { flex: none; padding: 3px 8px; font-size: 11px; }
+/* The same three checkout actions, one worktree per row. They stay icon-only —
+   the row is a dense list — but not so small they're hard to hit. */
+.worktree-row .btn { flex: none; padding: 5px 9px; font-size: 11px; min-height: 26px; }
 
 /* ── board ── */
 .board {

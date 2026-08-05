@@ -4,10 +4,10 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import crypto from 'crypto';
-import { execFile } from 'child_process';
 import type { Server } from 'http';
 import type { AddressInfo } from 'net';
 
+import { spawnCompat } from './spawnCompat';
 import { db, save, id, now, readLog, removeLog, getTask, getRepo, getGrooming, getOrchestration } from './store';
 import { broadcast, sse } from './bus';
 import { appRoot } from './paths';
@@ -444,9 +444,31 @@ function runGrooming(grooming: Grooming, resumePrompt?: string): Grooming {
 
 // Probe one agent CLI for its version; resolves to null when it isn't installed
 // (or doesn't answer), so a missing backend is a fact rather than an error.
+// spawnCompat (not execFile) so this works on Windows, where these CLIs are
+// `.cmd` shims execFile can't launch directly.
 function probeAgentBin(bin: string): Promise<string | null> {
   return new Promise((resolve) => {
-    execFile(bin, ['--version'], { timeout: 10000 }, (e, stdout) => resolve(e ? null : stdout.trim()));
+    let out = '';
+    let done = false;
+    const finish = (value: string | null) => {
+      if (done) return;
+      done = true;
+      resolve(value);
+    };
+    let child;
+    try {
+      child = spawnCompat(bin, ['--version'], { stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch {
+      finish(null);
+      return;
+    }
+    const timer = setTimeout(() => {
+      child.kill();
+      finish(null);
+    }, 10000);
+    child.stdout?.on('data', (chunk) => { out += chunk; });
+    child.on('error', () => { clearTimeout(timer); finish(null); });
+    child.on('close', (code) => { clearTimeout(timer); finish(code === 0 ? out.trim() : null); });
   });
 }
 

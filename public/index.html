@@ -111,13 +111,48 @@
     </div>
     <button class="autonomous-toggle hidden" id="btn-autonomous" title="Autonomous Mode" aria-label="Autonomous Mode"><span class="i" data-icon="bot"></span><span class="btn-label">Autonomous</span></button>
     <span class="topbar-sep" aria-hidden="true"></span>
+    <!-- Workspace actions: the one action you reach for mid-flow (a terminal on
+         this checkout) stays a labeled button; the rest live behind a single
+         overflow menu where they get real names instead of five bare glyphs. -->
     <div class="workspace-tools">
-      <button class="btn ghost icon" id="workspace-memory" title="Project memory" aria-label="Project memory"><span class="i" data-icon="brain"></span></button>
-      <button class="btn ghost icon" id="workspace-terminal" title="Open a terminal here" aria-label="Open terminal"><span class="i" data-icon="terminal"></span></button>
-      <button class="btn ghost icon" id="workspace-reveal" title="Reveal in file manager" aria-label="Reveal in file manager"><span class="i" data-icon="folder-open"></span></button>
-      <button class="btn ghost icon" id="workspace-ide" title="Open in IDE" aria-label="Open in IDE" aria-haspopup="menu" aria-expanded="false"><span class="i" data-icon="code"></span></button>
-      <button class="btn ghost icon" id="workspace-info" title="Workspace details" aria-label="Workspace details"><span class="i" data-icon="info"></span></button>
+      <button class="btn ghost btn-collapsible" id="workspace-terminal" title="Open a terminal here" aria-label="Open terminal"><span class="i" data-icon="terminal"></span><span class="btn-label">Terminal</span></button>
+      <button class="btn ghost icon" id="workspace-more" title="More workspace actions" aria-label="More workspace actions" aria-haspopup="menu" aria-expanded="false"><span class="i" data-icon="ellipsis"></span></button>
     </div>
+  </div>
+
+  <!-- Overflow menu for the workspace actions, anchored under the "…" button.
+       Labels for Reveal/Open in IDE are filled in by syncDesktopLabels() so they
+       name this machine's file manager and the chosen editor. -->
+  <div id="workspace-menu" class="quick-menu hidden" role="menu" aria-label="Workspace actions">
+    <div class="quick-menu-title">Workspace</div>
+    <button class="quick-menu-item" role="menuitem" id="workspace-ide" aria-haspopup="menu">
+      <span class="i" data-icon="code"></span>
+      <span class="quick-menu-item-body">
+        <span class="quick-menu-item-label" id="workspace-ide-label">Open in IDE</span>
+        <span class="quick-menu-item-hint">Edit this checkout in your editor</span>
+      </span>
+    </button>
+    <button class="quick-menu-item" role="menuitem" id="workspace-reveal">
+      <span class="i" data-icon="folder-open"></span>
+      <span class="quick-menu-item-body">
+        <span class="quick-menu-item-label" id="workspace-reveal-label">Reveal</span>
+        <span class="quick-menu-item-hint">Show the folder in your file manager</span>
+      </span>
+    </button>
+    <button class="quick-menu-item" role="menuitem" id="workspace-memory">
+      <span class="i" data-icon="brain"></span>
+      <span class="quick-menu-item-body">
+        <span class="quick-menu-item-label">Project memory</span>
+        <span class="quick-menu-item-hint" id="workspace-memory-hint">Notes every agent reads for this repo</span>
+      </span>
+    </button>
+    <button class="quick-menu-item" role="menuitem" id="workspace-info">
+      <span class="i" data-icon="info"></span>
+      <span class="quick-menu-item-body">
+        <span class="quick-menu-item-label">Workspace details</span>
+        <span class="quick-menu-item-hint">Path, branch and live worktrees</span>
+      </span>
+    </button>
   </div>
 
   <!-- Editor picker for the "Open in IDE" quick action. Anchored under whichever
