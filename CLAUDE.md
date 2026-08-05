@@ -32,6 +32,7 @@ static with **no build step** (see Conventions).
 | `server/agents/codex.ts` | `CodexAdapter`: the OpenAI Codex CLI backend (`codex exec --json`, stdin prompt, sandbox/approval mapping, `OPENAI_API_KEY` stripping, JSONL `parseLine`). |
 | `server/agents/grok.ts` | `GrokAdapter`: the xAI Grok CLI backend (`grok --output-format streaming-json`, **temp-file prompt**, permission-mode mapping, `--allow` rules, `XAI_API_KEY` stripping, NDJSON `parseLine`). |
 | `server/agents/env.ts` | Shared nested-session env scrubbing every adapter builds on. |
+| `server/spawnCompat.ts` | `spawnCompat`: a `child_process.spawn` drop-in that also launches `.cmd`/`.bat` shims on Windows (npm-installed CLIs and editor launchers) by routing through a correctly-escaped `cmd.exe /d /s /c` — used everywhere a binary is launched by bare name instead of the raw `spawn`. |
 | `server/store.ts` | JSON persistence (`db.json`) + append-only per-task NDJSON logs. |
 | `server/tasks.ts` | Task lifecycle service (`createTask`/`dispatchTask` + capacity gate) shared by the REST API and the MCP server, so both queue/run tasks identically. |
 | `server/mcp.ts` | **Board MCP server** (see "MCP server" below). Streamable-HTTP MCP endpoint mounted on the Express app at `POST /mcp` so outside MCP clients can drive the board while Sr. Popo runs. |

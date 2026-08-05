@@ -195,7 +195,10 @@ async function addWorktree(
 async function isWorktreeRegistered(repoPath: string, wtPath: string): Promise<boolean> {
   try {
     const out = await git(repoPath, ['worktree', 'list', '--porcelain']);
-    return out.split('\n').some((line) => line.startsWith('worktree ') && line.slice('worktree '.length).trim() === wtPath);
+    const target = path.normalize(wtPath);
+    return out
+      .split('\n')
+      .some((line) => line.startsWith('worktree ') && path.normalize(line.slice('worktree '.length).trim()) === target);
   } catch {
     return false;
   }
@@ -273,18 +276,23 @@ async function listWorktrees(repoPath: string): Promise<{ path: string; branch: 
     return [];
   }
 
+  // git always prints worktree paths with forward slashes, even on Windows
+  // (its internal path representation is POSIX-style) — normalize to the
+  // native separator so these compare equal to the backslash paths `path.join`
+  // produces elsewhere (task.worktreePath, repo.path), or every `===` against
+  // this list silently fails to match on Windows.
   const entries: { path: string; branch: string | null }[] = [];
   let current: { path: string; branch: string | null } | null = null;
   for (const line of out.split('\n')) {
     if (line.startsWith('worktree ')) {
-      current = { path: line.slice('worktree '.length).trim(), branch: null };
+      current = { path: path.normalize(line.slice('worktree '.length).trim()), branch: null };
       entries.push(current);
     } else if (line.startsWith('branch ') && current) {
       current.branch = line.slice('branch '.length).trim().replace(/^refs\/heads\//, '');
     }
   }
 
-  const others = entries.filter((e) => e.path !== repoPath);
+  const others = entries.filter((e) => e.path !== path.normalize(repoPath));
   const results = [];
   for (const e of others) {
     const status = await worktreeStatus(e.path);
