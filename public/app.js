@@ -589,6 +589,9 @@
   // Toggles the Super View / workspace board and re-renders whichever is now visible.
   function renderView() {
     const isSuper = state.view.mode === 'super';
+    // The actions menu is anchored to the header, but lives outside it — close it
+    // so it can't outlive the workspace it acts on.
+    closeWorkspaceMenu();
     $('#super-view').classList.toggle('hidden', !isSuper);
     $('#board').classList.toggle('hidden', isSuper);
     $('#workspace-header').classList.toggle('hidden', isSuper);
@@ -969,22 +972,26 @@
   function syncDesktopLabels() {
     const fm = state.desktop.fileManager || 'file manager';
     const ide = defaultEditor();
-    const ideTitle = ide ? `Open in ${ide.label}` : 'Open in IDE — pick an editor';
-    for (const [id, title] of [
-      ['#workspace-reveal', `Reveal in ${fm}`],
-      ['#workspace-ide', ideTitle],
-      ['#workspace-open-folder', `Reveal the repository in ${fm}`],
-      ['#workspace-open-ide', ideTitle],
+    const revealLabel = `Reveal in ${fm}`;
+    const ideLabel = ide ? `Open in ${ide.label}` : 'Open in IDE';
+    // Written labels wherever there's room for words…
+    for (const [id, text] of [
+      ['#workspace-reveal-label', revealLabel],
+      ['#workspace-ide-label', ideLabel],
+      ['#workspace-open-folder-label', revealLabel],
+      ['#workspace-open-ide-label', ideLabel],
     ]) {
       const el = $(id);
-      if (!el) continue;
-      el.title = title;
-      if (el.classList.contains('icon')) el.setAttribute('aria-label', title);
+      if (el) el.textContent = text;
     }
-    const folderLabel = $('#workspace-open-folder-label');
-    if (folderLabel) folderLabel.textContent = `Reveal in ${fm}`;
-    const ideLabel = $('#workspace-open-ide-label');
-    if (ideLabel) ideLabel.textContent = ide ? `Open in ${ide.label}` : 'Open in IDE';
+    // …and a tooltip on the workspace modal's buttons, which say what they act on.
+    for (const [id, title] of [
+      ['#workspace-open-folder', `Reveal the repository in ${fm}`],
+      ['#workspace-open-ide', ide ? `Open the repository in ${ide.label}` : 'Open in IDE — pick an editor'],
+    ]) {
+      const el = $(id);
+      if (el) el.title = title;
+    }
   }
 
   async function revealPath(repoId, wtPath) {
@@ -1009,8 +1016,36 @@
     }
   }
 
+  // ---- anchored menus (shared plumbing) ----
+  // Every `.quick-menu` is fixed-position so it can float over a modal; place it
+  // under its button and clamp it into the viewport.
+  function anchorMenu(menu, anchor) {
+    const rect = anchor ? anchor.getBoundingClientRect() : { bottom: 64, right: window.innerWidth - 16 };
+    const width = menu.offsetWidth;
+    menu.style.top = `${Math.round(rect.bottom + 6)}px`;
+    menu.style.left = `${Math.round(Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8)))}px`;
+  }
+
+  // Arrow-key roving focus inside a menu, matching the workspace switcher's popover.
+  function menuArrowNav(menu, e) {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+    const items = [...menu.querySelectorAll('.quick-menu-item:not(.hidden)')];
+    if (!items.length) return;
+    e.preventDefault();
+    const at = items.indexOf(document.activeElement);
+    const down = e.key === 'ArrowDown';
+    // With focus still on the menu itself, Down starts at the top and Up at the bottom.
+    const next = at === -1 ? (down ? 0 : items.length - 1) : at + (down ? 1 : -1);
+    items[(next + items.length) % items.length].focus();
+  }
+
   // ---- IDE picker (anchored menu) ----
   let idePick = null; // { repoId, wtPath, anchor } while the menu is open
+  // The picker is opened from inside someone else's click handler — a workspace
+  // menu item, a palette row, a worktree button — and that same click then
+  // bubbles to the document, where it would read as "clicked outside" and shut
+  // the picker in the same tick. Arm the outside-click check a turn later.
+  let ideOutsideArmed = false;
 
   function ideMenuOpen() {
     return !$('#ide-menu').classList.contains('hidden');
@@ -1042,17 +1077,15 @@
     idePick = { repoId, wtPath, anchor: anchor || null };
     menu.innerHTML = ideMenuHtml();
     menu.classList.remove('hidden');
-    // Anchor under the button, clamped into the viewport (the menu is fixed, so
-    // it can sit over a modal without being clipped by it).
-    const rect = anchor ? anchor.getBoundingClientRect() : { bottom: 64, right: window.innerWidth - 16 };
-    const width = menu.offsetWidth;
-    menu.style.top = `${Math.round(rect.bottom + 6)}px`;
-    menu.style.left = `${Math.round(Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8)))}px`;
+    anchorMenu(menu, anchor);
     anchor?.setAttribute('aria-expanded', 'true');
     menu.querySelector('.quick-menu-item')?.focus();
+    ideOutsideArmed = false;
+    setTimeout(() => { ideOutsideArmed = true; }, 0);
   }
 
   function closeIdeMenu() {
+    ideOutsideArmed = false;
     $('#ide-menu').classList.add('hidden');
     idePick?.anchor?.setAttribute('aria-expanded', 'false');
     idePick = null;
@@ -1068,22 +1101,56 @@
     renderEditorSetting();
     openInIde(repoId, wtPath, null, id);
   });
-  // Arrow-key navigation, matching the workspace switcher's popover behavior.
-  $('#ide-menu').addEventListener('keydown', (e) => {
-    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
-    const items = [...$('#ide-menu').querySelectorAll('.quick-menu-item')];
-    if (!items.length) return;
-    e.preventDefault();
-    const at = items.indexOf(document.activeElement);
-    const down = e.key === 'ArrowDown';
-    // With focus still on the menu itself, Down starts at the top and Up at the bottom.
-    const next = at === -1 ? (down ? 0 : items.length - 1) : at + (down ? 1 : -1);
-    items[(next + items.length) % items.length].focus();
-  });
+  $('#ide-menu').addEventListener('keydown', (e) => menuArrowNav($('#ide-menu'), e));
   document.addEventListener('click', (e) => {
-    if (!ideMenuOpen()) return;
+    if (!ideMenuOpen() || !ideOutsideArmed) return;
     if (e.target.closest('#ide-menu') || e.target === idePick?.anchor || idePick?.anchor?.contains(e.target)) return;
     closeIdeMenu();
+  });
+
+  // ---- workspace actions menu (the header's "…") ----
+  // Reveal / Open in IDE / Project memory / Workspace details used to be four
+  // bare glyphs wedged into the header. They live here instead, each with a
+  // written name and a line of what it does; Terminal stays out front because
+  // it's the one you reach for mid-flow.
+  function workspaceMenuOpen() { return !$('#workspace-menu').classList.contains('hidden'); }
+
+  function openWorkspaceMenu(focusFirst) {
+    const menu = $('#workspace-menu');
+    // The IDE picker anchors on the same button — never leave both stacked there.
+    if (ideMenuOpen()) closeIdeMenu();
+    // Memory is only written while the setting is on; say so here rather than
+    // opening the viewer onto a document that can never fill up.
+    $('#workspace-memory-hint').textContent = state.settings.memory
+      ? 'Notes every agent reads for this repo'
+      : 'Off — turn it on in Settings → Project memory';
+    menu.classList.remove('hidden');
+    anchorMenu(menu, $('#workspace-more'));
+    $('#workspace-more').setAttribute('aria-expanded', 'true');
+    if (focusFirst) menu.querySelector('.quick-menu-item')?.focus();
+  }
+
+  function closeWorkspaceMenu(refocus) {
+    if (!workspaceMenuOpen()) return;
+    $('#workspace-menu').classList.add('hidden');
+    $('#workspace-more').setAttribute('aria-expanded', 'false');
+    if (refocus) $('#workspace-more').focus();
+  }
+
+  $('#workspace-more').addEventListener('click', (e) => {
+    e.stopPropagation();
+    workspaceMenuOpen() ? closeWorkspaceMenu() : openWorkspaceMenu();
+  });
+  $('#workspace-more').addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowDown' || workspaceMenuOpen()) return;
+    e.preventDefault();
+    openWorkspaceMenu(true);
+  });
+  $('#workspace-menu').addEventListener('keydown', (e) => menuArrowNav($('#workspace-menu'), e));
+  document.addEventListener('click', (e) => {
+    if (!workspaceMenuOpen()) return;
+    if (e.target.closest('#workspace-menu') || $('#workspace-more').contains(e.target)) return;
+    closeWorkspaceMenu();
   });
 
   // ---- "New" menu (the New Task split button's caret) ----
@@ -1095,10 +1162,7 @@
     const menu = $('#new-menu');
     const anchor = $('#btn-new-caret');
     menu.classList.remove('hidden');
-    const rect = anchor.getBoundingClientRect();
-    const width = menu.offsetWidth;
-    menu.style.top = `${Math.round(rect.bottom + 6)}px`;
-    menu.style.left = `${Math.round(Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8)))}px`;
+    anchorMenu(menu, anchor);
     anchor.setAttribute('aria-expanded', 'true');
   }
   function closeNewMenu() {
@@ -1384,6 +1448,7 @@
   }
 
   $('#workspace-memory').addEventListener('click', () => {
+    closeWorkspaceMenu();
     const repoId = state.view.repoId;
     if (repoId) openMemoryModal(repoId);
   });
@@ -1396,15 +1461,21 @@
     if (repoId) openTerminalAt(repoId);
   });
   $('#workspace-reveal').addEventListener('click', () => {
+    closeWorkspaceMenu();
     const repoId = state.view.repoId;
     if (repoId) revealPath(repoId);
   });
-  $('#workspace-ide').addEventListener('click', (e) => {
-    if (ideMenuOpen()) { closeIdeMenu(); return; }
+  $('#workspace-ide').addEventListener('click', () => {
+    closeWorkspaceMenu();
     const repoId = state.view.repoId;
-    if (repoId) openInIde(repoId, null, e.currentTarget);
+    // The item itself is going away with the menu, so the editor picker (shown
+    // when no default is set yet) anchors on the "…" button that opened it.
+    if (repoId) openInIde(repoId, null, $('#workspace-more'));
   });
-  $('#workspace-info').addEventListener('click', openWorkspacePopover);
+  $('#workspace-info').addEventListener('click', () => {
+    closeWorkspaceMenu();
+    openWorkspacePopover();
+  });
   // Autonomous Mode: the header button starts a session (opens the budget modal)
   // or stops the one running for this workspace.
   $('#btn-autonomous').addEventListener('click', () => (autonomousForWorkspace() ? stopAutonomous() : openAutonomousModal()));
@@ -5282,6 +5353,17 @@
         : []),
       { label: 'Repositories', hint: 'Add or manage repos', icon: 'folder', run: () => openReposModal() },
       { label: 'Super View', hint: 'Back to the all-workspaces home screen', icon: 'arrow-left', run: () => exitWorkspace() },
+      // The open workspace's own actions — the keyboard path to what the header's
+      // Terminal button and "…" menu do.
+      ...(state.view.repoId
+        ? [
+          { label: 'Open Terminal', hint: 'A shell on this workspace checkout', icon: 'terminal', run: () => openTerminalAt(state.view.repoId) },
+          { label: `Reveal in ${state.desktop.fileManager || 'file manager'}`, hint: 'Show the checkout in your file manager', icon: 'folder-open', run: () => revealPath(state.view.repoId) },
+          { label: defaultEditor() ? `Open in ${defaultEditor().label}` : 'Open in IDE', hint: 'Open the checkout in your editor', icon: 'code', run: () => openInIde(state.view.repoId, null, $('#workspace-more')) },
+          { label: 'Project Memory', hint: 'Notes every agent reads for this repo', icon: 'brain', run: () => openMemoryModal(state.view.repoId) },
+          { label: 'Workspace Details', hint: 'Path, branch and live worktrees', icon: 'info', run: () => openWorkspacePopover() },
+        ]
+        : []),
       { label: 'Settings', hint: 'Notifications, sounds, Linear key', icon: 'settings', kbd: `${MOD},`, run: () => openSettingsModal() },
       { label: 'Toggle Theme', hint: `Currently ${THEME_LABEL[currentTheme()]} — set it in Settings → Appearance`, icon: 'sun-moon', run: () => cycleTheme() },
       { label: 'Filter Tasks', hint: 'Jump to the filter box', icon: 'search', kbd: '/', run: () => $('#filter-search').focus() },
@@ -5501,6 +5583,7 @@
         anchor?.focus();
         return;
       }
+      if (workspaceMenuOpen()) { closeWorkspaceMenu(true); return; }
       if (newMenuOpen()) { closeNewMenu(); $('#btn-new-caret').focus(); return; }
       closeDrawer();
       closeContextMenu();
