@@ -7,17 +7,20 @@
  * Everything here just launches a local GUI app and forgets about it; nothing is
  * read back, nothing is persisted.
  *
- * Dependency-light by construction: no `which`, no shell. We resolve a launcher
- * by scanning PATH (plus JetBrains Toolbox's generated-scripts directory, which
+ * Dependency-light by construction: no `which`. We resolve a launcher by
+ * scanning PATH (plus JetBrains Toolbox's generated-scripts directory, which
  * is often *not* on a GUI app's PATH) and, on macOS, fall back to `open -a` on
  * the .app bundle so an IDE installed without a CLI launcher still works.
+ * Launching itself goes through spawnCompat (server/spawnCompat.ts), which on
+ * Windows routes through cmd.exe — required to run `.cmd`/`.bat` launcher
+ * scripts (VS Code, JetBrains Toolbox) at all; a no-op passthrough elsewhere.
  */
 
-import { spawn } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { baseChildEnv } from './agents/env';
+import { spawnCompat } from './spawnCompat';
 
 // A supported editor: how to launch it from a terminal, and where its macOS app
 // bundle lives if it has no CLI launcher installed. `bins`/`macApps` are tried in
@@ -175,7 +178,7 @@ function detect(force = false): EditorInfo[] {
 // Nested-session markers are stripped (invariant #3) so an IDE's built-in
 // terminal doesn't think it's inside a Claude Code session.
 function launch(cmd: string, args: string[]): void {
-  const child = spawn(cmd, args, {
+  const child = spawnCompat(cmd, args, {
     detached: true,
     stdio: 'ignore',
     env: baseChildEnv(),
