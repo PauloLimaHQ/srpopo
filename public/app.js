@@ -601,6 +601,19 @@
     renderAutonomous();
   }
 
+  // GitHub serves an org/user's avatar at this fixed, unauthenticated URL — no API
+  // call needed. Only for github.com remotes; other hosts (GitLab, Bitbucket, a
+  // bare local remote) have no equivalent we can derive for free, so no icon.
+  function githubAvatarUrl(remoteUrl) {
+    if (!remoteUrl) return null;
+    try {
+      const u = new URL(remoteUrl);
+      if (u.hostname !== 'github.com') return null;
+      const org = u.pathname.split('/').filter(Boolean)[0];
+      return org ? `https://github.com/${org}.png?size=64` : null;
+    } catch { return null; }
+  }
+
   // Live lookup of a repo's current branch, cached like refreshRepoBranchForTask
   // — used by both the Super View cards and the workspace header chip.
   async function refreshRepoBranchCard(repoId, force) {
@@ -656,10 +669,14 @@
     const branch = state.repoBranchByRepo.get(r.id);
     const wt = state.worktreesByRepo.get(r.id);
     const wtCount = Array.isArray(wt) ? wt.length : null;
+    const avatarUrl = githubAvatarUrl(state.repoRemoteUrlByRepo.get(r.id));
     return `
       <div class="workspace-card" data-repo="${esc(r.id)}" title="${esc(r.path)}">
         <div class="workspace-card-head">
-          <span class="workspace-card-name">${esc(r.name)}</span>
+          <span class="workspace-card-title">
+            ${avatarUrl ? `<img class="workspace-card-avatar" src="${esc(avatarUrl)}" alt="" loading="lazy">` : ''}
+            <span class="workspace-card-name">${esc(r.name)}</span>
+          </span>
           ${liveCount ? `<span class="chip running-badge"><span class="spinner"></span>${liveCount} live</span>` : ''}
         </div>
         ${workspaceGraphHtml(tasks, groomings, orchestrations)}
@@ -699,6 +716,10 @@
     refreshRepoBranchCard(repo.id);
     const branch = state.repoBranchByRepo.get(repo.id);
     const remoteUrl = state.repoRemoteUrlByRepo.get(repo.id);
+    const avatarUrl = githubAvatarUrl(remoteUrl);
+    const avatar = $('#workspace-avatar');
+    avatar.classList.toggle('hidden', !avatarUrl);
+    if (avatarUrl) avatar.src = avatarUrl;
     $('#workspace-branch-chip').innerHTML = branch && branch !== 'loading'
       ? (remoteUrl
         ? `<a class="chip" href="${esc(remoteUrl)}/tree/${esc(encodeURIComponent(branch))}" target="_blank" rel="noopener" title="Open this branch on GitHub">${icon('git-branch')} ${esc(branch)}</a>`

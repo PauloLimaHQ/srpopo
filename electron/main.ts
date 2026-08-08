@@ -573,11 +573,19 @@ ipcMain.handle('srpopo:update-status', () => ({
 
 // Open the native folder picker so the user can select a repo instead of
 // typing an absolute path. Returns the chosen path, or null if cancelled.
+// Opens in the parent of the last-picked repo (store.db.settings.lastRepoFolder)
+// so adding several repos from the same workspace doesn't start from scratch
+// every time; remembers the new parent on a successful pick.
 ipcMain.handle('srpopo:pick-folder', async () => {
+  const defaultPath = store.db.settings.lastRepoFolder || undefined;
   const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow!, {
     title: 'Select a repository folder',
     buttonLabel: 'Add Repository',
     properties: ['openDirectory', 'createDirectory'],
+    defaultPath,
   });
-  return canceled || !filePaths.length ? null : filePaths[0];
+  if (canceled || !filePaths.length) return null;
+  store.db.settings.lastRepoFolder = path.dirname(filePaths[0]);
+  store.save();
+  return filePaths[0];
 });

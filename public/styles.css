@@ -362,7 +362,9 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
 }
 .workspace-card:hover { border-color: var(--card-hover-border); transform: translateY(-1px); }
 .workspace-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.workspace-card-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .workspace-card-name { font-weight: 600; font-size: 14px; word-break: break-word; }
+.workspace-card-avatar { width: 18px; height: 18px; border-radius: 4px; flex: none; }
 .workspace-graph { display: flex; height: 8px; border-radius: 6px; overflow: hidden; background: var(--bg-raised); }
 .workspace-graph.empty { background: var(--bg-raised); }
 .workspace-graph-seg { display: block; }
@@ -384,6 +386,7 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
 .workspace-header .btn { min-height: 32px; }
 .workspace-header-title { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; position: relative; }
 .workspace-title { font-family: var(--serif); font-size: 16px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-avatar { width: 20px; height: 20px; border-radius: 5px; flex: none; }
 
 /* ── Autonomous Mode toggle (workspace header) ──
    A pill rather than a plain toolbar button, so its on/off state reads at a
