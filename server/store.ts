@@ -50,6 +50,8 @@ const DEFAULT_SETTINGS: Settings = {
   // Unset until the user picks an IDE: the "Open in IDE" quick action then offers
   // the editors detected on this machine and remembers the pick (server/desktop.ts).
   defaultEditor: '',
+  // Empty until the first "Add Repository" folder pick (electron/main.ts).
+  lastRepoFolder: '',
   // Off by default: the resource monitor polls the OS process table, so it only
   // samples once the user turns it on in Settings (see server/resources.ts).
   resourceMonitor: false,

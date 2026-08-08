@@ -79,6 +79,12 @@ export interface Settings {
   // server/desktop.ts's catalog (`vscode`, `intellij`, `webstorm`, …). Empty
   // until the user picks one, either here or from the button's own picker.
   defaultEditor: string;
+  // The parent directory of the last repo folder picked via the native "Add
+  // Repository" dialog (electron/main.ts's srpopo:pick-folder). Empty until the
+  // first pick. Electron-main-process-only — never sent to the renderer (not in
+  // PublicSettings); it just seeds the dialog's defaultPath so it reopens where
+  // the user left off instead of the OS default every time.
+  lastRepoFolder: string;
   // Opt-in live CPU/memory monitor for the app and the agent sessions it spawned
   // (see server/resources.ts). Off by default: sampling shells out to the OS
   // process table on a poll, so nothing runs until the user asks for it. When
