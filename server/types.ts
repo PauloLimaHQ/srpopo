@@ -167,6 +167,8 @@ export interface WorktreeInfo {
   branch: string | null;
   dirty: boolean;
   files: number;
+  ahead: number | null;
+  behind: number | null;
   taskId: string | null;
   taskTitle: string | null;
   taskStatus: TaskStatus | null;

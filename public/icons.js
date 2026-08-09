@@ -78,6 +78,9 @@
     'sliders-horizontal': '<line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/>',
     // arrow-left — back navigation, e.g. leaving a workspace for the Super View
     'arrow-left': '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
+    // arrow-up / arrow-down — a branch's ahead/behind count vs its upstream
+    'arrow-up': '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
+    'arrow-down': '<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>',
     // info — the workspace details popover trigger
     info: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
     // circle-help — a grooming card that paused to ask the developer to clarify

@@ -748,8 +748,12 @@ app.post('/api/repos', async (req: Request, res: Response) => {
 app.get('/api/repos/:id/branch', async (req: Request, res: Response) => {
   const repo = db.repos.find((r) => r.id === req.params.id);
   if (!repo) return err(res, 404, 'Repo not found');
-  const [branch, remoteUrl] = await Promise.all([git.currentBranch(repo.path), git.remoteWebUrl(repo.path)]);
-  res.json({ branch, remoteUrl });
+  const [branch, remoteUrl, ab] = await Promise.all([
+    git.currentBranch(repo.path),
+    git.remoteWebUrl(repo.path),
+    git.aheadBehind(repo.path),
+  ]);
+  res.json({ branch, remoteUrl, ahead: ab?.ahead ?? null, behind: ab?.behind ?? null });
 });
 
 // The repo's local branches (plus the current one), so the New Task / Brief
@@ -792,6 +796,8 @@ app.get('/api/repos/:id/worktrees', async (req: Request, res: Response) => {
       branch: e.branch,
       dirty: e.dirty,
       files: e.files,
+      ahead: e.ahead,
+      behind: e.behind,
       taskId: task?.id ?? null,
       taskTitle: task?.title ?? null,
       taskStatus: task?.status ?? null,
