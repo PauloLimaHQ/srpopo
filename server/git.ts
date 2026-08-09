@@ -264,11 +264,30 @@ async function worktreeStatus(wtPath: string): Promise<{ dirty: boolean; files: 
   }
 }
 
+// How far the branch checked out at `dirPath` has diverged from its upstream
+// tracking branch — the same "ahead N, behind M" `git status -sb` reports, so
+// the board can badge a branch that has unpushed commits (ahead) or an
+// upstream that has moved past it (behind) without shelling out to `push
+// --dry-run`. Null when there's no upstream configured (a fresh local branch,
+// or one with tracking turned off) rather than `{0, 0}`, so the UI can tell
+// "nothing to compare against" from "in sync".
+async function aheadBehind(dirPath: string): Promise<{ ahead: number; behind: number } | null> {
+  try {
+    const upstream = await git(dirPath, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
+    if (!upstream) return null;
+    const out = await git(dirPath, ['rev-list', '--left-right', '--count', `${upstream}...HEAD`]);
+    const [behind, ahead] = out.split(/\s+/).map((n) => parseInt(n, 10) || 0);
+    return { ahead, behind };
+  } catch {
+    return null;
+  }
+}
+
 // Lists every worktree `git worktree list` knows about for a repo, except the
 // main one (whose path is the repo itself) — ground truth for what's actually
 // checked out on disk, since a task's own `worktreePath` can go stale (removed
 // externally, etc.). Each entry is annotated with its dirty/file-count status.
-async function listWorktrees(repoPath: string): Promise<{ path: string; branch: string | null; dirty: boolean; files: number }[]> {
+async function listWorktrees(repoPath: string): Promise<{ path: string; branch: string | null; dirty: boolean; files: number; ahead: number | null; behind: number | null }[]> {
   let out: string;
   try {
     out = await git(repoPath, ['worktree', 'list', '--porcelain']);
@@ -296,7 +315,15 @@ async function listWorktrees(repoPath: string): Promise<{ path: string; branch: 
   const results = [];
   for (const e of others) {
     const status = await worktreeStatus(e.path);
-    results.push({ path: e.path, branch: e.branch, dirty: status?.dirty ?? false, files: status?.files ?? 0 });
+    const ab = await aheadBehind(e.path);
+    results.push({
+      path: e.path,
+      branch: e.branch,
+      dirty: status?.dirty ?? false,
+      files: status?.files ?? 0,
+      ahead: ab?.ahead ?? null,
+      behind: ab?.behind ?? null,
+    });
   }
   return results;
 }
@@ -316,6 +343,7 @@ export {
   isWorktreeRegistered,
   mergeBranch,
   worktreeStatus,
+  aheadBehind,
   listWorktrees,
   WORKTREES_DIR,
 };

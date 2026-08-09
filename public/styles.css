@@ -677,6 +677,16 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
 .chip.model.model-sonnet { color: var(--blue); border-color: var(--blue-soft); }
 .chip.model.model-haiku { color: var(--green); border-color: var(--green-soft); }
 .chip.worktree { color: var(--green); }
+/* Ahead/behind badges vs a branch's upstream — sit right next to a branch chip
+   or the worktree list's branch name. Ahead (unpushed commits) reads neutral;
+   behind (upstream moved on) reads amber, since it's the one worth acting on. */
+.ahead-behind {
+  display: inline-flex; align-items: center; gap: 1px;
+  font-size: 10px; font-family: var(--mono); font-weight: 600; margin-left: 4px;
+}
+.ahead-behind .icon { width: 11px; height: 11px; }
+.ahead-behind.ahead { color: var(--blue); }
+.ahead-behind.behind { color: var(--conflict); }
 .chip.cost { color: var(--accent); }
 .chip.badge-failed { color: var(--red); border-color: var(--red-soft); font-weight: 700; }
 .chip.badge-stopped { color: var(--text-dim); }

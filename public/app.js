@@ -21,6 +21,7 @@
     repoBranchByTask: new Map(), // taskId -> 'loading' | repo's live current branch (non-worktree tasks only)
     repoBranchByRepo: new Map(), // repoId -> 'loading' | repo's live current branch (Super View / workspace header)
     repoRemoteUrlByRepo: new Map(), // repoId -> repo's `origin` remote as a web URL (e.g. GitHub), or null
+    repoAheadBehindByRepo: new Map(), // repoId -> { ahead, behind } | null for the repo's current branch vs its upstream
     worktreesByRepo: new Map(), // repoId -> 'loading' | [ WorktreeInfo ] from /api/repos/:id/worktrees
     permissions: new Map(), // taskId -> [ pending tool-approval requests ]
     autoApprove: new Set(), // taskIds whose live run is in auto-approve ("AUTO MODE")
@@ -619,12 +620,24 @@
   async function refreshRepoBranchCard(repoId, force) {
     if (!force && state.repoBranchByRepo.has(repoId)) return;
     state.repoBranchByRepo.set(repoId, 'loading');
-    let branch = null, remoteUrl = null;
-    try { ({ branch, remoteUrl } = await api('GET', `/api/repos/${repoId}/branch`)); } catch { /* stay null */ }
+    let branch = null, remoteUrl = null, ahead = null, behind = null;
+    try { ({ branch, remoteUrl, ahead, behind } = await api('GET', `/api/repos/${repoId}/branch`)); } catch { /* stay null */ }
     state.repoBranchByRepo.set(repoId, branch);
     state.repoRemoteUrlByRepo.set(repoId, remoteUrl);
+    state.repoAheadBehindByRepo.set(repoId, { ahead, behind });
     if (state.view.mode === 'super') renderSuperView();
     else if (state.view.mode === 'workspace' && state.view.repoId === repoId) renderWorkspaceHeader();
+  }
+
+  // A branch's ahead/behind vs its upstream, as an icon badge — arrow-up for
+  // unpushed commits, arrow-down for commits the upstream has that this branch
+  // doesn't. Empty when there's no upstream to compare against, or the branch
+  // is fully in sync (nothing useful to flag).
+  function aheadBehindHtml(ahead, behind) {
+    const parts = [];
+    if (ahead) parts.push(`<span class="ahead-behind ahead" title="${ahead} commit${ahead === 1 ? '' : 's'} ahead of upstream — not pushed yet">${icon('arrow-up')}${ahead}</span>`);
+    if (behind) parts.push(`<span class="ahead-behind behind" title="${behind} commit${behind === 1 ? '' : 's'} behind upstream">${icon('arrow-down')}${behind}</span>`);
+    return parts.join('');
   }
 
   // Live worktree list for a repo (ground truth from git, not stale task.worktreePath
@@ -667,6 +680,7 @@
     const liveCount = tasks.filter(isLive).length + groomings.filter(isGroomingLive).length +
       orchestrations.filter(isOrchestrationLive).length;
     const branch = state.repoBranchByRepo.get(r.id);
+    const ab = state.repoAheadBehindByRepo.get(r.id) || {};
     const wt = state.worktreesByRepo.get(r.id);
     const wtCount = Array.isArray(wt) ? wt.length : null;
     const avatarUrl = githubAvatarUrl(state.repoRemoteUrlByRepo.get(r.id));
@@ -681,7 +695,7 @@
         </div>
         ${workspaceGraphHtml(tasks, groomings, orchestrations)}
         <div class="workspace-card-foot">
-          ${branch && branch !== 'loading' ? `<span class="chip">${icon('git-branch')} ${esc(branch)}</span>` : ''}
+          ${branch && branch !== 'loading' ? `<span class="chip">${icon('git-branch')} ${esc(branch)}${aheadBehindHtml(ab.ahead, ab.behind)}</span>` : ''}
           <span class="chip">${wtCount == null ? '…' : wtCount} worktree${wtCount === 1 ? '' : 's'}</span>
           <span class="chip">${tasks.length} task${tasks.length === 1 ? '' : 's'}</span>
         </div>
@@ -716,14 +730,15 @@
     refreshRepoBranchCard(repo.id);
     const branch = state.repoBranchByRepo.get(repo.id);
     const remoteUrl = state.repoRemoteUrlByRepo.get(repo.id);
+    const ab = state.repoAheadBehindByRepo.get(repo.id) || {};
     const avatarUrl = githubAvatarUrl(remoteUrl);
     const avatar = $('#workspace-avatar');
     avatar.classList.toggle('hidden', !avatarUrl);
     if (avatarUrl) avatar.src = avatarUrl;
     $('#workspace-branch-chip').innerHTML = branch && branch !== 'loading'
       ? (remoteUrl
-        ? `<a class="chip" href="${esc(remoteUrl)}/tree/${esc(encodeURIComponent(branch))}" target="_blank" rel="noopener" title="Open this branch on GitHub">${icon('git-branch')} ${esc(branch)}</a>`
-        : `<span class="chip">${icon('git-branch')} ${esc(branch)}</span>`)
+        ? `<a class="chip" href="${esc(remoteUrl)}/tree/${esc(encodeURIComponent(branch))}" target="_blank" rel="noopener" title="Open this branch on GitHub">${icon('git-branch')} ${esc(branch)}</a>${aheadBehindHtml(ab.ahead, ab.behind)}`
+        : `<span class="chip">${icon('git-branch')} ${esc(branch)}</span>${aheadBehindHtml(ab.ahead, ab.behind)}`)
       : '';
   }
 
@@ -738,6 +753,7 @@
       <div class="worktree-row">
         <span class="worktree-dot ${w.dirty ? 'dirty' : 'clean'}" title="${w.dirty ? 'Uncommitted changes' : 'Clean'}"></span>
         <span class="worktree-branch">${esc(w.branch || '(detached)')}</span>
+        ${aheadBehindHtml(w.ahead, w.behind)}
         ${w.taskId
           ? `<span class="chip worktree-task-link" data-task-link="${esc(w.taskId)}">${esc(w.taskTitle)} · ${esc(w.taskStatus)}</span>`
           : '<span class="muted">no task</span>'}
