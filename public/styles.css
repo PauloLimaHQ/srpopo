@@ -523,6 +523,102 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
    the row is a dense list — but not so small they're hard to hit. */
 .worktree-row .btn { flex: none; padding: 5px 9px; font-size: 11px; min-height: 26px; }
 
+/* ── project sidebar (experimental "sidebar" layout) ──
+   Settings → General → Appearance → Layout. A persistent rail of every
+   repository with its cards grouped by board column, sitting left of the same
+   Super View / board the classic layout shows. Styled after a shadcn sidebar:
+   a flat surface, uppercase group labels, rounded hover rows, one accent for
+   what's in focus. `hidden` (classic layout) removes it entirely. */
+.sidebar {
+  flex: none; width: 264px; min-width: 264px;
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 10px 10px 0;
+  background: var(--bg-raised); border-right: 1px solid var(--border);
+  overflow-y: auto;
+}
+.sidebar-head {
+  display: flex; align-items: center; gap: 8px; padding: 4px 6px 8px;
+}
+.sidebar-head-title {
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1.2px;
+  color: var(--text-dim); flex: 1;
+}
+.sidebar-head .btn { padding: 4px 6px; min-height: 24px; }
+
+/* Rows — the "All projects" entry, each project, and each card — share one
+   shape so the rail reads as a single list at three depths. */
+.sidebar-super, .sidebar-project-btn, .sidebar-card {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 6px 8px; border-radius: 8px; cursor: pointer;
+  background: transparent; border: 1px solid transparent; color: var(--text);
+  font: inherit; font-size: 13px; text-align: left;
+  transition: background .12s, color .12s;
+}
+.sidebar-super:hover, .sidebar-project-btn:hover, .sidebar-card:hover { background: var(--bg-hover); }
+.sidebar-super:focus-visible, .sidebar-project-btn:focus-visible,
+.sidebar-card:focus-visible, .sidebar-twisty:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: -1px;
+}
+.sidebar .count {
+  margin-left: auto; font-family: var(--mono); font-size: 10px; color: var(--text-dim);
+}
+.sidebar .icon { width: 15px; height: 15px; flex: none; }
+.sidebar-super { margin-bottom: 6px; }
+.sidebar-super.active { background: var(--accent-soft); color: var(--accent); }
+.sidebar-super.active .count { color: var(--accent); }
+
+.sidebar-projects { display: flex; flex-direction: column; gap: 2px; }
+.sidebar-project-head { display: flex; align-items: center; gap: 2px; border-radius: 8px; }
+.sidebar-project-head.active { background: var(--accent-soft); }
+.sidebar-project-head.active .sidebar-project-name { color: var(--accent); font-weight: 600; }
+.sidebar-project-head.active .sidebar-project-btn:hover { background: transparent; }
+.sidebar-twisty {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 24px; padding: 0; border: none; border-radius: 6px;
+  background: transparent; color: var(--text-dim); cursor: pointer;
+}
+.sidebar-twisty:hover { color: var(--text); }
+.sidebar-twisty .icon { width: 13px; height: 13px; }
+.sidebar-project-btn { min-width: 0; }
+.sidebar-project-icon { display: inline-flex; color: var(--text-dim); flex: none; }
+.sidebar-avatar { width: 16px; height: 16px; border-radius: 4px; flex: none; }
+.sidebar-project-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-project-btn .running-badge {
+  margin-left: auto; font-size: 10px; padding: 1px 7px; gap: 4px; flex: none;
+}
+.sidebar-project-body {
+  display: flex; flex-direction: column; gap: 8px;
+  margin: 4px 0 8px 12px; padding-left: 8px; border-left: 1px solid var(--border);
+}
+.sidebar-group { display: flex; flex-direction: column; gap: 1px; }
+.sidebar-group-head {
+  display: flex; align-items: center; gap: 6px; padding: 2px 8px;
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px;
+  color: var(--text-dim);
+}
+.sidebar-group-head .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+.sidebar-card { font-size: 12.5px; padding: 5px 8px; }
+.sidebar-card-dot { width: 5px; height: 5px; border-radius: 50%; flex: none; opacity: .8; }
+.sidebar-card-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-card .spinner { width: 9px; height: 9px; border-width: 1.5px; flex: none; }
+.sidebar-card-badge {
+  flex: none; font-family: var(--mono); font-size: 9px; text-transform: uppercase;
+  letter-spacing: .5px; color: var(--accent);
+}
+.sidebar-empty { padding: 8px 10px; font-size: 12px; color: var(--text-dim); opacity: .7; }
+.sidebar-foot {
+  display: flex; align-items: flex-start; gap: 6px;
+  margin-top: auto; padding: 12px 8px 14px;
+  font-size: 10.5px; line-height: 1.4; color: var(--text-dim); opacity: .75;
+}
+.sidebar-foot .icon { width: 12px; height: 12px; margin-top: 2px; }
+
+/* A narrow window has no room for both the rail and a Kanban column — the
+   board wins, and the classic navigation (header switcher, ⌘K) still works. */
+@media (max-width: 760px) {
+  .sidebar { display: none; }
+}
+
 /* ── board ── */
 .board {
   display: flex; gap: 16px; flex: 1; min-height: 0;

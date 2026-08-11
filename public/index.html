@@ -210,6 +210,10 @@
   </div>
 
   <main>
+    <!-- Experimental "sidebar" layout (Settings → General → Appearance → Layout):
+         a persistent project rail listing every repo with its cards grouped by
+         board column. Empty and hidden entirely in the classic layout. -->
+    <aside id="sidebar" class="sidebar hidden" aria-label="Projects"></aside>
     <div id="super-view" class="super-view"></div>
     <div id="board" class="board hidden"></div>
   </main>
@@ -732,7 +736,17 @@
                   <option value="dark">Dark</option>
                 </select>
               </label>
-              <p class="addon-hint">Remembered on this device (in the browser, not in <code>db.json</code>), so
+              <label>Layout <span class="field-hint">— how the board is framed</span>
+                <select id="setting-layout">
+                  <option value="classic">Classic board</option>
+                  <option value="sidebar">Project sidebar (experimental)</option>
+                </select>
+              </label>
+              <p class="addon-hint"><strong>Classic board</strong> is the Super View grid you land on today, with one
+                repo's Kanban board at a time. <strong>Project sidebar</strong> keeps every repository in a left rail
+                with its cards grouped by column underneath, so you can jump between projects and tasks without
+                leaving the board. Experimental — the board itself is unchanged.</p>
+              <p class="addon-hint">Both are remembered on this device (in the browser, not in <code>db.json</code>), so
                 the desktop app and a phone on the LAN can each use their own.</p>
             </fieldset>
             <fieldset class="addons">

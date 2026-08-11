@@ -407,6 +407,32 @@ editors and remembers the pick as the default, so the button works without a det
 Settings. `POST /api/repos/:id/editor` returns **409** (not 400) when no editor is
 configured — that's the board's signal to open the picker rather than toast an error.
 
+## Appearance: two layouts for the same board
+
+Settings → General → **Appearance** holds the two device-local UI preferences.
+Both live in `localStorage`, never in `db.json` — the desktop app and a phone
+paired over the LAN each keep their own (and there is no server round-trip to
+change one).
+
+- **Theme** — `srpopo.theme`: System / Light / Dark, read by an inline `<head>`
+  script so the first paint already matches.
+- **Layout** — `srpopo.layout`: `classic` (the default: the Super View grid plus
+  one repo's board) or `sidebar`, an **experimental** shell that adds a persistent
+  project rail left of that same view. Applied by `applyLayout()` in `public/app.js`,
+  which sets `body[data-layout]` and shows/empties `#sidebar`; `toggleLayout()` backs
+  the ⌘K "Toggle Layout" command.
+
+The **project sidebar** (`renderSidebar` and friends in `public/app.js`) lists every
+repository with its cards grouped by board column — grooming and orchestration cards
+included, empty columns dropped — under an "All projects" entry that returns to the
+Super View. It is **navigation only**: clicking a project enters that workspace,
+clicking a card opens the same drawer, right-clicking a task opens the same context
+menu. Nothing there can change a task's state — no drag-and-drop, no dispatch — so the
+board stays the single place work moves. It re-renders off `renderBoard()`, the same
+choke point the board uses (a no-op in the classic layout), preserving its scroll
+position and which projects are unfolded. The classic layout is untouched by all of it:
+with `layout=classic` the rail is hidden *and* emptied.
+
 ## Resource monitor (how much of this machine we're using)
 
 Running several agents at once is the whole point of Sr. Popo, so the board can show
