@@ -190,7 +190,8 @@ function resultFrom(event: Record<string, any>, isError: boolean): NormalizedRes
     // Present only when the server stamped a complete cost — Grok omits it on the
     // OAuth/subscription path far more often than not, and omits it entirely when
     // the cost was partial. Absent means "unreported", never "free", which is why
-    // the board shows "—" rather than $0 for a Grok run with no cost (see app.js).
+    // the board shows "—" rather than $0 for a Grok run with no cost (see tokensOnly
+    // in public/core/api.js).
     costUsd: Number(event.total_cost_usd) || 0,
     numTurns: typeof event.num_turns === 'number' ? event.num_turns : null,
     durationMs: null, // Grok's end event carries no duration

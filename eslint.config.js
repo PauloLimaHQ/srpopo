@@ -47,14 +47,22 @@ module.exports = tseslint.config(
     rules: { 'no-unused-vars': unused },
   },
   {
-    // Browser-side renderer code (unchanged vanilla JS, no build step).
+    // Browser-side renderer code: vanilla JS, still no build step — the board is
+    // split into native ES modules (public/app.js + core/ + features/), loaded
+    // with <script type="module">.
     files: ['public/**/*.js'],
     extends: [js.configs.recommended],
     languageOptions: {
       ecmaVersion: 'latest',
-      sourceType: 'script',
+      sourceType: 'module',
       globals: { ...globals.browser },
     },
     rules: { 'no-unused-vars': unused },
+  },
+  {
+    // icons.js is loaded as a classic script before the module graph, so it
+    // publishes `window.srpopoIcons` instead of exporting.
+    files: ['public/icons.js'],
+    languageOptions: { sourceType: 'script' },
   },
 );

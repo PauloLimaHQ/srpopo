@@ -13,7 +13,7 @@ import type { TaskAgent } from './types';
 export type TaskComplexity = 'simple' | 'standard' | 'complex';
 
 // Ascending cost/capability tier per backend. Mirrors the <option> lists in
-// public/index.html and the color ramp in public/app.js's modelClass (fable
+// public/index.html and the color ramp in public/core/api.js's modelClass (fable
 // reads reddest — the most expensive — down to haiku).
 const CLAUDE_TIER_MODEL: Record<TaskComplexity, string> = {
   simple: 'haiku',

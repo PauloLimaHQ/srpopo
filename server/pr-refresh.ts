@@ -11,7 +11,7 @@
  * A periodic, unref'd sweep checks every validation-column task with a resolved
  * branch and broadcasts a `pr` bus event when the result changes, so every
  * connected board updates its cached PR chip/merge decision live — see
- * public/app.js's SSE handler and state.prByTask.
+ * public/features/live.js's SSE handler and core/state.js's state.prByTask.
  */
 import { db } from './store';
 import { broadcast } from './bus';

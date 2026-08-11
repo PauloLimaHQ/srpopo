@@ -55,8 +55,11 @@ static with **no build step** (see Conventions).
 | `server/paths.ts` | Resolves the app root (`public/`, `assets/`, `build/`) from source or `dist/`. |
 | `electron/main.ts` | macOS tray/menu-bar app shell; boots the server on a local port. |
 | `electron/preload.ts` | Minimal, safe `contextBridge` (folder picker, base URL). |
-| `public/` | Dependency-free vanilla-JS Kanban UI (`app.js`, `index.html`, `styles.css`). No build step. |
-| `public/icons.js` | Inline-SVG icon set (Lucide) + a tiny renderer/hydrator. The only source of UI glyphs — no emojis. |
+| `public/` | Dependency-free vanilla-JS Kanban UI. No build step — native ES modules (see "The UI module layout"). |
+| `public/app.js` | UI **entry only**: imports the feature modules, calls each one's `init()` in a fixed order, then `boot()`. Don't grow it — new behavior belongs in a feature module. |
+| `public/core/` | What every feature needs: `state.js` (the shared board state, `$`, `icon`, column constants) and `api.js` (`api()`, `toast()`, `esc()`, `lookup()`). Imports nothing from `features/` — it is the bottom of the graph. |
+| `public/features/` | One module per feature (`board.js`, `task-modal.js`, `drawer.js`, `pr.js`, `autonomous.js`, …). A feature change should touch one file here. |
+| `public/icons.js` | Inline-SVG icon set (Lucide) + a tiny renderer/hydrator. Loaded as a **classic script before the module graph**, so it publishes `window.srpopoIcons` rather than exporting. The only source of UI glyphs — no emojis. |
 | `tests/smoke.test.ts` | `node:test` smoke suite, run via `tsx`. |
 | `tsconfig.json` | `tsc` config: CommonJS output → `dist/`, `strict`, `rootDir: "."`. |
 | `dist/` | Compiled JS (gitignored). What Electron + electron-builder load. |
@@ -264,7 +267,8 @@ would require it.
   Exception: `server/permission-mcp.js` stays plain JS (it's spawned as a
   standalone Node process and must run without a TS loader).
 - **`public/**` stays vanilla browser JS with no build step** — no bundler, no
-  framework, served static. That invariant is unchanged by the TS migration.
+  framework, served static. That invariant is unchanged by the TS migration, and
+  unchanged by the ES-module split: the browser resolves the imports itself.
 - **Keep runtime dependencies minimal.** `express` is the only entry in
   `dependencies`. Everything TypeScript-related (`typescript`, `tsx`,
   `typescript-eslint`, `@types/*`) is a **devDependency** — nothing new ships at
@@ -284,6 +288,43 @@ would require it.
   every connected board updates live. New task fields go in the object built in
   `POST /api/tasks` (and, if user-editable, the `allowed` list in `PATCH`).
 - Prefer small, single-purpose modules in `server/`; keep the API thin.
+
+## The UI module layout (why `public/` is many small files)
+
+The board used to be one 6,300-line `app.js`. It was the single worst file in the
+repo to work in: **65% of all commits touched it**, and because a feature's markup
+lived in `index.html` and its styling in `styles.css`, **58% of commits touched two
+or more of those three files**. Every parallel change collided.
+
+It is now **native ES modules** — still no bundler, no build step, no runtime
+dependency. `index.html` loads the entry with `<script type="module" src="app.js">`,
+and the browser resolves the graph.
+
+- **`core/state.js`** — the shared `state` object, `$`, `icon`, the column
+  constants, and the small predicates over them (`isLive`, `pendingPermissions`).
+  It imports nothing from `features/`; keep it that way.
+- **`core/api.js`** — `api()`, `toast()`, `esc()`, `lookup()`.
+- **`features/<name>.js`** — one feature each. A feature module owns its rendering,
+  its event wiring, and its modal.
+- **`app.js`** — wiring only. It imports each feature's `init` and calls them.
+
+**The `init()` contract.** A module's load-time side effects (the
+`addEventListener` wiring) must live inside an exported `init()`, never at module
+top level. Module evaluation order follows the import graph, which changes as
+imports change; the `init()` call order in `app.js` is explicit and stable, and
+some of those handlers are order-sensitive (several `document`-level `click` and
+`keydown` listeners). **Keep the `init()` calls in `app.js` in their current
+order** unless you have a specific reason, and add new ones at the position the
+feature's wiring should run.
+
+**Working here:** a feature change should touch one file under `features/`. If it
+needs a second, that usually means the boundary is wrong — or that the thing you
+are adding belongs in `core/`. Note that exports are **read-only bindings**: a
+module that needs another module's mutable state changed must call a setter
+(see `setSavedAttachments` in `features/task-modal.js`), not assign to the import.
+
+`styles.css` and `index.html` are **not yet split** — that is the next phase, and
+until then a feature's markup and CSS still live in those two shared files.
 
 ## Add-ons: how to extend task behavior
 
@@ -321,7 +362,7 @@ This whole section is **Claude-only**: `--permission-prompt-tool` is a `claude` 
 feature, and neither Codex nor Grok exposes an approval hook to bridge (see "Agent
 backends"), so their runs are governed by a sandbox / permission mode instead and the
 board hides the Allow/Deny UI, the "asks" chip and AUTO MODE for them (one predicate,
-`hasPermissionBridge`, in `public/app.js`).
+`hasPermissionBridge`, in `public/core/api.js`).
 
 A headless `claude -p` run auto-**denies** any tool it isn't told to allow, so a task
 can otherwise "finish" without doing the work. `promptPermissions` defaults to `true`
@@ -418,11 +459,11 @@ change one).
   script so the first paint already matches.
 - **Layout** — `srpopo.layout`: `classic` (the default: the Super View grid plus
   one repo's board) or `sidebar`, an **experimental** shell that adds a persistent
-  project rail left of that same view. Applied by `applyLayout()` in `public/app.js`,
+  project rail left of that same view. Applied by `applyLayout()` in `public/features/theme.js`,
   which sets `body[data-layout]` and shows/empties `#sidebar`; `toggleLayout()` backs
   the ⌘K "Toggle Layout" command.
 
-The **project sidebar** (`renderSidebar` and friends in `public/app.js`) lists every
+The **project sidebar** (`renderSidebar` and friends in `public/features/sidebar.js`) lists every
 repository with its cards grouped by board column — grooming and orchestration cards
 included, empty columns dropped — under an "All projects" entry that returns to the
 Super View. It is **navigation only**: clicking a project enters that workspace,

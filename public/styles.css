@@ -424,6 +424,12 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
 .workspace-tools .btn.icon { padding: 6px 9px; }
 .workspace-tools .btn[aria-expanded="true"] { background: var(--bg-hover); border-color: var(--card-hover-border); }
 
+/* Back and the "…" overflow button are single-icon buttons like #btn-settings
+   up in the top bar, but `.btn.icon`'s smaller padding (plus the row's
+   min-height) left them a squat, differently-proportioned square instead of a
+   fixed width matching the cog button's shape. Pin them to the same padding. */
+#workspace-back, #workspace-more { padding: 8px 15px; }
+
 /* ── responsive header: collapse text labels to icon-only under medium
    widths so the toolbar never wraps or overflows as the window is resized
    (both bars use `.btn-collapsible` on the buttons that carry a label). ── */
@@ -550,6 +556,9 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
   color: var(--text-dim); flex: 1;
 }
 .sidebar-head .btn { padding: 4px 6px; min-height: 24px; }
+/* Same fixed-width single-icon shape as #workspace-back/#workspace-more —
+   padding-driven width left it a slightly-off, non-square button. */
+#sidebar-add-repo { width: 24px; height: 24px; padding: 0; }
 
 /* Rows — the "All projects" entry, each project, and each card — share one
    shape so the rail reads as a single list at three depths. */
