@@ -3483,3 +3483,39 @@ test('index: the reveal/editor routes validate the repo and path before launchin
     store.db.settings.defaultEditor = prev;
   }
 });
+
+test('index: POST /api/repos/reorder persists the given order and rejects a mismatched id set', async () => {
+  const store = require('../server/store');
+  const index = require('../server/index');
+  const { server, port } = await index.start(0);
+  const base = `http://127.0.0.1:${port}`;
+  const post = (path: string, body: unknown) => fetch(`${base}${path}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const a = { id: store.id(), path: '/tmp/reorder-a', name: 'a', branch: null, addedAt: store.now() };
+  const b = { id: store.id(), path: '/tmp/reorder-b', name: 'b', branch: null, addedAt: store.now() };
+  const c = { id: store.id(), path: '/tmp/reorder-c', name: 'c', branch: null, addedAt: store.now() };
+  const before = store.db.repos.slice();
+  store.db.repos = [a, b, c];
+  try {
+    let res = await post('/api/repos/reorder', { order: [c.id, a.id, b.id] });
+    assert.strictEqual(res.status, 200, 'a full, matching id list reorders successfully');
+    assert.deepStrictEqual(store.db.repos.map((r: { id: string }) => r.id), [c.id, a.id, b.id],
+      'db.repos now reflects the requested order');
+
+    res = await post('/api/repos/reorder', { order: [a.id, b.id] });
+    assert.strictEqual(res.status, 400, 'a short list (missing a repo) is rejected');
+
+    res = await post('/api/repos/reorder', { order: [a.id, b.id, 'nope'] });
+    assert.strictEqual(res.status, 400, 'an unknown id is rejected');
+
+    res = await post('/api/repos/reorder', { order: [a.id, a.id, b.id] });
+    assert.strictEqual(res.status, 400, 'a duplicated id is rejected');
+
+    // A rejected reorder never touches the stored order.
+    assert.deepStrictEqual(store.db.repos.map((r: { id: string }) => r.id), [c.id, a.id, b.id]);
+  } finally {
+    await new Promise<void>((r) => server.close(() => r()));
+    store.db.repos = before;
+  }
+});

@@ -742,6 +742,23 @@ app.post('/api/repos', async (req: Request, res: Response) => {
   res.json(repo);
 });
 
+// Reorders the repos list to match the given id sequence. Both places that
+// render repos (the Workspaces grid, the Manage Repositories list) render
+// `db.repos` in array order and nothing else sorts it, so persisting a
+// drag-and-drop reorder is just rewriting this array.
+app.post('/api/repos/reorder', (req: Request, res: Response) => {
+  const order = Array.isArray(req.body?.order) ? req.body.order.map(String) : null;
+  if (!order || order.length !== db.repos.length || new Set(order).size !== order.length ||
+      !order.every((rid: string) => db.repos.some((r) => r.id === rid))) {
+    return err(res, 400, 'order must list every current repo id exactly once');
+  }
+  const byId = new Map(db.repos.map((r) => [r.id, r]));
+  db.repos = order.map((rid: string) => byId.get(rid)!);
+  save();
+  broadcast({ type: 'repos', repos: db.repos });
+  res.json({ ok: true, repos: db.repos });
+});
+
 // Live lookup of the repo's current checked-out branch — refreshed on demand
 // (e.g. when the New Task / Brief modals open) rather than the snapshot taken
 // when the repo was added, which can go stale as the user switches branches.

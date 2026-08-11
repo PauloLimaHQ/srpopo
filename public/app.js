@@ -685,9 +685,10 @@
     const wtCount = Array.isArray(wt) ? wt.length : null;
     const avatarUrl = githubAvatarUrl(state.repoRemoteUrlByRepo.get(r.id));
     return `
-      <div class="workspace-card" data-repo="${esc(r.id)}" title="${esc(r.path)}">
+      <div class="workspace-card" data-repo="${esc(r.id)}" title="${esc(r.path)}" draggable="true">
         <div class="workspace-card-head">
           <span class="workspace-card-title">
+            <span class="drag-handle" title="Drag to reorder" aria-hidden="true">${icon('grip-vertical')}</span>
             ${avatarUrl ? `<img class="workspace-card-avatar" src="${esc(avatarUrl)}" alt="" loading="lazy">` : ''}
             <span class="workspace-card-name">${esc(r.name)}</span>
           </span>
@@ -700,6 +701,72 @@
           <span class="chip">${tasks.length} task${tasks.length === 1 ? '' : 's'}</span>
         </div>
       </div>`;
+  }
+
+  // Generic HTML5 drag-and-drop reordering, shared by the Workspaces grid and
+  // the Manage Repositories list. Wire it once on the persistent container
+  // element (re-renders only replace its innerHTML) — it reads live children
+  // via querySelector on every drag event, so it keeps working across
+  // re-renders without being re-attached. During dragover it moves the
+  // dragged element next to whichever sibling's center is nearest the
+  // pointer, which reads naturally whether `container` is a vertical list or
+  // a wrapping grid. `onReorder(ids)` fires once per drop with the full
+  // sequence of `data-{idAttr}` values read back off the DOM.
+  function makeSortable(container, itemSelector, idAttr, onReorder) {
+    let dragEl = null;
+    container.addEventListener('dragstart', (e) => {
+      const item = e.target.closest(itemSelector);
+      if (!item || !container.contains(item)) return;
+      dragEl = item;
+      item.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', item.dataset[idAttr] || '');
+    });
+    container.addEventListener('dragover', (e) => {
+      if (!dragEl) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      let closest = null, closestDist = Infinity, after = false;
+      for (const el of container.querySelectorAll(itemSelector)) {
+        if (el === dragEl) continue;
+        const box = el.getBoundingClientRect();
+        const cx = box.left + box.width / 2;
+        const cy = box.top + box.height / 2;
+        const dist = Math.hypot(e.clientX - cx, e.clientY - cy);
+        if (dist < closestDist) {
+          closestDist = dist;
+          closest = el;
+          after = e.clientY === cy ? e.clientX > cx : e.clientY > cy;
+        }
+      }
+      if (!closest) container.appendChild(dragEl);
+      else closest.insertAdjacentElement(after ? 'afterend' : 'beforebegin', dragEl);
+    });
+    container.addEventListener('drop', (e) => {
+      if (!dragEl) return;
+      e.preventDefault();
+      onReorder([...container.querySelectorAll(itemSelector)].map((el) => el.dataset[idAttr]));
+    });
+    container.addEventListener('dragend', () => {
+      if (dragEl) dragEl.classList.remove('dragging');
+      dragEl = null;
+    });
+  }
+
+  // Persists a drag-and-drop reorder. The server broadcasts the new `repos`
+  // order back over SSE on success, which re-renders both the Workspaces
+  // grid and this list from `state.repos` — so nothing here needs to touch
+  // state itself. On failure, re-render to snap the DOM back to server truth.
+  async function reorderRepos(order) {
+    const before = state.repos.map((r) => r.id);
+    if (order.length === before.length && order.every((rid, i) => rid === before[i])) return;
+    try {
+      await api('POST', '/api/repos/reorder', { order });
+    } catch (e) {
+      toast(e.message || 'Could not reorder repositories');
+      renderRepoList();
+      renderView();
+    }
   }
 
   function renderSuperView() {
@@ -922,14 +989,43 @@
     termState.fit = null;
     termState.id = null;
     termState.queue = '';
+    if (termResizeTimer) { clearTimeout(termResizeTimer); termResizeTimer = null; }
+    termLastSize = null;
     $('#terminal-panel').classList.add('hidden');
-    window.removeEventListener('resize', fitTerminal);
+    window.removeEventListener('resize', onWindowResize);
   }
 
-  function fitTerminal() {
+  // Named so `immediate` (fitTerminal's param) never receives the Event object
+  // addEventListener would otherwise pass as the first argument.
+  function onWindowResize() { fitTerminal(); }
+
+  // The backend can't ioctl a pty resize directly, so it pushes an `stty`
+  // through the shell's stdin (see server/terminal.ts), which the shell echoes
+  // back. Dragging the panel handle fires `fitTerminal` on every pointermove —
+  // dozens of times a second — so the resize push itself is debounced
+  // (immediate=true forces it through right away, used on drag end/window
+  // resize) and skipped entirely when the size didn't actually change.
+  let termResizeTimer = null;
+  let termLastSize = null;
+
+  function pushTerminalResize(immediate) {
+    if (!termState.xterm || !termState.id) return;
+    const cols = termState.xterm.cols;
+    const rows = termState.xterm.rows;
+    if (termLastSize && termLastSize.cols === cols && termLastSize.rows === rows) return;
+    if (termResizeTimer) { clearTimeout(termResizeTimer); termResizeTimer = null; }
+    const send = () => {
+      termLastSize = { cols, rows };
+      api('POST', `/api/terminal/${termState.id}/resize`, { cols, rows }).catch(() => {});
+    };
+    if (immediate) send();
+    else termResizeTimer = setTimeout(send, 150);
+  }
+
+  function fitTerminal(immediate) {
     if (!termState.fit || !termState.id) return;
     try { termState.fit.fit(); } catch (_) { /* not mounted */ }
-    api('POST', `/api/terminal/${termState.id}/resize`, { cols: termState.xterm.cols, rows: termState.xterm.rows }).catch(() => {});
+    pushTerminalResize(immediate);
   }
 
   // ---- terminal panel resize (drag handle, height persisted across sessions) ----
@@ -967,6 +1063,7 @@
       document.body.style.cursor = '';
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
+      fitTerminal(true);
     }
     handle.addEventListener('pointerdown', (e) => {
       dragging = true;
@@ -1015,9 +1112,10 @@
       return;
     }
     termState.id = session.id;
+    termLastSize = { cols: term.cols, rows: term.rows };
 
     term.onData((d) => { termState.queue += d; flushTermInput(); });
-    window.addEventListener('resize', fitTerminal);
+    window.addEventListener('resize', onWindowResize);
 
     const es = new EventSource(`/api/terminal/${session.id}/stream`);
     termState.es = es;
@@ -5376,7 +5474,10 @@
     ul.innerHTML = state.repos.length ? '' : '<li class="muted">No repositories yet.</li>';
     for (const r of state.repos) {
       const li = document.createElement('li');
+      li.draggable = true;
+      li.dataset.repo = r.id;
       li.innerHTML = `
+        <span class="drag-handle" title="Drag to reorder" aria-hidden="true">${icon('grip-vertical')}</span>
         <span class="repo-name">${esc(r.name)}</span>
         <span class="repo-path">${esc(r.path)}</span>
         <button class="btn icon danger" title="Remove" aria-label="Remove repository">${icon('x')}</button>`;
@@ -5406,6 +5507,8 @@
   $('#repos-close').addEventListener('click', () => $('#modal-repos').classList.add('hidden'));
   $('#repo-add').addEventListener('click', () => addRepo($('#repo-path').value));
   $('#repo-path').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#repo-add').click(); });
+  makeSortable($('#repo-list'), 'li[data-repo]', 'repo', reorderRepos);
+  makeSortable($('#super-view'), '.workspace-card', 'repo', reorderRepos);
 
   // In Electron, offer a native folder picker instead of typing the path by hand.
   if (window.srpopo && window.srpopo.isElectron) {

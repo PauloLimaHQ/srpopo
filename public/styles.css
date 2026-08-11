@@ -361,10 +361,16 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
   transition: border-color .15s, transform .1s;
 }
 .workspace-card:hover { border-color: var(--card-hover-border); transform: translateY(-1px); }
+.workspace-card.dragging { opacity: .4; }
 .workspace-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .workspace-card-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .workspace-card-name { font-weight: 600; font-size: 14px; word-break: break-word; }
 .workspace-card-avatar { width: 18px; height: 18px; border-radius: 4px; flex: none; }
+.drag-handle {
+  display: inline-flex; flex: none; cursor: grab; color: var(--text-dim);
+}
+.drag-handle:active, .workspace-card.dragging .drag-handle, .repo-list li.dragging .drag-handle { cursor: grabbing; }
+.drag-handle .icon { width: 14px; height: 14px; }
 .workspace-graph { display: flex; height: 8px; border-radius: 6px; overflow: hidden; background: var(--bg-raised); }
 .workspace-graph.empty { background: var(--bg-raised); }
 .workspace-graph-seg { display: block; }
@@ -1535,6 +1541,7 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--a
   background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px;
   padding: 8px 12px; font-size: 12px;
 }
+.repo-list li.dragging { opacity: .4; }
 .repo-list .repo-name { font-weight: 600; }
 .repo-list .repo-path { color: var(--text-dim); font-family: var(--mono); font-size: 11px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
