@@ -932,6 +932,54 @@
     api('POST', `/api/terminal/${termState.id}/resize`, { cols: termState.xterm.cols, rows: termState.xterm.rows }).catch(() => {});
   }
 
+  // ---- terminal panel resize (drag handle, height persisted across sessions) ----
+  const TERM_HEIGHT_KEY = 'srpopo.terminalHeight';
+  const TERM_MIN_HEIGHT = 240;
+
+  function applyTerminalHeight(px) {
+    const max = Math.round(window.innerHeight * 0.9);
+    const h = Math.max(TERM_MIN_HEIGHT, Math.min(px, max));
+    $('#terminal-panel').style.height = `${h}px`;
+    return h;
+  }
+
+  (function initTerminalResize() {
+    const handle = $('#terminal-resize-handle');
+    if (!handle) return;
+    const saved = Number(localStorage.getItem(TERM_HEIGHT_KEY));
+    if (saved) applyTerminalHeight(saved);
+
+    let dragging = false;
+    let startY = 0;
+    let startHeight = 0;
+
+    function onMove(e) {
+      if (!dragging) return;
+      const dy = startY - e.clientY;
+      const h = applyTerminalHeight(startHeight + dy);
+      fitTerminal();
+      localStorage.setItem(TERM_HEIGHT_KEY, String(h));
+    }
+    function onUp() {
+      if (!dragging) return;
+      dragging = false;
+      handle.classList.remove('dragging');
+      document.body.style.cursor = '';
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    }
+    handle.addEventListener('pointerdown', (e) => {
+      dragging = true;
+      startY = e.clientY;
+      startHeight = $('#terminal-panel').getBoundingClientRect().height;
+      handle.classList.add('dragging');
+      document.body.style.cursor = 'ns-resize';
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+      e.preventDefault();
+    });
+  })();
+
   // Opens an in-app shell rooted at a repo/worktree path. Omit `wtPath` for the
   // repo root (the "current page" the workspace is showing).
   async function openTerminalAt(repoId, wtPath) {

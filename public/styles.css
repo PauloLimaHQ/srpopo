@@ -1666,6 +1666,13 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--a
   border-top: 1px solid var(--border);
   box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.28);
 }
+.terminal-resize-handle {
+  flex: none; height: 6px; margin: -3px 0 -3px; cursor: ns-resize; position: relative; z-index: 1;
+}
+.terminal-resize-handle::after {
+  content: ''; position: absolute; left: 0; right: 0; top: 2px; height: 2px; background: var(--border);
+}
+.terminal-resize-handle:hover::after, .terminal-resize-handle.dragging::after { background: var(--muted, #8a8378); }
 .terminal-bar {
   display: flex; align-items: center; gap: 8px;
   padding: 6px 10px;
