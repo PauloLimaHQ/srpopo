@@ -477,7 +477,10 @@ change one).
   `toggleLayout()` backs the ⌘K "Toggle Layout" command.
 
 The **project sidebar** (`renderSidebar` and friends in `public/features/sidebar.js`) lists every
-repository with its cards grouped by board column — grooming and orchestration cards
+repository — repos whose `origin` remote shares an owner (`anplabs/intranet`,
+`anplabs/platform`) folded under one collapsible **organization** heading, which is a
+container only: it groups and folds, it is not a workspace you can enter, and a lone
+repo in an org never gets one — with each repo's cards grouped by board column — grooming and orchestration cards
 included, empty columns dropped — under an "All projects" entry that returns to the
 Super View, plus a **Sessions** group per project (see "Terminal sessions"). Where
 cards are concerned it is **navigation only**: clicking a project enters that
@@ -526,6 +529,18 @@ project tab is a view change; closing a session tab **ends that shell**, exactly
 the × on the docked panel's tab. The strip is deliberately *not* dropped on narrow
 windows the way the rail is — once the rail is gone it's the only thing left showing
 what's open.
+
+**⌘W closes the tab in front, ⌘D duplicates it** (`tabHotkey()` in `tabs.js`, which
+every xterm's key handler also consults so the chord isn't typed into a shell).
+Duplicating means *another session on the same checkout* — same repo, cwd and kind,
+the way ⌘D splits a pane in a terminal app; a board tab can't be duplicated (there is
+one `#board`, re-rendered), so from one you get a plain shell on that project instead.
+Both work in the classic layout too, acting on the docked panel's session. Two
+deliberate wrinkles: the chord is the **platform** modifier, not the usual `metaKey ||
+ctrlKey`, because off macOS it is Ctrl+W / Ctrl+D — which a focused shell keeps
+(kill-word and EOF) — and the Electron menu carries the same two items with
+`registerAccelerator: false`, so the keystroke reaches the page instead of the system
+menu (which is also why **Close Window** moved to ⇧⌘W).
 
 ## Terminal sessions (drive an agent by hand)
 

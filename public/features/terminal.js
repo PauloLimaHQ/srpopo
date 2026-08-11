@@ -1,7 +1,7 @@
 /* Sr. Popo — terminal. No build step: native ES module. */
 import { api, esc, toast } from '../core/api.js';
 import { $, icon, state } from '../core/state.js';
-import { activePane, activateTab, activeTabKey, applyPanes, cycleTab, noteSessionTab, pruneTabs, renderTabStrip, showTerminalPane, tabsOn } from './tabs.js';
+import { activePane, activateTab, activeTabKey, applyPanes, cycleTab, noteSessionTab, pruneTabs, renderTabStrip, showTerminalPane, tabHotkey, tabsOn } from './tabs.js';
 
 
 // ---- In-app terminal sessions (one tab each) ----
@@ -143,8 +143,9 @@ function createPane() {
   const fit = new window.FitAddon.FitAddon();
   term.loadAddon(fit);
   term.open(el);
-  // Let the panel's own hotkeys through instead of sending them to the shell.
-  term.attachCustomKeyEventHandler((e) => !(e.type === 'keydown' && hotkey(e)));
+  // Let the panel's own hotkeys — and the tab strip's ⌘W/⌘D — through instead of
+  // sending them to the shell.
+  term.attachCustomKeyEventHandler((e) => !(e.type === 'keydown' && (hotkey(e) || tabHotkey(e))));
 
   const pane = { id: null, el, xterm: term, fit, queue: '', sending: false, lastSize: null };
   try { fit.fit(); } catch (_) { /* not mounted */ }
@@ -306,6 +307,15 @@ function focusSession(id) {
   renderSessionTabs();
   fitTerminal(true);
   pane.xterm.focus();
+}
+
+// The session the user is actually looking at: the work-area tab in front, or
+// the docked panel's selected tab while the panel is up. Lets tab-level hotkeys
+// (⌘W, ⌘D) act on it without reaching into this module's state.
+function visibleSession() {
+  if (tabsOn() && activePane() !== 'session') return null;
+  if (!tabsOn() && !panelOpen()) return null;
+  return (activeId && sessions.get(activeId)) || null;
 }
 
 function cycleSession(delta) {
@@ -604,5 +614,5 @@ export function init() {
 export {
   STATUS_LABEL, allSessions, applyTerminalEvent, availableKinds, endSession, focusSession,
   loadTerminalSessions, newSession, openNewSessionMenu, openTerminalAt, restoreSessionTab,
-  sessionKindIcon, sessionsForRepo, syncTerminalHost, toggleTerminalPanel,
+  sessionKindIcon, sessionsForRepo, syncTerminalHost, toggleTerminalPanel, visibleSession,
 };

@@ -15,6 +15,8 @@ const SHORTCUTS = [
   { label: 'Jump to / back from the terminal', keys: ['Ctrl', '`'] },
   { label: 'New terminal session', keys: ['Ctrl', 'Shift', '`'] },
   { label: 'Previous / next tab', keys: ['Ctrl', 'Alt', '←/→'] },
+  { label: 'Close the tab in front', keys: [MOD, 'W'] },
+  { label: 'Duplicate the tab in front', keys: [MOD, 'D'] },
   { label: 'Submit the open form', keys: [MOD, '↵'] },
   { label: 'Close dialog / drawer', keys: ['esc'] },
   { label: 'This help', keys: ['?'] },

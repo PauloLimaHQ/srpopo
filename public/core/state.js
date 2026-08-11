@@ -101,7 +101,9 @@ const isOrchestrationLive = (o) => o.status === 'running';
 
 const $ = (sel) => document.querySelector(sel);
 
-// Modifier label for on-screen keyboard hints — ⌘ on macOS, "Ctrl" elsewhere.
+// The platform's command modifier: ⌘ on macOS, Ctrl elsewhere. `MOD` is the
+// label for on-screen hints; `IS_MAC` is what key handlers match against when a
+// chord has to be one or the other rather than "either" (see tabs.js).
 const IS_MAC = /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent || '');
 const MOD = IS_MAC ? '⌘' : 'Ctrl';
 
@@ -109,4 +111,4 @@ const MOD = IS_MAC ? '⌘' : 'Ctrl';
 // into templates directly, never through esc(). No emojis in the UI.
 const icon = (name, opts) => (window.srpopoIcons ? window.srpopoIcons.svg(name, opts) : '');
 
-export { $, COLUMNS, COLUMN_OF_STATUS, GROOMING_COLUMN, MOD, ORCH_COLUMN, icon, isAutoApprove, isElectron, isGroomingLive, isLive, isOrchestrationLive, pendingPermissions, setAutoApproveLocal, setPendingPermissions, state };
+export { $, COLUMNS, COLUMN_OF_STATUS, GROOMING_COLUMN, IS_MAC, MOD, ORCH_COLUMN, icon, isAutoApprove, isElectron, isGroomingLive, isLive, isOrchestrationLive, pendingPermissions, setAutoApproveLocal, setPendingPermissions, state };

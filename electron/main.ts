@@ -201,7 +201,27 @@ function buildAppMenu(): void {
           click: () => sendMenuAction('repos'),
         },
         { type: 'separator' },
-        isMac ? { role: 'close' } : { role: 'quit' },
+        // The renderer owns tabs, so these two only *advertise* their chord:
+        // `registerAccelerator: false` keeps the keystroke out of the system
+        // menu and lets it reach the page, where features/tabs.js handles it
+        // (in a browser tab there is no menu at all and it always lands there).
+        // Clicking the item still works — that's what the click handler is for.
+        {
+          label: 'Close Tab',
+          accelerator: 'CmdOrCtrl+W',
+          registerAccelerator: false,
+          click: () => sendMenuAction('close-tab'),
+        },
+        {
+          label: 'Duplicate Tab',
+          accelerator: 'CmdOrCtrl+D',
+          registerAccelerator: false,
+          click: () => sendMenuAction('duplicate-tab'),
+        },
+        { type: 'separator' },
+        // Cmd+W now belongs to the tab in front, so closing the window moves to
+        // Shift+Cmd+W — the same split every tabbed app makes.
+        isMac ? { role: 'close', accelerator: 'Shift+Cmd+W' } : { role: 'quit' },
       ],
     },
     {

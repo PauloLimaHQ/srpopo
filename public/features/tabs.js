@@ -1,8 +1,8 @@
 /* Sr. Popo — work-area tabs. No build step: native ES module. */
-import { esc } from '../core/api.js';
-import { $, icon, isGroomingLive, isLive, isOrchestrationLive, state } from '../core/state.js';
+import { esc, toast } from '../core/api.js';
+import { $, IS_MAC, icon, isGroomingLive, isLive, isOrchestrationLive, state } from '../core/state.js';
 import { groomingsForRepo, orchestrationsForRepo, tasksForRepo } from './filters.js';
-import { STATUS_LABEL, allSessions, endSession, focusSession, openNewSessionMenu, restoreSessionTab, sessionKindIcon } from './terminal.js';
+import { STATUS_LABEL, allSessions, endSession, focusSession, newSession, openNewSessionMenu, restoreSessionTab, sessionKindIcon, visibleSession } from './terminal.js';
 import { currentLayout } from './theme.js';
 import { enterWorkspace, exitWorkspace, githubAvatarUrl } from './workspaces.js';
 
@@ -178,6 +178,46 @@ function closeTab(key) {
   else renderTabStrip();
 }
 
+// ⌘W. In the classic layout there is no strip, so the only closable thing on
+// screen is the session in the docked panel — closing anything on the board
+// there would be invisible.
+function closeActiveTab() {
+  if (tabsOn()) { closeTab(activeTabKey()); return; }
+  const s = visibleSession();
+  if (s) endSession(s.id);
+}
+
+// ⌘D. A board can only be open once — a project tab shows the *same* `#board`
+// re-rendered (see the header), so there is no second copy to make. What can be
+// duplicated is a session: another shell of the same kind on the same checkout,
+// the way ⌘D splits a pane in a terminal app. From a board tab the useful "new
+// one" is a plain shell on that project's checkout.
+function duplicateTab() {
+  const tab = tabsOn() ? activeTab() : null;
+  const s = tab?.kind === 'session' ? allSessions().find((x) => x.id === tab.id) : visibleSession();
+  if (s) { newSession(s.repoId, s.kind, s.cwd); return; }
+  if (state.view.repoId) { newSession(state.view.repoId, 'shell'); return; }
+  toast('Open a project or a session to duplicate', 'info');
+}
+
+// ⌘W / ⌘D, recognized here rather than inline in the listener so every xterm's
+// custom key handler can ask the same question and let them through instead of
+// typing them into a shell.
+//
+// Deliberately the *platform* modifier and not the usual `metaKey || ctrlKey`:
+// off macOS this chord is Ctrl+W / Ctrl+D, which a shell owns (kill-word and
+// EOF), so there a focused terminal keeps them and only the rest of the board
+// answers.
+function tabHotkey(e) {
+  if (e.altKey || e.shiftKey) return null;
+  if (IS_MAC ? !e.metaKey || e.ctrlKey : !e.ctrlKey || e.metaKey) return null;
+  if (!IS_MAC && e.target instanceof Element && e.target.closest('#terminal-mount')) return null;
+  const k = (e.key || '').toLowerCase();
+  if (k === 'w') return 'close';
+  if (k === 'd') return 'duplicate';
+  return null;
+}
+
 // Ctrl+Alt+←/→. In the classic layout the same keys cycle terminal sessions
 // (there is no strip to walk), which terminal.js handles.
 function cycleTab(delta) {
@@ -311,6 +351,20 @@ export function init() {
 
   $('#tabstrip-list').addEventListener('keydown', onStripKeydown);
 
+  // ⌘W closes the tab in front, ⌘D duplicates it — the chords every tabbed app
+  // uses. In Electron the native menu carries the same two items, with their
+  // accelerators left unregistered so the keystroke lands here (electron/main.ts).
+  document.addEventListener('keydown', (e) => {
+    const action = tabHotkey(e);
+    if (!action) return;
+    // A blocking modal already owns the screen — closing the tab behind it would
+    // leave the dialog floating over a view the user never chose.
+    if (document.querySelector('.modal:not(.hidden)')) return;
+    e.preventDefault();
+    if (action === 'close') closeActiveTab();
+    else duplicateTab();
+  });
+
   // The strip's + makes a shell, not a project: projects are opened from the
   // rail two inches to the left, which is always on screen in this layout.
   $('#tabstrip-new').addEventListener('click', (e) => {
@@ -322,7 +376,7 @@ export function init() {
 
 
 export {
-  activePane, activateTab, activeTabKey, applyPanes, closeTab, cycleTab, noteRepoTab,
-  noteSessionTab, noteSuperTab, pruneTabs, renderTabStrip, restoreActiveTab, showTerminalPane,
-  tabsOn,
+  activePane, activateTab, activeTabKey, applyPanes, closeActiveTab, closeTab, cycleTab,
+  duplicateTab, noteRepoTab, noteSessionTab, noteSuperTab, pruneTabs, renderTabStrip,
+  restoreActiveTab, showTerminalPane, tabHotkey, tabsOn,
 };

@@ -22,12 +22,54 @@ import { enterWorkspace, exitWorkspace, githubAvatarUrl, refreshRepoBranchCard }
 // the rest of the board's transient UI state, so a re-render preserves it but
 // a reload starts from the current workspace again.
 const sidebarExpanded = new Set();
+// Organization groups the user folded away, by org key. Inverted on purpose
+// (collapsed rather than expanded): a group is open until you close it, so
+// grouping never hides a project you could see before.
+const sidebarOrgCollapsed = new Set();
 // The first render unfolds whichever workspace was restored from localStorage
 // (entering one later does it in enterWorkspace). One-shot, so collapsing that
 // project again isn't undone by the next SSE tick.
 let sidebarSeeded = false;
 
 const sidebarOn = () => currentLayout() === 'sidebar';
+
+// The organization a repo belongs to, read off its `origin` remote — the owner
+// segment of the web URL the server already resolves (`https://host/org/repo`),
+// so `anplabs/intranet` and `anplabs/platform` share one org. Keyed by host too:
+// two `anplabs` on different forges are two different organizations. A repo with
+// no hosted remote has none.
+function repoOrg(repoId) {
+  const remoteUrl = state.repoRemoteUrlByRepo.get(repoId);
+  if (!remoteUrl) return null;
+  try {
+    const u = new URL(remoteUrl);
+    const owner = u.pathname.split('/').filter(Boolean)[0];
+    return owner ? { key: `${u.host}/${owner}`, label: owner, remoteUrl } : null;
+  } catch { return null; }
+}
+
+// Repos in their user-chosen order, with same-organization ones folded into a
+// group. A group needs at least two members — nesting a lone repo under its own
+// org heading costs a level of indentation and tells you nothing — so the rest
+// stay top-level rows exactly where they were. A group sits at the position of
+// its first member, keeping the list's drag-ordered feel.
+function sidebarOrgEntries(repos) {
+  const counts = new Map();
+  for (const r of repos) {
+    const org = repoOrg(r.id);
+    if (org) counts.set(org.key, (counts.get(org.key) || 0) + 1);
+  }
+  const entries = [];
+  const byKey = new Map();
+  for (const r of repos) {
+    const org = repoOrg(r.id);
+    if (!org || counts.get(org.key) < 2) { entries.push({ org: null, repos: [r] }); continue; }
+    let entry = byKey.get(org.key);
+    if (!entry) { entry = { org, repos: [] }; byKey.set(org.key, entry); entries.push(entry); }
+    entry.repos.push(r);
+  }
+  return entries;
+}
 
 // One row per card, in board order: the same status dot, title and live
 // spinner the card shows, compressed to a single line.
@@ -117,13 +159,22 @@ function sidebarGroupsHtml(repoId) {
       </div>`).join('');
 }
 
-function sidebarRepoHtml(r) {
+// Live sessions of every kind for a repo — the number the rail badges.
+function repoLiveCount(repoId) {
+  return tasksForRepo(repoId).filter(isLive).length +
+    groomingsForRepo(repoId).filter(isGroomingLive).length +
+    orchestrationsForRepo(repoId).filter(isOrchestrationLive).length;
+}
+
+// `inOrg` drops the repo's avatar: it is the *organization's* avatar (GitHub
+// serves one per owner), so under an org heading that already shows it every
+// child row would repeat the same picture.
+function sidebarRepoHtml(r, inOrg) {
   const tasks = tasksForRepo(r.id);
-  const live = tasks.filter(isLive).length + groomingsForRepo(r.id).filter(isGroomingLive).length +
-    orchestrationsForRepo(r.id).filter(isOrchestrationLive).length;
+  const live = repoLiveCount(r.id);
   const open = sidebarExpanded.has(r.id);
   const active = state.view.mode === 'workspace' && state.view.repoId === r.id;
-  const avatarUrl = githubAvatarUrl(state.repoRemoteUrlByRepo.get(r.id));
+  const avatarUrl = inOrg ? null : githubAvatarUrl(state.repoRemoteUrlByRepo.get(r.id));
   return `
       <div class="sidebar-project${open ? ' open' : ''}">
         <div class="sidebar-project-head${active ? ' active' : ''}">
@@ -141,7 +192,32 @@ function sidebarRepoHtml(r) {
             : `<span class="count">${tasks.length}</span>`}
           </button>
         </div>
-        ${open ? `<div class="sidebar-project-body">${sidebarSessionsHtml(r.id)}${sidebarGroupsHtml(r.id)}</div>` : ''}
+        ${open ? `<div class="sidebar-project-body">${sidebarSessionsHtml(r.id)}<div class="sidebar-divider"></div>${sidebarGroupsHtml(r.id)}</div>` : ''}
+      </div>`;
+}
+
+// An organization and the repos under it. Purely a container: the heading only
+// folds the group away — clicking it never changes the workspace, since an org
+// isn't a place you can be.
+function sidebarOrgHtml({ org, repos }) {
+  if (!org) return sidebarRepoHtml(repos[0], false);
+  const open = !sidebarOrgCollapsed.has(org.key);
+  const live = repos.reduce((n, r) => n + repoLiveCount(r.id), 0);
+  const avatarUrl = githubAvatarUrl(org.remoteUrl);
+  return `
+      <div class="sidebar-org${open ? ' open' : ''}">
+        <button class="sidebar-org-btn" data-org="${esc(org.key)}" aria-expanded="${open}"
+                title="${esc(`${org.label} — ${repos.length} repositories`)}">
+          <span class="sidebar-org-twisty">${icon(open ? 'chevron-down' : 'chevron-right')}</span>
+          ${avatarUrl
+          ? `<img class="sidebar-avatar" src="${esc(avatarUrl)}" alt="" loading="lazy">`
+          : `<span class="sidebar-project-icon">${icon('folder')}</span>`}
+          <span class="sidebar-org-name">${esc(org.label)}</span>
+          ${live
+          ? `<span class="chip running-badge" title="${live} live session${live === 1 ? '' : 's'}"><span class="spinner"></span>${live}</span>`
+          : `<span class="count">${repos.length}</span>`}
+        </button>
+        ${open ? `<div class="sidebar-org-body">${repos.map((r) => sidebarRepoHtml(r, true)).join('')}</div>` : ''}
       </div>`;
 }
 
@@ -169,7 +245,7 @@ function renderSidebar() {
       </button>
       <div class="sidebar-projects">
         ${state.repos.length
-        ? state.repos.map(sidebarRepoHtml).join('')
+        ? sidebarOrgEntries(state.repos).map(sidebarOrgHtml).join('')
         : '<div class="sidebar-empty">No repositories yet.</div>'}
       </div>
       <div class="sidebar-foot">${icon('panel-left')} Experimental layout — projects and sessions open as tabs. Switch back in Settings → Appearance</div>`;
@@ -197,6 +273,14 @@ export function init() {
     if (addSession) { openNewSessionMenu(addSession.dataset.newSession, addSession); return; }
     const sessionBtn = e.target.closest('[data-session]');
     if (sessionBtn) { focusSession(sessionBtn.dataset.session); return; }
+    const orgBtn = e.target.closest('[data-org]');
+    if (orgBtn) {
+      const key = orgBtn.dataset.org;
+      if (sidebarOrgCollapsed.has(key)) sidebarOrgCollapsed.delete(key);
+      else sidebarOrgCollapsed.add(key);
+      renderSidebar();
+      return;
+    }
     const twisty = e.target.closest('[data-toggle]');
     if (twisty) {
       const id = twisty.dataset.toggle;

@@ -569,15 +569,15 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
 
 /* Rows — the "All projects" entry, each project, and each card — share one
    shape so the rail reads as a single list at three depths. */
-.sidebar-super, .sidebar-project-btn, .sidebar-card {
+.sidebar-super, .sidebar-org-btn, .sidebar-project-btn, .sidebar-card {
   display: flex; align-items: center; gap: 8px; width: 100%;
   padding: 6px 8px; border-radius: 8px; cursor: pointer;
   background: transparent; border: 1px solid transparent; color: var(--text);
   font: inherit; font-size: 13px; text-align: left;
   transition: background .12s, color .12s;
 }
-.sidebar-super:hover, .sidebar-project-btn:hover, .sidebar-card:hover { background: var(--bg-hover); }
-.sidebar-super:focus-visible, .sidebar-project-btn:focus-visible,
+.sidebar-super:hover, .sidebar-org-btn:hover, .sidebar-project-btn:hover, .sidebar-card:hover { background: var(--bg-hover); }
+.sidebar-super:focus-visible, .sidebar-org-btn:focus-visible, .sidebar-project-btn:focus-visible,
 .sidebar-card:focus-visible, .sidebar-twisty:focus-visible {
   outline: 2px solid var(--accent); outline-offset: -1px;
 }
@@ -590,6 +590,25 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
 .sidebar-super.active .count { color: var(--accent); }
 
 .sidebar-projects { display: flex; flex-direction: column; gap: 2px; }
+/* Repos sharing an `origin` owner (anplabs/intranet, anplabs/platform) sit under
+   one org heading. It only folds the group — an org is not a workspace you can
+   enter — so it reads as a lighter, wider row than a project. */
+.sidebar-org { display: flex; flex-direction: column; gap: 2px; }
+.sidebar-org-btn { min-width: 0; gap: 6px; }
+.sidebar-org-twisty { display: inline-flex; color: var(--text-dim); flex: none; }
+.sidebar-org-twisty .icon { width: 13px; height: 13px; }
+.sidebar-org-name {
+  font-weight: 600; color: var(--text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sidebar-org-btn:hover .sidebar-org-name { color: var(--text); }
+.sidebar-org-btn .running-badge { margin-left: auto; font-size: 10px; padding: 1px 7px; gap: 4px; flex: none; }
+/* Shallower than the project→cards indent: the rail is 264px wide and a card
+   inside a project inside an org is already three levels deep. */
+.sidebar-org-body {
+  display: flex; flex-direction: column; gap: 2px;
+  margin: 2px 0 4px 9px; padding-left: 6px; border-left: 1px solid var(--border);
+}
 .sidebar-project-head { display: flex; align-items: center; gap: 2px; border-radius: 8px; }
 .sidebar-project-head.active { background: var(--accent-soft); }
 .sidebar-project-head.active .sidebar-project-name { color: var(--accent); font-weight: 600; }
@@ -612,6 +631,7 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
   display: flex; flex-direction: column; gap: 8px;
   margin: 4px 0 8px 12px; padding-left: 8px; border-left: 1px solid var(--border);
 }
+.sidebar-divider { height: 1px; margin: 0 8px; background: var(--border); }
 .sidebar-group { display: flex; flex-direction: column; gap: 1px; }
 .sidebar-group-head {
   display: flex; align-items: center; gap: 6px; padding: 2px 8px;

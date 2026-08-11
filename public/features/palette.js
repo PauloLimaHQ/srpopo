@@ -13,7 +13,7 @@ import { openSettingsModal } from './settings-modal.js';
 import { pluginInstalled } from './settings.js';
 import { openShortcutsModal } from './shortcuts.js';
 import { openSpecsModal } from './specs.js';
-import { activeTabKey, closeTab, tabsOn } from './tabs.js';
+import { closeActiveTab, duplicateTab, tabsOn } from './tabs.js';
 import { openTaskModal } from './task-modal.js';
 import { STATUS_LABEL, allSessions, availableKinds, focusSession, newSession, openTerminalAt } from './terminal.js';
 import { LAYOUT_LABEL, THEME_LABEL, currentLayout, currentTheme, cycleTheme, toggleLayout } from './theme.js';
@@ -51,7 +51,10 @@ function paletteCommands() {
     // Only the tabbed layout has a tab to close; in the classic one there is
     // nothing this would act on.
     ...(tabsOn()
-      ? [{ label: 'Close Tab', hint: 'Close the tab in front (ends it, if it is a session)', icon: 'x', run: () => closeTab(activeTabKey()) }]
+      ? [
+        { label: 'Close Tab', hint: 'Close the tab in front (ends it, if it is a session)', icon: 'x', kbd: `${MOD}W`, run: () => closeActiveTab() },
+        { label: 'Duplicate Tab', hint: 'Another session on the same checkout', icon: 'copy', kbd: `${MOD}D`, run: () => duplicateTab() },
+      ]
       : []),
     // The open workspace's own actions — the keyboard path to what the header's
     // Terminal button and "…" menu do.

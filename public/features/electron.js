@@ -7,6 +7,7 @@ import { openReposModal } from './repos-modal.js';
 import { openSettingsModal } from './settings-modal.js';
 import { pluginInstalled } from './settings.js';
 import { modalOpen, openShortcutsModal } from './shortcuts.js';
+import { closeActiveTab, duplicateTab } from './tabs.js';
 import { openTaskModal } from './task-modal.js';
 import { cycleTheme } from './theme.js';
 
@@ -31,6 +32,10 @@ export function init() {
         case 'palette': if (!modalOpen()) openPalette(); break;
         case 'shortcuts': if (!modalOpen()) openShortcutsModal(); break;
         case 'find': $('#filter-search').focus(); break;
+        // Both also have a keyboard path of their own (⌘W / ⌘D, handled in
+        // features/tabs.js) — this is the menu item being clicked.
+        case 'close-tab': if (!modalOpen()) closeActiveTab(); break;
+        case 'duplicate-tab': if (!modalOpen()) duplicateTab(); break;
         case 'toggle-theme': cycleTheme(); break;
       }
     });
