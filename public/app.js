@@ -452,6 +452,9 @@
   // workspace there's no board to draw — refresh the Super View instead so its
   // per-repo stats (graph, live badge, task count) stay live.
   function renderBoard() {
+    // The experimental project sidebar lists the same cards, so it refreshes off
+    // the same choke point (a no-op in the classic layout).
+    renderSidebar();
     if (state.view.mode !== 'workspace') { renderSuperView(); return; }
     updateFilterMeta();
     const board = $('#board');
@@ -581,7 +584,9 @@
     saveView();
     renderView();
   }
-  const enterWorkspace = (repoId) => setView({ mode: 'workspace', repoId });
+  // Entering a workspace unfolds it in the project sidebar (if that layout is
+  // on), so the board you switched to and the rail agree on what's in focus.
+  const enterWorkspace = (repoId) => { sidebarExpanded.add(repoId); setView({ mode: 'workspace', repoId }); };
   const exitWorkspace = () => setView({ mode: 'super' });
   // The workspace open when a New Task / Brief / Linear modal is launched, so
   // those flows default their repo <select> to it instead of the last-used repo.
@@ -593,6 +598,7 @@
     // The actions menu is anchored to the header, but lives outside it — close it
     // so it can't outlive the workspace it acts on.
     closeWorkspaceMenu();
+    renderSidebar();
     $('#super-view').classList.toggle('hidden', !isSuper);
     $('#board').classList.toggle('hidden', isSuper);
     $('#workspace-header').classList.toggle('hidden', isSuper);
@@ -627,6 +633,8 @@
     state.repoAheadBehindByRepo.set(repoId, { ahead, behind });
     if (state.view.mode === 'super') renderSuperView();
     else if (state.view.mode === 'workspace' && state.view.repoId === repoId) renderWorkspaceHeader();
+    // The sidebar shows the repo's GitHub avatar, which this lookup resolves.
+    renderSidebar();
   }
 
   // A branch's ahead/behind vs its upstream, as an icon badge — arrow-up for
@@ -958,6 +966,189 @@
     if (wsPickerOpen() && !e.target.closest('#workspace-popover') && !e.target.closest('#workspace-switcher')) {
       closeWorkspacePicker();
     }
+  });
+
+  // ---------- project sidebar (experimental "sidebar" layout) ----------
+  // The alternate shell chosen in Settings → General → Appearance → Layout: a
+  // persistent left rail listing every repository with its cards grouped by
+  // board column, next to the same Super View / board the classic layout shows.
+  // It is pure navigation — clicking a project switches workspace, clicking a
+  // card opens the same drawer — so nothing here can change a task's state.
+  // Renders only while the layout is on; in the classic layout it's a no-op.
+
+  // Repos whose card list is unfolded. Kept in memory (not localStorage) like
+  // the rest of the board's transient UI state, so a re-render preserves it but
+  // a reload starts from the current workspace again.
+  const sidebarExpanded = new Set();
+  // The first render unfolds whichever workspace was restored from localStorage
+  // (entering one later does it in enterWorkspace). One-shot, so collapsing that
+  // project again isn't undone by the next SSE tick.
+  let sidebarSeeded = false;
+
+  const sidebarOn = () => currentLayout() === 'sidebar';
+
+  // One row per card, in board order: the same status dot, title and live
+  // spinner the card shows, compressed to a single line.
+  function sidebarCardRow(kind, id, title, dot, live, badge) {
+    return `
+      <button class="sidebar-card" data-${kind}="${esc(id)}" title="${esc(title)}">
+        <span class="sidebar-card-dot" style="background:${dot}"></span>
+        <span class="sidebar-card-title">${esc(title)}</span>
+        ${live ? '<span class="spinner"></span>' : ''}
+        ${badge ? `<span class="sidebar-card-badge">${esc(badge)}</span>` : ''}
+      </button>`;
+  }
+
+  // A repo's cards, grouped by the column they sit in. Empty groups are dropped
+  // rather than rendered as six blank headings — the counts live on the group.
+  function sidebarGroupsHtml(repoId) {
+    const groups = [];
+
+    const groomings = groomingsForRepo(repoId).filter(groomingMatchesFilters)
+      .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+    if (groomings.length) {
+      groups.push({
+        col: GROOMING_COLUMN,
+        rows: groomings.map((g) => sidebarCardRow('grooming', g.id, g.title, GROOMING_COLUMN.dot,
+          isGroomingLive(g), g.status === 'awaiting' ? 'needs input' : g.status === 'failed' ? 'failed' : '')),
+      });
+    }
+
+    const orchestrations = orchestrationsForRepo(repoId).filter(orchestrationMatchesFilters)
+      .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+    if (orchestrations.length) {
+      groups.push({
+        col: ORCH_COLUMN,
+        rows: orchestrations.map((o) => sidebarCardRow('orchestration', o.id, o.title, ORCH_COLUMN.dot,
+          isOrchestrationLive(o), o.status === 'awaiting' ? 'needs input' : o.status === 'failed' ? 'failed' : '')),
+      });
+    }
+
+    const tasks = tasksForRepo(repoId).filter(taskMatchesFilters);
+    for (const col of COLUMNS) {
+      const inCol = tasks.filter((t) => COLUMN_OF_STATUS[t.status] === col.key)
+        .sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+      if (!inCol.length) continue;
+      groups.push({
+        col,
+        rows: inCol.map((t) => sidebarCardRow('task', t.id, t.title, col.dot, isLive(t),
+          t.status === 'failed' ? 'failed' : pendingPermissions(t.id).length ? 'approve' : '')),
+      });
+    }
+
+    if (!groups.length) {
+      return `<div class="sidebar-empty">${filtersActive() ? 'no matches' : 'no cards yet'}</div>`;
+    }
+    return groups.map(({ col, rows }) => `
+      <div class="sidebar-group">
+        <div class="sidebar-group-head">
+          <span class="dot" style="background:${col.dot}"></span>
+          <span class="sidebar-group-label">${esc(col.label)}</span>
+          <span class="count">${rows.length}</span>
+        </div>
+        ${rows.join('')}
+      </div>`).join('');
+  }
+
+  function sidebarRepoHtml(r) {
+    const tasks = tasksForRepo(r.id);
+    const live = tasks.filter(isLive).length + groomingsForRepo(r.id).filter(isGroomingLive).length +
+      orchestrationsForRepo(r.id).filter(isOrchestrationLive).length;
+    const open = sidebarExpanded.has(r.id);
+    const active = state.view.mode === 'workspace' && state.view.repoId === r.id;
+    const avatarUrl = githubAvatarUrl(state.repoRemoteUrlByRepo.get(r.id));
+    return `
+      <div class="sidebar-project${open ? ' open' : ''}">
+        <div class="sidebar-project-head${active ? ' active' : ''}">
+          <button class="sidebar-twisty" data-toggle="${esc(r.id)}" aria-expanded="${open}"
+                  title="${open ? 'Collapse' : 'Expand'}" aria-label="${open ? 'Collapse' : 'Expand'} ${esc(r.name)}">
+            ${icon(open ? 'chevron-down' : 'chevron-right')}
+          </button>
+          <button class="sidebar-project-btn" data-repo="${esc(r.id)}" title="${esc(r.path)}">
+            ${avatarUrl
+              ? `<img class="sidebar-avatar" src="${esc(avatarUrl)}" alt="" loading="lazy">`
+              : `<span class="sidebar-project-icon">${icon('folder')}</span>`}
+            <span class="sidebar-project-name">${esc(r.name)}</span>
+            ${live
+              ? `<span class="chip running-badge" title="${live} live session${live === 1 ? '' : 's'}"><span class="spinner"></span>${live}</span>`
+              : `<span class="count">${tasks.length}</span>`}
+          </button>
+        </div>
+        ${open ? `<div class="sidebar-project-body">${sidebarGroupsHtml(r.id)}</div>` : ''}
+      </div>`;
+  }
+
+  function renderSidebar() {
+    const el = $('#sidebar');
+    if (!el || !sidebarOn()) return;
+    // Waits for the first render that has repos — the layout is applied before
+    // boot() has loaded any state, and that empty pass must not burn the seed.
+    if (!sidebarSeeded && state.repos.length) {
+      sidebarSeeded = true;
+      if (state.view.mode === 'workspace') sidebarExpanded.add(state.view.repoId);
+    }
+    // innerHTML rebuild is the same choke point the board uses; keep the scroll
+    // position so a live task's SSE tick doesn't yank the list from under you.
+    const scroll = el.scrollTop;
+    const superActive = state.view.mode === 'super';
+    el.innerHTML = `
+      <div class="sidebar-head">
+        <span class="sidebar-head-title">Projects</span>
+        <button class="btn ghost icon" id="sidebar-add-repo" title="Add a repository" aria-label="Add a repository">${icon('plus')}</button>
+      </div>
+      <button class="sidebar-super${superActive ? ' active' : ''}" data-super="1">
+        ${icon('layout-grid')}<span>All projects</span>
+        <span class="count">${state.repos.length}</span>
+      </button>
+      <div class="sidebar-projects">
+        ${state.repos.length
+          ? state.repos.map(sidebarRepoHtml).join('')
+          : '<div class="sidebar-empty">No repositories yet.</div>'}
+      </div>
+      <div class="sidebar-foot">${icon('panel-left')} Experimental layout — switch back in Settings → Appearance</div>`;
+    el.scrollTop = scroll;
+    // Avatars come from the same per-repo branch lookup the Super View uses.
+    for (const r of state.repos) refreshRepoBranchCard(r.id);
+  }
+
+  // Opening a card from another project switches the workspace too, so closing
+  // the drawer doesn't leave you on an unrelated board.
+  function sidebarOpenTask(taskId) {
+    const t = state.tasks.get(taskId);
+    if (t && t.repoId && state.view.repoId !== t.repoId) enterWorkspace(t.repoId);
+    openDrawer(taskId);
+  }
+
+  $('#sidebar').addEventListener('click', (e) => {
+    if (e.target.closest('#sidebar-add-repo')) { openReposModal(); return; }
+    const twisty = e.target.closest('[data-toggle]');
+    if (twisty) {
+      const id = twisty.dataset.toggle;
+      if (sidebarExpanded.has(id)) sidebarExpanded.delete(id);
+      else sidebarExpanded.add(id);
+      renderSidebar();
+      return;
+    }
+    if (e.target.closest('[data-super]')) { exitWorkspace(); return; }
+    const repoBtn = e.target.closest('[data-repo]');
+    if (repoBtn) { enterWorkspace(repoBtn.dataset.repo); return; }
+    const taskBtn = e.target.closest('[data-task]');
+    if (taskBtn) { sidebarOpenTask(taskBtn.dataset.task); return; }
+    const groomBtn = e.target.closest('[data-grooming]');
+    if (groomBtn) { openGroomingDrawer(groomBtn.dataset.grooming); return; }
+    const orchBtn = e.target.closest('[data-orchestration]');
+    if (orchBtn) openOrchestrationDrawer(orchBtn.dataset.orchestration);
+  });
+
+  // Same right-click menu as the board card, so the sidebar isn't a second-class
+  // way to reach a task.
+  $('#sidebar').addEventListener('contextmenu', (e) => {
+    const row = e.target.closest('[data-task]');
+    if (!row) return;
+    const t = state.tasks.get(row.dataset.task);
+    if (!t) return;
+    e.preventDefault();
+    openContextMenu(t, e.clientX, e.clientY);
   });
 
   // ---- In-app terminal (embedded shell, docked at the bottom) ----
@@ -5182,6 +5373,7 @@
     $('#setting-resource-monitor').checked = resourceMonitorOn();
     renderSessionMemorySetting();
     $('#setting-theme').value = currentTheme();
+    $('#setting-layout').value = currentLayout();
     renderEditorSetting();
     renderPlugins();
     renderCustomModels();
@@ -5577,6 +5769,7 @@
         : []),
       { label: 'Settings', hint: 'Notifications, sounds, Linear key', icon: 'settings', kbd: `${MOD},`, run: () => openSettingsModal() },
       { label: 'Toggle Theme', hint: `Currently ${THEME_LABEL[currentTheme()]} — set it in Settings → Appearance`, icon: 'sun-moon', run: () => cycleTheme() },
+      { label: 'Toggle Layout', hint: `Currently ${LAYOUT_LABEL[currentLayout()]} — the project sidebar is experimental`, icon: 'panel-left', run: () => toggleLayout() },
       { label: 'Filter Tasks', hint: 'Jump to the filter box', icon: 'search', kbd: '/', run: () => $('#filter-search').focus() },
       { label: 'Keyboard Shortcuts', hint: 'See all shortcuts', icon: 'keyboard', kbd: '?', run: () => openShortcutsModal() },
     ];
@@ -5969,6 +6162,47 @@
     $('#setting-theme').addEventListener('change', (e) => applyTheme(e.target.value));
   }
 
+  // ---------- layout (appearance) ----------
+  // Two shells for the same board, chosen in Settings → General → Appearance:
+  // 'classic' is the Super View grid plus one repo's board, unchanged; 'sidebar'
+  // (experimental) adds the persistent project rail rendered above. Device-local
+  // in localStorage like the theme, so the desktop app and a phone on the LAN can
+  // each pick their own — it never reaches db.json.
+  const LAYOUT_KEY = 'srpopo.layout';
+  const LAYOUTS = ['classic', 'sidebar'];
+  const LAYOUT_LABEL = { classic: 'Classic board', sidebar: 'Project sidebar' };
+
+  function currentLayout() {
+    try {
+      return LAYOUTS.includes(localStorage.getItem(LAYOUT_KEY)) ? localStorage.getItem(LAYOUT_KEY) : 'classic';
+    } catch { return 'classic'; }
+  }
+  function applyLayout(mode) {
+    const layout = LAYOUTS.includes(mode) ? mode : 'classic';
+    document.body.dataset.layout = layout;
+    try {
+      if (layout === 'classic') localStorage.removeItem(LAYOUT_KEY);
+      else localStorage.setItem(LAYOUT_KEY, layout);
+    } catch { /* storage unavailable — non-fatal */ }
+    const sidebar = $('#sidebar');
+    sidebar.classList.toggle('hidden', layout !== 'sidebar');
+    // Nothing of the rail survives the classic layout — drop the markup so a
+    // stale list can't flash on the way back in.
+    if (layout === 'sidebar') renderSidebar();
+    else sidebar.innerHTML = '';
+    const select = $('#setting-layout');
+    if (select) select.value = layout;
+  }
+  function toggleLayout() {
+    const next = currentLayout() === 'sidebar' ? 'classic' : 'sidebar';
+    applyLayout(next);
+    toast(`Layout: ${LAYOUT_LABEL[next]}`, 'info');
+  }
+  function initLayout() {
+    applyLayout(currentLayout());
+    $('#setting-layout').addEventListener('change', (e) => applyLayout(e.target.value));
+  }
+
   // ---------- boot ----------
   async function boot() {
     try {
@@ -6040,5 +6274,6 @@
   $('#btn-settings').title = `Settings (${MOD},)`;
 
   initTheme();
+  initLayout();
   boot();
 })();
