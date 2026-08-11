@@ -93,34 +93,6 @@
     </button>
   </div>
 
-  <div id="workspace-header" class="workspace-header hidden">
-    <button class="btn ghost icon" id="workspace-back" title="Back to Super View" aria-label="Back to Super View"><span class="i" data-icon="arrow-left"></span></button>
-    <div class="workspace-header-title">
-      <button class="workspace-switcher" id="workspace-switcher" aria-haspopup="menu" aria-expanded="false" title="Switch workspace">
-        <img id="workspace-avatar" class="workspace-avatar hidden" alt="" loading="lazy">
-        <span id="workspace-title" class="workspace-title"></span>
-        <span class="i workspace-switcher-caret" data-icon="chevron-down"></span>
-      </button>
-      <span id="workspace-branch-chip"></span>
-      <div id="workspace-popover" class="ws-popover hidden" role="menu" aria-label="Switch workspace">
-        <div class="ws-popover-search">
-          <span class="i" data-icon="search"></span>
-          <input id="workspace-popover-search" type="text" placeholder="Switch workspace…" autocomplete="off" spellcheck="false" />
-        </div>
-        <div id="workspace-popover-list" class="ws-popover-list"></div>
-      </div>
-    </div>
-    <button class="autonomous-toggle hidden" id="btn-autonomous" title="Autonomous Mode" aria-label="Autonomous Mode"><span class="i" data-icon="bot"></span><span class="btn-label">Autonomous</span></button>
-    <span class="topbar-sep" aria-hidden="true"></span>
-    <!-- Workspace actions: the one action you reach for mid-flow (a terminal on
-         this checkout) stays a labeled button; the rest live behind a single
-         overflow menu where they get real names instead of five bare glyphs. -->
-    <div class="workspace-tools">
-      <button class="btn ghost btn-collapsible" id="workspace-terminal" title="Open a terminal here" aria-label="Open terminal"><span class="i" data-icon="terminal"></span><span class="btn-label">Terminal</span></button>
-      <button class="btn ghost icon" id="workspace-more" title="More workspace actions" aria-label="More workspace actions" aria-haspopup="menu" aria-expanded="false"><span class="i" data-icon="ellipsis"></span></button>
-    </div>
-  </div>
-
   <!-- Overflow menu for the workspace actions, anchored under the "…" button.
        Labels for Reveal/Open in IDE are filled in by syncDesktopLabels() so they
        name this machine's file manager and the chosen editor. -->
@@ -200,22 +172,66 @@
     </div>
   </div>
 
-  <div class="filterbar hidden" id="filterbar">
-    <div class="filter-search">
-      <span class="filter-search-icon" data-icon="search"></span>
-      <input id="filter-search" type="search" placeholder="Filter tasks…  ( / )" autocomplete="off" />
-    </div>
-    <button class="filter-clear hidden" id="filter-clear" title="Clear filters">Clear<span class="i" data-icon="x"></span></button>
-    <span class="filter-count" id="filter-count"></span>
-  </div>
-
   <main>
     <!-- Experimental "sidebar" layout (Settings → General → Appearance → Layout):
          a persistent project rail listing every repo with its cards grouped by
          board column. Empty and hidden entirely in the classic layout. -->
     <aside id="sidebar" class="sidebar hidden" aria-label="Projects"></aside>
-    <div id="super-view" class="super-view"></div>
-    <div id="board" class="board hidden"></div>
+
+    <!-- The work area: everything that belongs to whatever is currently open.
+         In the sidebar layout the strip on top holds one tab per open project
+         board and one per in-app shell session, and the panes below it swap as
+         you switch tabs. In the classic layout the strip is hidden and this is
+         just the header + Super View / board stack it has always been. -->
+    <div id="workarea" class="workarea">
+      <div id="tabstrip" class="tabstrip hidden">
+        <div id="tabstrip-list" class="tabstrip-list" role="tablist" aria-label="Open tabs"></div>
+        <button class="btn ghost icon tabstrip-new" id="tabstrip-new" title="New terminal session"
+                aria-label="New terminal session" aria-haspopup="menu" aria-expanded="false"><span class="i" data-icon="plus"></span></button>
+      </div>
+
+      <div id="workspace-header" class="workspace-header hidden">
+        <button class="btn ghost icon" id="workspace-back" title="Back to Super View" aria-label="Back to Super View"><span class="i" data-icon="arrow-left"></span></button>
+        <div class="workspace-header-title">
+          <button class="workspace-switcher" id="workspace-switcher" aria-haspopup="menu" aria-expanded="false" title="Switch workspace">
+            <img id="workspace-avatar" class="workspace-avatar hidden" alt="" loading="lazy">
+            <span id="workspace-title" class="workspace-title"></span>
+            <span class="i workspace-switcher-caret" data-icon="chevron-down"></span>
+          </button>
+          <span id="workspace-branch-chip"></span>
+          <div id="workspace-popover" class="ws-popover hidden" role="menu" aria-label="Switch workspace">
+            <div class="ws-popover-search">
+              <span class="i" data-icon="search"></span>
+              <input id="workspace-popover-search" type="text" placeholder="Switch workspace…" autocomplete="off" spellcheck="false" />
+            </div>
+            <div id="workspace-popover-list" class="ws-popover-list"></div>
+          </div>
+        </div>
+        <button class="autonomous-toggle hidden" id="btn-autonomous" title="Autonomous Mode" aria-label="Autonomous Mode"><span class="i" data-icon="bot"></span><span class="btn-label">Autonomous</span></button>
+        <span class="topbar-sep" aria-hidden="true"></span>
+        <!-- Workspace actions: the one action you reach for mid-flow (a terminal on
+             this checkout) stays a labeled button; the rest live behind a single
+             overflow menu where they get real names instead of five bare glyphs. -->
+        <div class="workspace-tools">
+          <button class="btn ghost btn-collapsible" id="workspace-terminal" title="Open a terminal here" aria-label="Open terminal"><span class="i" data-icon="terminal"></span><span class="btn-label">Terminal</span></button>
+          <button class="btn ghost icon" id="workspace-more" title="More workspace actions" aria-label="More workspace actions" aria-haspopup="menu" aria-expanded="false"><span class="i" data-icon="ellipsis"></span></button>
+        </div>
+      </div>
+
+      <div class="filterbar hidden" id="filterbar">
+        <div class="filter-search">
+          <span class="filter-search-icon" data-icon="search"></span>
+          <input id="filter-search" type="search" placeholder="Filter tasks…  ( / )" autocomplete="off" />
+        </div>
+        <button class="filter-clear hidden" id="filter-clear" title="Clear filters">Clear<span class="i" data-icon="x"></span></button>
+        <span class="filter-count" id="filter-count"></span>
+      </div>
+
+      <div id="super-view" class="super-view"></div>
+      <div id="board" class="board hidden"></div>
+      <!-- #terminal-mount is moved in here by features/terminal.js while the
+           tabbed layout is on, and back into the docked panel otherwise. -->
+    </div>
   </main>
 
   <!-- Task detail drawer -->
@@ -1121,19 +1137,29 @@
   <!-- Right-click context menu on task cards -->
   <div id="context-menu" class="context-menu hidden"></div>
 
-  <!-- In-app terminal: a real shell on the workspace checkout, docked at the
-       bottom so the user never leaves Sr. Popo. -->
+  <!-- In-app terminal: real shells on the workspace checkouts, so the user never
+       leaves Sr. Popo. A session can boot straight into claude/codex/grok, and
+       hiding it leaves it running — only a tab's × ends one.
+       Two homes, one per layout: this docked panel in the classic layout, and a
+       full-height tab in the work area under the sidebar layout. The mount below
+       is moved between them by features/terminal.js, so the xterms (and their
+       scrollback) survive a layout switch. -->
   <div id="terminal-panel" class="terminal-panel hidden">
     <div id="terminal-resize-handle" class="terminal-resize-handle" title="Drag to resize"></div>
     <div class="terminal-bar">
-      <span class="i" data-icon="terminal"></span>
-      <span id="terminal-cwd" class="terminal-cwd mono"></span>
+      <div id="terminal-tabs" class="terminal-tabs" role="tablist" aria-label="Terminal sessions"></div>
+      <button class="btn ghost icon terminal-new" id="terminal-new" title="New session" aria-label="New session" aria-haspopup="menu" aria-expanded="false"><span class="i" data-icon="plus"></span></button>
       <div class="terminal-bar-actions">
-        <button class="btn ghost icon" id="terminal-close" title="Close terminal" aria-label="Close terminal"><span class="i" data-icon="x"></span></button>
+        <span id="terminal-cwd" class="terminal-cwd mono"></span>
+        <button class="btn ghost icon" id="terminal-close" title="Hide the terminal panel (sessions keep running)" aria-label="Hide terminal panel"><span class="i" data-icon="x"></span></button>
       </div>
     </div>
     <div id="terminal-mount" class="terminal-mount"></div>
   </div>
+
+  <!-- New-session picker, anchored on the panel's + or a sidebar project row.
+       Filled by features/terminal.js — only CLIs found on this machine show. -->
+  <div id="terminal-menu" class="quick-menu hidden" role="menu" aria-label="New session"></div>
 
   <div id="toasts" class="toasts"></div>
 

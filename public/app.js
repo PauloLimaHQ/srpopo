@@ -14,10 +14,13 @@ import { connectSSE } from './features/live.js';
 import { syncCustomModelOptions } from './features/models.js';
 import { syncResourceMonitor } from './features/resources.js';
 import { renderPluginState } from './features/settings.js';
+import { restoreActiveTab } from './features/tabs.js';
+import { loadTerminalSessions } from './features/terminal.js';
 import { initLayout, initTheme } from './features/theme.js';
 import { loadView, renderView } from './features/workspaces.js';
 import { init as initWorkspacePicker } from './features/workspace-picker.js';
 import { init as initSidebar } from './features/sidebar.js';
+import { init as initTabs } from './features/tabs.js';
 import { init as initTerminal } from './features/terminal.js';
 import { init as initDesktop } from './features/desktop.js';
 import { init as initWorkspaceMenu } from './features/workspace-menu.js';
@@ -74,8 +77,14 @@ async function boot() {
     syncResourceMonitor();
     loadFilters();
     $('#filter-search').value = state.filters.search;
+    // In-app shell sessions are process-local, so the board rebuilds its tabs
+    // and the sidebar's Sessions rows from the server on every load.
+    await loadTerminalSessions();
     state.view = loadView();
     renderView();
+    // Repos and sessions are both known now, so the restored tab strip can drop
+    // what no longer exists and mount whatever it landed on.
+    restoreActiveTab();
     handleHashDeeplink();
   } catch (e) { toast(`Failed to load state: ${e.message}`); }
 
@@ -97,6 +106,9 @@ async function boot() {
 
   try {
     const h = await api('GET', '/api/health');
+    // Which CLIs exist here also decides what the terminal's new-session
+    // picker can offer.
+    state.health = h;
     const chip = $('#health');
     // Any one backend is enough to run a task; the header only shows the
     // status dot — CLI versions live in Settings → About instead.
@@ -119,6 +131,7 @@ async function boot() {
 // Feature wiring, in the original source order.
 initWorkspacePicker();
 initSidebar();
+initTabs();
 initTerminal();
 initDesktop();
 initWorkspaceMenu();

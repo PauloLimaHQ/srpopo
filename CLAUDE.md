@@ -37,6 +37,7 @@ static with **no build step** (see Conventions).
 | `server/tasks.ts` | Task lifecycle service (`createTask`/`dispatchTask` + capacity gate) shared by the REST API and the MCP server, so both queue/run tasks identically. |
 | `server/mcp.ts` | **Board MCP server** (see "MCP server" below). Streamable-HTTP MCP endpoint mounted on the Express app at `POST /mcp` so outside MCP clients can drive the board while Sr. Popo runs. |
 | `server/git.ts` | Worktree lifecycle (`git worktree add/remove`). |
+| `server/terminal.ts` | In-app shell sessions: a pty per session (a python3 relay, no native module), their status, and the resize channel (see "Terminal sessions"). |
 | `server/desktop.ts` | Desktop hand-offs for the workspace quick actions: reveal a checkout in the OS file manager, or open it in the user's IDE (see "Workspace quick actions"). |
 | `server/resources.ts` | Opt-in resource monitor: samples the OS process table and reports what the app and each live agent session cost this machine (see "Resource monitor"). |
 | `server/github.ts` | `gh` CLI integration: read-only lookup of a task's pull request, its merge-safety check, the merge itself, and the `mergeable/<n>` grade label. |
@@ -59,6 +60,7 @@ static with **no build step** (see Conventions).
 | `public/app.js` | UI **entry only**: imports the feature modules, calls each one's `init()` in a fixed order, then `boot()`. Don't grow it — new behavior belongs in a feature module. |
 | `public/core/` | What every feature needs: `state.js` (the shared board state, `$`, `icon`, column constants) and `api.js` (`api()`, `toast()`, `esc()`, `lookup()`). Imports nothing from `features/` — it is the bottom of the graph. |
 | `public/features/` | One module per feature (`board.js`, `task-modal.js`, `drawer.js`, `pr.js`, `autonomous.js`, …). A feature change should touch one file here. |
+| `public/features/tabs.js` | The work area's tab strip in the sidebar layout — one tab per open project board and per shell session, plus the pinned Super View tab. Owns `#workarea`'s pane visibility (`applyPanes`), so `renderView()` and `focusSession()` both defer to it. No-op in the classic layout (see "The tabbed work area"). |
 | `public/icons.js` | Inline-SVG icon set (Lucide) + a tiny renderer/hydrator. Loaded as a **classic script before the module graph**, so it publishes `window.srpopoIcons` rather than exporting. The only source of UI glyphs — no emojis. |
 | `tests/smoke.test.ts` | `node:test` smoke suite, run via `tsx`. |
 | `tsconfig.json` | `tsc` config: CommonJS output → `dist/`, `strict`, `rootDir: "."`. |
@@ -323,6 +325,13 @@ are adding belongs in `core/`. Note that exports are **read-only bindings**: a
 module that needs another module's mutable state changed must call a setter
 (see `setSavedAttachments` in `features/task-modal.js`), not assign to the import.
 
+**Import cycles are fine here, and there are several** (`board` ↔ `workspaces`,
+`tabs` ↔ `terminal`, `theme` → `workspaces` → `tabs` → `theme`). They work because
+no module *calls* an imported function while the graph is still evaluating — every
+module's top level is only declarations, and everything else runs from `init()` or
+later. Keep it that way: a top-level call into another feature module is what would
+turn one of those cycles into a `ReferenceError`.
+
 `styles.css` and `index.html` are **not yet split** — that is the next phase, and
 until then a feature's markup and CSS still live in those two shared files.
 
@@ -414,7 +423,9 @@ The workspace header carries the "work on this here" escape hatches, all acting 
 **checkout** — the repo root, or one of the live worktrees listed in the Workspace details
 modal (each row has the same three buttons):
 
-- **Terminal** — the in-app shell (`server/terminal.ts`), docked at the bottom.
+- **Terminal** — the in-app shell (`server/terminal.ts`), docked at the bottom. The
+  header button focuses the live shell already open on that checkout rather than
+  stacking up a second one; see "Terminal sessions" for the rest.
 - **Reveal** — the OS file manager (`open` / `explorer` / `xdg-open`).
 - **Open in IDE** — VS Code or a JetBrains IDE.
 
@@ -458,21 +469,123 @@ change one).
 - **Theme** — `srpopo.theme`: System / Light / Dark, read by an inline `<head>`
   script so the first paint already matches.
 - **Layout** — `srpopo.layout`: `classic` (the default: the Super View grid plus
-  one repo's board) or `sidebar`, an **experimental** shell that adds a persistent
-  project rail left of that same view. Applied by `applyLayout()` in `public/features/theme.js`,
-  which sets `body[data-layout]` and shows/empties `#sidebar`; `toggleLayout()` backs
-  the ⌘K "Toggle Layout" command.
+  one repo's board, and a terminal docked at the bottom of the window) or
+  `sidebar`, an **experimental** integrated shell — a persistent project rail on
+  the left, and a **tabbed work area** to its right. Applied by `applyLayout()` in
+  `public/features/theme.js`, which sets `body[data-layout]`, shows/empties
+  `#sidebar`, re-parents the terminal mount (`syncTerminalHost()`) and re-renders;
+  `toggleLayout()` backs the ⌘K "Toggle Layout" command.
 
 The **project sidebar** (`renderSidebar` and friends in `public/features/sidebar.js`) lists every
 repository with its cards grouped by board column — grooming and orchestration cards
 included, empty columns dropped — under an "All projects" entry that returns to the
-Super View. It is **navigation only**: clicking a project enters that workspace,
-clicking a card opens the same drawer, right-clicking a task opens the same context
-menu. Nothing there can change a task's state — no drag-and-drop, no dispatch — so the
-board stays the single place work moves. It re-renders off `renderBoard()`, the same
+Super View, plus a **Sessions** group per project (see "Terminal sessions"). Where
+cards are concerned it is **navigation only**: clicking a project enters that
+workspace, clicking a card opens the same drawer, right-clicking a task opens the same
+context menu. Nothing there can change a task's state — no drag-and-drop, no dispatch
+— so the board stays the single place work moves. The one thing the rail *does* create
+is a terminal session, which is not a card and never touches the board.
+It re-renders off `renderBoard()`, the same
 choke point the board uses (a no-op in the classic layout), preserving its scroll
 position and which projects are unfolded. The classic layout is untouched by all of it:
 with `layout=classic` the rail is hidden *and* emptied.
+
+### The tabbed work area (sidebar layout)
+
+`public/features/tabs.js` owns everything right of the rail (`#workarea`): a tab strip
+on top, and below it the workspace header, the filter bar and whichever pane is in
+front. A tab is one of three kinds — a pinned, non-closable **`super`** tab (the Super
+View), a **`repo`** tab (that project's full board, header and filters included), or a
+**`session`** tab (an in-app shell). The rail is where you *find* things; a tab is
+where one of them stays open while you go look at another. `state.tabs` + `state.activeTab`
+are the open set; `srpopo.tabs` in `localStorage` persists it per device, next to the
+theme and layout — it never reaches `db.json`.
+
+Three rules keep it honest and cheap:
+
+- **One board element, re-rendered.** A repo tab shows the *same* `#board`, drawn for
+  whichever project is in front. Nothing on a board is per-tab state (every card is
+  redrawn from `state` on each SSE tick), so materializing one board per tab would
+  cost N renders to show one.
+- **`state.view` stays the authority for super-vs-board.** Only a session tab owns its
+  own selection outright (`activeTabKey()` / `activePane()`); a project tab *is* that
+  workspace. So a strip pointing at a repo or session that no longer exists highlights
+  nothing rather than showing the wrong pane, and `pruneTabs()` — called from the SSE
+  handlers, never from a render — is what actually drops dead tabs and lands you on a
+  neighbour.
+- **`enterWorkspace`/`exitWorkspace`/`focusSession` are the only ways in.** Every
+  surface (rail, ⌘K, header switcher, Super View card, a tab, a hotkey) goes through
+  them, and each calls the matching `note*Tab()` before rendering — which is why the
+  rail, the strip and the board can't disagree about what's in focus.
+
+`Ctrl+Alt+←/→` walks the strip; ←/→/Home/End move focus within it and Enter/Space
+opens (**manual** activation on purpose — focusing a session tab hands the keyboard to
+its shell, so auto-activating on arrow would type the next arrow into the terminal).
+Delete/Backspace and middle-click close a tab, as does ⌘K → "Close Tab". Closing a
+project tab is a view change; closing a session tab **ends that shell**, exactly like
+the × on the docked panel's tab. The strip is deliberately *not* dropped on narrow
+windows the way the rail is — once the rail is gone it's the only thing left showing
+what's open.
+
+## Terminal sessions (drive an agent by hand)
+
+Not everything is a task. A **session** is a real shell on a checkout that you jump
+into and operate yourself — including `claude`, `codex` or `grok` running
+interactively. It has no card, no column, and no lifecycle on the board; the whole
+point is that it's the escape hatch *next to* the board, not another thing to manage.
+
+`server/terminal.ts` owns them. They are **process-local and never persisted** (like
+interactive permission prompts): they die with the server, and a reloading board
+rebuilds its tabs from `GET /api/terminal/sessions`.
+
+- **The pty.** Each session runs the user's login shell on a real pseudo-terminal,
+  allocated by a small **python3 relay** (`PTY_RELAY`) rather than a native module
+  like node-pty — express stays the only runtime dependency. The relay is hand-rolled
+  instead of `pty.spawn` for one reason: **fd 3 is a resize channel**. Writing
+  `"<cols> <rows>\n"` to it runs a real `TIOCSWINSZ` on the master, which is what
+  makes the kernel raise SIGWINCH — so claude's TUI actually re-lays-out when the
+  panel is dragged. The old approach (pushing an `stty` through stdin) only worked at
+  a bare prompt and echoed itself across the screen. Windows has no pty here and
+  falls back to a plain-pipe `cmd.exe`, where resize is a no-op.
+- **`kind`** (`shell` | `claude` | `codex` | `grok`) is *typed at the shell's prompt*,
+  not exec'd — so quitting the agent leaves you at a live prompt instead of killing
+  the tab. The picker only offers a CLI `/api/health` actually found on this machine.
+- **Status** is the green/amber/red bullet every surface shows: `active` (alive and
+  printing), `idle` (alive but quiet for 30s — sitting at a prompt, waiting for you),
+  `exited` (the process is gone; the tab stays red and its scrollback readable until
+  dismissed). One sweep timer turns "went quiet" into a `terminal` bus event; every
+  other transition is broadcast by whatever caused it.
+- **Closing vs dismissing.** Leaving a session (hiding the panel, or switching to
+  another tab) is a *view* change — it keeps running. `POST /api/terminal/:id/close`
+  kills the shell but keeps it listed as exited; `DELETE /api/terminal/:id` (the tab's
+  ×) forgets it for good. Exited sessions are capped at `MAX_EXITED` so a long day
+  doesn't grow forever.
+- **One SSE stream for all of them** (`GET /api/terminal/stream?ids=a,b,c`). A browser
+  allows only ~6 connections per host, so a stream per tab would starve the board's
+  own feed and the keystroke POSTs. The client reopens it whenever the set of mounted
+  panes changes and repaints from the replay — which is also why a dropped-and-
+  reconnected stream doesn't paint the scrollback twice.
+
+On the board (`public/features/terminal.js`) a session has **two possible homes, one
+per layout**: a tab in the panel docked at the bottom of the window (classic), or a
+full-height tab in the work area (sidebar — see "The tabbed work area"). The
+difference is only where `#terminal-mount` is parented, and `syncTerminalHost()`
+moves *the mount*, not each pane — so every xterm, its scrollback and its stream
+survive a layout switch untouched. Either way a session is also one row in the project
+sidebar's **Sessions** group and searchable in ⌘K.
+
+`Ctrl+\`` shows/hides the docked panel — or, in the tabbed layout, jumps to the
+terminal and back to the tab you came from; `Ctrl+Shift+\`` opens the new-session
+picker on whichever `+` is on screen; `Ctrl+Alt+←/→` cycles sessions in the docked
+panel and every open tab in the tabbed layout. All recognized in one place
+(`hotkey()`) so the document listener and every xterm's custom key handler agree on
+what the terminal owns.
+
+Two sizing rules are load-bearing, both learned the hard way: a pane is **mounted and
+fitted before its session is spawned** (an agent CLI reads the width once at startup,
+and an xterm opened into a `display:none` element silently falls back to 80x24), and
+every pane keeps its own xterm for as long as the session lives, so switching tabs
+preserves scrollback.
 
 ## Resource monitor (how much of this machine we're using)
 

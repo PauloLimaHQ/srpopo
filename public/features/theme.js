@@ -1,7 +1,8 @@
 /* Sr. Popo — theme. No build step: native ES module. */
 import { toast } from '../core/api.js';
 import { $ } from '../core/state.js';
-import { renderSidebar } from './sidebar.js';
+import { syncTerminalHost } from './terminal.js';
+import { renderView } from './workspaces.js';
 
 
 // ---------- theme ----------
@@ -46,9 +47,11 @@ function initTheme() {
 
 // ---------- layout (appearance) ----------
 // Two shells for the same board, chosen in Settings → General → Appearance:
-// 'classic' is the Super View grid plus one repo's board, unchanged; 'sidebar'
-// (experimental) adds the persistent project rail rendered above. Device-local
-// in localStorage like the theme, so the desktop app and a phone on the LAN can
+// 'classic' is the Super View grid plus one repo's board and a terminal docked
+// at the bottom, unchanged; 'sidebar' (experimental) is the integrated shell —
+// a persistent project rail on the left, and a tabbed work area to its right
+// where each open project and each shell session is a tab. Device-local in
+// localStorage like the theme, so the desktop app and a phone on the LAN can
 // each pick their own — it never reaches db.json.
 const LAYOUT_KEY = 'srpopo.layout';
 const LAYOUTS = ['classic', 'sidebar'];
@@ -70,8 +73,12 @@ function applyLayout(mode) {
   sidebar.classList.toggle('hidden', layout !== 'sidebar');
   // Nothing of the rail survives the classic layout — drop the markup so a
   // stale list can't flash on the way back in.
-  if (layout === 'sidebar') renderSidebar();
-  else sidebar.innerHTML = '';
+  if (layout !== 'sidebar') sidebar.innerHTML = '';
+  // Re-parent the terminal before rendering: which layout is on decides whether
+  // the mount belongs to the docked panel or the work area, and renderView()
+  // below is what decides whether it's the visible pane.
+  syncTerminalHost();
+  renderView();
   const select = $('#setting-layout');
   if (select) select.value = layout;
 }

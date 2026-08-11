@@ -869,18 +869,20 @@ async function resolveRepoTarget(repo: Repo, rawPath: unknown): Promise<string |
 
 // Opens an in-app shell session rooted at the repo root or one of its live
 // worktrees, so the user can drop into a terminal on the checkout they're
-// viewing without leaving Sr. Popo. Returns the new session id; the board then
-// streams it via GET /api/terminal/:id/stream.
+// viewing without leaving Sr. Popo. `kind` boots the shell straight into an
+// agent CLI ('claude' | 'codex' | 'grok'). Returns the new session's summary;
+// the board then streams it via GET /api/terminal/:id/stream.
 app.post('/api/repos/:id/terminal', async (req: Request, res: Response) => {
   const repo = db.repos.find((r) => r.id === req.params.id);
   if (!repo) return err(res, 404, 'Repo not found');
   const target = await resolveRepoTarget(repo, req.body?.path);
   if (!target) return err(res, 404, 'Path not found');
+  const kind = req.body?.kind;
+  if (kind !== undefined && !terminal.isKind(kind)) return err(res, 400, 'Unknown session kind');
   const cols = Number(req.body?.cols) || 80;
   const rows = Number(req.body?.rows) || 24;
   try {
-    const tid = terminal.create(target, cols, rows);
-    res.json({ id: tid, cwd: target });
+    res.json(terminal.create({ cwd: target, repoId: repo.id, kind, cols, rows }));
   } catch (e) {
     err(res, 500, (e as Error).message);
   }
@@ -930,10 +932,23 @@ app.post('/api/repos/:id/editor', async (req: Request, res: Response) => {
   }
 });
 
-// Live output stream for a shell session (SSE). Replays the buffered screen on
-// connect, then streams raw output as base64 `data:` events. An empty event
-// signals the shell exited.
-app.get('/api/terminal/:tid/stream', (req: Request, res: Response) => {
+// Every shell session this server is holding, live or exited — what a
+// reloading board rebuilds its tabs and sidebar rows from. Status changes
+// afterwards arrive as `terminal` events on the SSE bus.
+app.get('/api/terminal/sessions', (req: Request, res: Response) => {
+  res.json({ sessions: terminal.list() });
+});
+
+// Live output for the shell sessions named in `?ids=a,b,c` (SSE). Replays each
+// one's buffered screen on connect, then streams raw output as
+// `{ id, b64 }` events — `b64: ''` means that shell exited, `gone: true` means
+// there is no such session.
+//
+// One stream for every session on purpose: a browser allows only ~6 concurrent
+// connections per host, and a stream per tab would starve the board's own SSE
+// feed and the keystroke POSTs. The client reopens it whenever the set of
+// mounted sessions changes, repainting from the replay.
+app.get('/api/terminal/stream', (req: Request, res: Response) => {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -941,10 +956,15 @@ app.get('/api/terminal/:tid/stream', (req: Request, res: Response) => {
     'X-Accel-Buffering': 'no',
   });
   res.write(': connected\n\n');
-  const off = terminal.attach(req.params.tid, (b64) => res.write(`data: ${b64}\n\n`));
-  if (!off) { res.write('event: gone\ndata: \n\n'); return res.end(); }
+  const ids = String(req.query.ids || '').split(',').map((s) => s.trim()).filter(Boolean);
+  const offs: Array<() => void> = [];
+  for (const sid of ids) {
+    const off = terminal.attach(sid, (b64) => res.write(`data: ${JSON.stringify({ id: sid, b64 })}\n\n`));
+    if (off) offs.push(off);
+    else res.write(`data: ${JSON.stringify({ id: sid, gone: true })}\n\n`);
+  }
   const heartbeat = setInterval(() => res.write(': ping\n\n'), 25000);
-  req.on('close', () => { clearInterval(heartbeat); off(); });
+  req.on('close', () => { clearInterval(heartbeat); for (const off of offs) off(); });
 });
 
 app.post('/api/terminal/:tid/input', (req: Request, res: Response) => {
@@ -960,8 +980,16 @@ app.post('/api/terminal/:tid/resize', (req: Request, res: Response) => {
   res.json({ ok: true });
 });
 
+// Kills the shell but keeps the session listed as exited, so its tab goes red
+// and its scrollback stays readable.
 app.post('/api/terminal/:tid/close', (req: Request, res: Response) => {
   terminal.close(req.params.tid);
+  res.json({ ok: true });
+});
+
+// Dismisses a session for good (killing it first if it's still alive).
+app.delete('/api/terminal/:tid', (req: Request, res: Response) => {
+  terminal.remove(req.params.tid);
   res.json({ ok: true });
 });
 

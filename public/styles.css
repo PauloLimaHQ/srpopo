@@ -348,8 +348,15 @@ body {
   white-space: nowrap;
 }
 
-/* ── super view (workspaces home) ── */
+/* ── work area ──
+   Everything right of the project rail: the tab strip (sidebar layout only),
+   the workspace header and filter bar that belong to a board, and the panes
+   themselves. Exactly one pane is visible at a time; each claims the leftover
+   height, so a board and a terminal both fill the area edge to edge. */
 main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
+.workarea { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+/* The chrome above the panes must never be squeezed by a tall pane below it. */
+.workarea > .workspace-header, .workarea > .filterbar, .workarea > .tabstrip { flex: none; }
 .super-view { flex: 1; min-height: 0; overflow-y: auto; padding: 20px 24px; }
 .workspace-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px;
@@ -612,6 +619,18 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
   color: var(--text-dim);
 }
 .sidebar-group-head .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+.sidebar-group-head .icon { width: 12px; height: 12px; }
+/* The Sessions group's heading carries the "new session" +, so the row is the
+   one place in the rail that does something other than navigate. */
+.sidebar-group-add {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; margin-left: 4px; padding: 0; border: none; border-radius: 5px;
+  background: transparent; color: var(--text-dim); cursor: pointer;
+}
+.sidebar-group-add:hover { background: var(--bg-hover); color: var(--text); }
+.sidebar-group-add:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+.sidebar-group-add .icon { width: 12px; height: 12px; }
+.sidebar-session .sidebar-card-badge { color: var(--text-dim); }
 .sidebar-card { font-size: 12.5px; padding: 5px 8px; }
 .sidebar-card-dot { width: 5px; height: 5px; border-radius: 50%; flex: none; opacity: .8; }
 .sidebar-card-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -633,6 +652,75 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
 @media (max-width: 760px) {
   .sidebar { display: none; }
 }
+
+/* ── work-area tabs (sidebar layout) ──
+   One tab per open project board and per in-app shell session, plus a pinned
+   "All projects" tab. Styled as a continuation of the rail it sits next to —
+   same raised surface, and the selected tab lifts out of it onto the page
+   background so the tab and its pane read as one piece. */
+.tabstrip {
+  display: flex; align-items: flex-end; gap: 6px; min-width: 0;
+  padding: 6px 8px 0;
+  background: var(--bg-raised); border-bottom: 1px solid var(--border);
+}
+.tabstrip-list {
+  display: flex; align-items: flex-end; gap: 2px; flex: 1; min-width: 0;
+  overflow-x: auto; scrollbar-width: none;
+}
+.tabstrip-list::-webkit-scrollbar { display: none; }
+.tabstrip-new { flex: none; margin-bottom: 5px; padding: 4px 7px; min-height: 26px; }
+
+.tab {
+  display: flex; align-items: center; gap: 7px; flex: none;
+  max-width: 220px; padding: 7px 8px 7px 11px;
+  border: 1px solid transparent; border-bottom: none;
+  border-radius: 9px 9px 0 0;
+  font-size: 12.5px; color: var(--text-dim); cursor: pointer; user-select: none;
+  /* Sits on the strip's bottom border so the active tab can cover it. */
+  margin-bottom: -1px; padding-bottom: 8px;
+}
+.tab:hover { background: var(--bg-hover); color: var(--text); }
+.tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.tab.active {
+  background: var(--bg); border-color: var(--border); color: var(--text); font-weight: 600;
+}
+.tab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tab-icon { display: inline-flex; color: var(--text-dim); flex: none; }
+.tab.active .tab-icon { color: var(--accent); }
+.tab .icon { width: 14px; height: 14px; }
+.tab-avatar { width: 15px; height: 15px; border-radius: 4px; flex: none; }
+.tab-sub {
+  font-size: 10.5px; color: var(--text-dim); opacity: .7; flex: none;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 74px;
+}
+/* What's running on a project you aren't currently looking at — the reason to
+   keep its tab open in the first place. */
+.tab-live {
+  display: inline-flex; align-items: center; gap: 4px; flex: none;
+  font-family: var(--mono); font-size: 10.5px; color: var(--accent);
+}
+.tab-live .spinner { width: 9px; height: 9px; border-width: 1.5px; }
+.tab-close {
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: 17px; height: 17px; padding: 0; border: none; border-radius: 5px;
+  background: transparent; color: var(--text-dim); cursor: pointer; opacity: 0;
+}
+/* Revealed on hover or when selected — a permanent × on every tab is a row of
+   targets you mostly don't want to hit. It stays keyboard-reachable either way
+   (Delete on a focused tab closes it). */
+.tab:hover .tab-close, .tab.active .tab-close { opacity: .65; }
+.tab-close:hover { opacity: 1; background: var(--red-soft); color: var(--red); }
+.tab-close:focus-visible { opacity: 1; outline: 2px solid var(--accent); outline-offset: -2px; }
+.tab-close .icon { width: 12px; height: 12px; }
+
+/* Deliberately *not* dropped on narrow windows the way the rail is: once the
+   rail is gone the strip is the only thing left showing what's open, and it
+   already scrolls rather than shrinking its tabs. */
+
+/* The header's back arrow is the classic layout's only way home. With tabs
+   there's a permanent "All projects" tab two inches above it, so the arrow is
+   just a second control doing the same job. */
+body[data-layout="sidebar"] #workspace-back { display: none; }
 
 /* ── board ── */
 .board {
@@ -1792,7 +1880,60 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--a
   border-bottom: 1px solid var(--border);
   color: var(--text);
 }
-.terminal-cwd { flex: 1; font-size: 12px; color: var(--muted, #8a8378); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.terminal-bar-actions { display: flex; gap: 4px; }
-.terminal-mount { flex: 1; min-height: 0; padding: 6px 8px; overflow: hidden; }
+.terminal-cwd {
+  font-size: 11px; font-family: var(--mono); color: var(--muted, #8a8378);
+  max-width: 34ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.terminal-bar-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+
+/* One tab per session. The strip scrolls rather than shrinking tabs to nothing,
+   so a dozen sessions stay readable. */
+.terminal-tabs {
+  display: flex; align-items: center; gap: 2px; min-width: 0;
+  overflow-x: auto; scrollbar-width: none;
+  /* Fixed height whether or not there are tabs yet: a bar that grows when the
+     first tab appears would shift the mount, and the shell is spawned at the
+     size measured just before that. */
+  min-height: 26px;
+}
+.terminal-tabs::-webkit-scrollbar { display: none; }
+.terminal-tab {
+  display: flex; align-items: center; gap: 6px; flex: none;
+  max-width: 200px; padding: 4px 6px 4px 9px; border-radius: 7px;
+  font-size: 12px; color: var(--text-dim); cursor: pointer; user-select: none;
+  border: 1px solid transparent; background: transparent;
+}
+.terminal-tab:hover { background: var(--bg-hover); color: var(--text); }
+.terminal-tab.active { background: var(--bg); border-color: var(--border); color: var(--text); }
+.terminal-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+.terminal-tab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.terminal-tab-repo {
+  font-size: 10px; color: var(--text-dim); opacity: .7;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 80px;
+}
+.terminal-tab-close {
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: 16px; height: 16px; border-radius: 4px; color: var(--text-dim); opacity: 0;
+}
+.terminal-tab:hover .terminal-tab-close, .terminal-tab.active .terminal-tab-close { opacity: .7; }
+.terminal-tab-close:hover { opacity: 1; background: var(--red-soft); color: var(--red); }
+.terminal-tab-close .icon { width: 11px; height: 11px; }
+.terminal-new { flex: none; padding: 4px 6px; min-height: 24px; }
+
+/* Session status, shared by the tabs, the sidebar rows and ⌘K: green while the
+   shell is printing, amber once it has been quiet a while (sitting at a prompt,
+   waiting for you), red when the process is gone. */
+.term-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.term-dot.active { background: var(--green); }
+.term-dot.idle { background: var(--amber, #d1a03c); }
+.term-dot.exited { background: var(--red); }
+
+.terminal-mount { flex: 1; min-height: 0; padding: 6px 8px; overflow: hidden; position: relative; }
+/* The same mount, re-parented into the work area as a tab (sidebar layout). It
+   brings its own dark surface, since it no longer sits inside the panel that
+   used to provide one. */
+.terminal-mount-tabbed { background: #0b0e14; padding: 8px 10px; }
+/* Every session keeps its own mounted xterm so switching tabs preserves the
+   scrollback; only the active pane is displayed. */
+.terminal-pane { height: 100%; }
 .terminal-mount .xterm { height: 100%; }

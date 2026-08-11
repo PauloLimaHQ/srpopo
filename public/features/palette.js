@@ -13,8 +13,9 @@ import { openSettingsModal } from './settings-modal.js';
 import { pluginInstalled } from './settings.js';
 import { openShortcutsModal } from './shortcuts.js';
 import { openSpecsModal } from './specs.js';
+import { activeTabKey, closeTab, tabsOn } from './tabs.js';
 import { openTaskModal } from './task-modal.js';
-import { openTerminalAt } from './terminal.js';
+import { STATUS_LABEL, allSessions, availableKinds, focusSession, newSession, openTerminalAt } from './terminal.js';
 import { LAYOUT_LABEL, THEME_LABEL, currentLayout, currentTheme, cycleTheme, toggleLayout } from './theme.js';
 import { currentWorkspaceRepoId, enterWorkspace, exitWorkspace, openWorkspacePopover } from './workspaces.js';
 
@@ -22,8 +23,12 @@ import { currentWorkspaceRepoId, enterWorkspace, exitWorkspace, openWorkspacePop
 // ---------- command palette (⌘K) ----------
 // A quick switcher: jump straight to any task by name, or run a top-bar
 // action, without hunting across columns/filters or reaching for the mouse.
-let paletteResults = []; // flat, in on-screen order: { type: 'command'|'task', item }
+let paletteResults = []; // flat, in on-screen order: { type: 'command'|'workspace'|'session'|'task', item }
 let paletteActive = 0;
+
+// The same green/amber/red bullet the terminal tabs and sidebar rows use.
+const SESSION_DOT = { active: 'var(--green)', idle: 'var(--amber, #d1a03c)', exited: 'var(--red)' };
+const repoNameOf = (s) => state.repos.find((r) => r.id === s.repoId)?.name || '';
 
 function paletteCommands() {
   return [
@@ -43,11 +48,24 @@ function paletteCommands() {
       : []),
     { label: 'Repositories', hint: 'Add or manage repos', icon: 'folder', run: () => openReposModal() },
     { label: 'Super View', hint: 'Back to the all-workspaces home screen', icon: 'arrow-left', run: () => exitWorkspace() },
+    // Only the tabbed layout has a tab to close; in the classic one there is
+    // nothing this would act on.
+    ...(tabsOn()
+      ? [{ label: 'Close Tab', hint: 'Close the tab in front (ends it, if it is a session)', icon: 'x', run: () => closeTab(activeTabKey()) }]
+      : []),
     // The open workspace's own actions — the keyboard path to what the header's
     // Terminal button and "…" menu do.
     ...(state.view.repoId
       ? [
         { label: 'Open Terminal', hint: 'A shell on this workspace checkout', icon: 'terminal', run: () => openTerminalAt(state.view.repoId) },
+        // One entry per agent CLI installed here, so "new claude session" is a
+        // keystroke away instead of a trip through the panel's + menu.
+        ...availableKinds().filter((k) => k.kind !== 'shell').map((k) => ({
+          label: `New ${k.label} Session`,
+          hint: `${k.hint} on this workspace checkout`,
+          icon: k.icon,
+          run: () => newSession(state.view.repoId, k.kind),
+        })),
         { label: `Reveal in ${state.desktop.fileManager || 'file manager'}`, hint: 'Show the checkout in your file manager', icon: 'folder-open', run: () => revealPath(state.view.repoId) },
         { label: defaultEditor() ? `Open in ${defaultEditor().label}` : 'Open in IDE', hint: 'Open the checkout in your editor', icon: 'code', run: () => openInIde(state.view.repoId, null, $('#workspace-more')) },
         { label: 'Project Memory', hint: 'Notes every agent reads for this repo', icon: 'brain', run: () => openMemoryModal(state.view.repoId) },
@@ -83,6 +101,9 @@ function renderPalette(query) {
   const repos = state.repos
     .filter((r) => currentWorkspaceRepoId() !== r.id)
     .filter((r) => matches(`${r.name} ${r.path}`.toLowerCase()));
+  // Live shell sessions — the keyboard route into one, since they aren't cards
+  // and so never show up in the task list below.
+  const sessions = allSessions().filter((s) => matches(`${s.label} ${repoNameOf(s)} ${s.cwd}`.toLowerCase()));
   const allTasks = [...state.tasks.values()].sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
   const tasks = (tokens.length ? allTasks.filter((t) => matches(`${t.title} ${t.repoName}`.toLowerCase())) : allTasks.slice(0, 6))
     .slice(0, 8);
@@ -90,6 +111,7 @@ function renderPalette(query) {
   paletteResults = [
     ...cmds.map((item) => ({ type: 'command', item })),
     ...repos.map((item) => ({ type: 'workspace', item })),
+    ...sessions.map((item) => ({ type: 'session', item })),
     ...tasks.map((item) => ({ type: 'task', item })),
   ];
   paletteActive = 0;
@@ -113,9 +135,15 @@ function renderPalette(query) {
       });
     }).join('');
   }
+  if (sessions.length) {
+    html += '<div class="palette-group">Sessions</div>';
+    html += sessions.map((s, i) => paletteRow(cmds.length + repos.length + i, {
+      label: s.label, hint: `${repoNameOf(s)} · ${STATUS_LABEL[s.status]}`, dot: SESSION_DOT[s.status],
+    })).join('');
+  }
   if (tasks.length) {
     html += `<div class="palette-group">${tokens.length ? 'Tasks' : 'Recent tasks'}</div>`;
-    html += tasks.map((t, i) => paletteRow(cmds.length + repos.length + i, {
+    html += tasks.map((t, i) => paletteRow(cmds.length + repos.length + sessions.length + i, {
       label: t.title, hint: `${t.repoName} · ${t.status}`, dot: COLUMNS.find((c) => c.key === COLUMN_OF_STATUS[t.status]).dot,
     })).join('');
   }
@@ -144,6 +172,7 @@ function activatePalette(index) {
   closePalette();
   if (entry.type === 'command') entry.item.run();
   else if (entry.type === 'workspace') enterWorkspace(entry.item.id);
+  else if (entry.type === 'session') focusSession(entry.item.id);
   else openDrawer(entry.item.id);
 }
 

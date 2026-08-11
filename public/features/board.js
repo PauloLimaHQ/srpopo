@@ -5,6 +5,7 @@ import { onDrop } from './dnd.js';
 import { filtersActive, groomingMatchesFilters, groomingsForRepo, orchestrationMatchesFilters, orchestrationsForRepo, taskMatchesFilters, tasksForRepo, updateFilterMeta } from './filters.js';
 import { pluginInstalled } from './settings.js';
 import { renderSidebar } from './sidebar.js';
+import { renderTabStrip } from './tabs.js';
 import { renderSuperView } from './workspaces.js';
 
 
@@ -13,9 +14,11 @@ import { renderSuperView } from './workspaces.js';
 // workspace there's no board to draw — refresh the Super View instead so its
 // per-repo stats (graph, live badge, task count) stay live.
 function renderBoard() {
-  // The experimental project sidebar lists the same cards, so it refreshes off
-  // the same choke point (a no-op in the classic layout).
+  // The experimental project sidebar lists the same cards, and each work-area
+  // tab carries its project's live count — both refresh off this same choke
+  // point (a no-op in the classic layout).
   renderSidebar();
+  renderTabStrip();
   if (state.view.mode !== 'workspace') { renderSuperView(); return; }
   updateFilterMeta();
   const board = $('#board');

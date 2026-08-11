@@ -7,6 +7,7 @@ import { defaultEditor } from './desktop.js';
 import { groomingsForRepo, orchestrationsForRepo, tasksForRepo } from './filters.js';
 import { openReposModal, renderRepoList } from './repos-modal.js';
 import { renderSidebar, sidebarExpanded } from './sidebar.js';
+import { applyPanes, noteRepoTab, noteSuperTab, renderTabStrip } from './tabs.js';
 import { closeWorkspaceMenu } from './workspace-menu.js';
 
 
@@ -33,24 +34,36 @@ function setView(view) {
   renderView();
 }
 // Entering a workspace unfolds it in the project sidebar (if that layout is
-// on), so the board you switched to and the rail agree on what's in focus.
-const enterWorkspace = (repoId) => { sidebarExpanded.add(repoId); setView({ mode: 'workspace', repoId }); };
-const exitWorkspace = () => setView({ mode: 'super' });
+// on), so the board you switched to and the rail agree on what's in focus, and
+// opens/raises its tab in the work-area strip (a no-op in the classic layout).
+// Every surface that switches workspace goes through here — the sidebar, ⌘K,
+// the header's switcher, a Super View card, a tab — which is what keeps the
+// rail, the strip and the board from ever disagreeing.
+const enterWorkspace = (repoId) => {
+  sidebarExpanded.add(repoId);
+  noteRepoTab(repoId);
+  setView({ mode: 'workspace', repoId });
+};
+const exitWorkspace = () => { noteSuperTab(); setView({ mode: 'super' }); };
 // The workspace open when a New Task / Brief / Linear modal is launched, so
 // those flows default their repo <select> to it instead of the last-used repo.
 const currentWorkspaceRepoId = () => (state.view.mode === 'workspace' ? state.view.repoId : null);
 
-// Toggles the Super View / workspace board and re-renders whichever is now visible.
+// Toggles the Super View / workspace board / terminal and re-renders whichever
+// is now visible. applyPanes() owns the show/hide: in the classic layout it is
+// the Super-View-or-board swap this always did, and in the sidebar layout the
+// active tab can also be a shell session.
 function renderView() {
   const isSuper = state.view.mode === 'super';
   // The actions menu is anchored to the header, but lives outside it — close it
   // so it can't outlive the workspace it acts on.
   closeWorkspaceMenu();
   renderSidebar();
-  $('#super-view').classList.toggle('hidden', !isSuper);
-  $('#board').classList.toggle('hidden', isSuper);
-  $('#workspace-header').classList.toggle('hidden', isSuper);
-  $('#filterbar').classList.toggle('hidden', isSuper);
+  renderTabStrip();
+  applyPanes();
+  // The board behind a session tab is rendered anyway: it costs one pass over
+  // state we already have, and it means tabbing back to it shows the current
+  // board instead of an empty flash.
   if (isSuper) renderSuperView();
   else { renderWorkspaceHeader(); renderBoard(); }
   renderAutonomous();

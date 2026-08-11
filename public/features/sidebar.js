@@ -5,6 +5,7 @@ import { openContextMenu } from './context-menu.js';
 import { openDrawer, openGroomingDrawer, openOrchestrationDrawer } from './drawer.js';
 import { filtersActive, groomingMatchesFilters, groomingsForRepo, orchestrationMatchesFilters, orchestrationsForRepo, taskMatchesFilters, tasksForRepo } from './filters.js';
 import { openReposModal } from './repos-modal.js';
+import { STATUS_LABEL, focusSession, openNewSessionMenu, sessionsForRepo } from './terminal.js';
 import { currentLayout } from './theme.js';
 import { enterWorkspace, exitWorkspace, githubAvatarUrl, refreshRepoBranchCard } from './workspaces.js';
 
@@ -38,6 +39,31 @@ function sidebarCardRow(kind, id, title, dot, live, badge) {
         ${live ? '<span class="spinner"></span>' : ''}
         ${badge ? `<span class="sidebar-card-badge">${esc(badge)}</span>` : ''}
       </button>`;
+}
+
+// Terminal sessions for a repo. Not cards — they have no column and no board
+// state — so they get their own group above the cards, always rendered (even
+// empty) because its heading carries the "new session" button. Clicking a row
+// jumps straight into that shell.
+function sidebarSessionsHtml(repoId) {
+  const rows = sessionsForRepo(repoId).map((s) => `
+      <button class="sidebar-card sidebar-session" data-session="${esc(s.id)}"
+              title="${esc(`${s.label} — ${STATUS_LABEL[s.status]}\n${s.cwd}`)}">
+        <span class="term-dot ${esc(s.status)}"></span>
+        <span class="sidebar-card-title">${esc(s.label)}</span>
+        ${s.status === 'exited' ? '<span class="sidebar-card-badge">closed</span>' : ''}
+      </button>`);
+  return `
+      <div class="sidebar-group">
+        <div class="sidebar-group-head">
+          ${icon('terminal')}
+          <span class="sidebar-group-label">Sessions</span>
+          <span class="count">${rows.length}</span>
+          <button class="sidebar-group-add" data-new-session="${esc(repoId)}"
+                  title="New terminal session" aria-label="New terminal session">${icon('plus')}</button>
+        </div>
+        ${rows.join('') || '<div class="sidebar-empty">no sessions</div>'}
+      </div>`;
 }
 
 // A repo's cards, grouped by the column they sit in. Empty groups are dropped
@@ -115,7 +141,7 @@ function sidebarRepoHtml(r) {
             : `<span class="count">${tasks.length}</span>`}
           </button>
         </div>
-        ${open ? `<div class="sidebar-project-body">${sidebarGroupsHtml(r.id)}</div>` : ''}
+        ${open ? `<div class="sidebar-project-body">${sidebarSessionsHtml(r.id)}${sidebarGroupsHtml(r.id)}</div>` : ''}
       </div>`;
 }
 
@@ -146,7 +172,7 @@ function renderSidebar() {
         ? state.repos.map(sidebarRepoHtml).join('')
         : '<div class="sidebar-empty">No repositories yet.</div>'}
       </div>
-      <div class="sidebar-foot">${icon('panel-left')} Experimental layout — switch back in Settings → Appearance</div>`;
+      <div class="sidebar-foot">${icon('panel-left')} Experimental layout — projects and sessions open as tabs. Switch back in Settings → Appearance</div>`;
   el.scrollTop = scroll;
   // Avatars come from the same per-repo branch lookup the Super View uses.
   for (const r of state.repos) refreshRepoBranchCard(r.id);
@@ -165,6 +191,12 @@ export function init() {
 
   $('#sidebar').addEventListener('click', (e) => {
     if (e.target.closest('#sidebar-add-repo')) { openReposModal(); return; }
+    // Sessions are handled before the project row they sit under, since both
+    // live inside the same expanded project.
+    const addSession = e.target.closest('[data-new-session]');
+    if (addSession) { openNewSessionMenu(addSession.dataset.newSession, addSession); return; }
+    const sessionBtn = e.target.closest('[data-session]');
+    if (sessionBtn) { focusSession(sessionBtn.dataset.session); return; }
     const twisty = e.target.closest('[data-toggle]');
     if (twisty) {
       const id = twisty.dataset.toggle;

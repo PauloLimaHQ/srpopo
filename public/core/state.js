@@ -19,6 +19,15 @@ const state = {
   settings: { notifications: true, sounds: true, maxParallelSessions: 3, installedPlugins: [], mergeStrategy: 'merge', minMergeGrade: 4, remoteAccess: false, remoteAccessConfigured: false, customModels: [], isolateMcpServers: true, sessionMemoryMb: 'auto', sessionMemoryAutoMb: 0 }, // user preferences (from /api/settings)
   filters: { search: '' }, // board filters (free-text only — repo scope comes from state.view)
   view: { mode: 'super' }, // { mode: 'super' } | { mode: 'workspace', repoId }
+  // Work-area tabs (sidebar layout only — see features/tabs.js). An ordered list
+  // of what's open, always led by the non-closable Super View tab:
+  //   { kind: 'super' } | { kind: 'repo', id } | { kind: 'session', id }
+  // `activeTab` is the key of the one on screen (see tabKey()); it stays in sync
+  // with `view` — a repo tab *is* that workspace — while a session tab leaves
+  // `view` pointing at the last board, so New Task and the drawer still know
+  // which repo you were in.
+  tabs: [{ kind: 'super' }],
+  activeTab: 'super',
   prByTask: new Map(), // taskId -> 'loading' | { pr, reason } from /api/tasks/:id/pr
   repoBranchByTask: new Map(), // taskId -> 'loading' | repo's live current branch (non-worktree tasks only)
   repoBranchByRepo: new Map(), // repoId -> 'loading' | repo's live current branch (Super View / workspace header)
@@ -32,6 +41,9 @@ const state = {
   // Desktop hand-offs for the workspace quick actions (from /api/desktop): what
   // this OS calls its file manager, and which IDEs are installed here.
   desktop: { fileManager: 'file manager', editors: [] },
+  // /api/health: which agent CLIs exist on this machine. Read by the terminal's
+  // new-session picker so it only offers a CLI that's actually installed.
+  health: null,
   askId: null, // the in-flight "Ask Sr. Popo" session id (see modal-ask), or null
   askText: '', // assistant text streamed so far for the open ask session
 };

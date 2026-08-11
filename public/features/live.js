@@ -18,7 +18,9 @@ import { resourceMonitorOn, syncResourceMonitor } from './resources.js';
 import { renderEditorSetting, renderSessionMemorySetting } from './settings-modal.js';
 import { maybeNotifyBrowser, maybeNotifyGroomingBrowser, maybeNotifyOrchestrationBrowser, maybePlayGroomingSound, maybePlayOrchestrationSound, maybePlayTaskSound, notificationsOn, renderPluginState, updateNotifNote } from './settings.js';
 import { soundsOn } from './sounds.js';
+import { pruneTabs } from './tabs.js';
 import { refreshRepoSelect } from './task-modal.js';
+import { applyTerminalEvent, loadTerminalSessions } from './terminal.js';
 import { exitWorkspace, renderView } from './workspaces.js';
 
 
@@ -26,8 +28,12 @@ import { exitWorkspace, renderView } from './workspaces.js';
 function connectSSE() {
   const es = new EventSource('/api/events');
   // A (re)connected stream means the server is answering again — restart the
-  // resource poll if it parked itself while the server was down.
-  es.onopen = () => syncResourceMonitor();
+  // resource poll if it parked itself while the server was down, and resync the
+  // shell sessions, which a server restart would have emptied.
+  es.onopen = () => {
+    syncResourceMonitor();
+    loadTerminalSessions().then(renderBoard);
+  };
   es.onmessage = (e) => {
     const msg = JSON.parse(e.data);
     if (msg.type === 'task') {
@@ -112,6 +118,8 @@ function connectSSE() {
       refreshBriefRepoSelect();
       refreshOrchRepoSelect();
       refreshLinearRepoSelect();
+      // A removed repo takes its work-area tab with it.
+      pruneTabs();
       // Fall back to the Super View if the workspace's own repo was just removed.
       if (state.view.mode === 'workspace' && !state.repos.some((r) => r.id === state.view.repoId)) exitWorkspace();
       else renderView();
@@ -126,6 +134,11 @@ function connectSSE() {
     } else if (msg.type === 'autonomous') {
       state.autonomous = msg.status || null;
       renderAutonomous();
+    } else if (msg.type === 'terminal' || msg.type === 'terminal-removed') {
+      // A shell session was opened, changed status, or was dismissed — from
+      // this board or another window onto the same server.
+      applyTerminalEvent(msg);
+      renderBoard(); // the sidebar's Sessions rows carry the same bullet
     } else if (msg.type === 'pr') {
       // Background PR-status refresh (server/pr-refresh.ts) — keeps the
       // cached lookup honest even if no one opened this task's drawer.
