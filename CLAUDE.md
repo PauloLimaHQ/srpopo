@@ -244,8 +244,26 @@ parsing, re-verify against a signed-in run.
 Breaking any of these is a security or trust regression — call it out loudly if a task
 would require it.
 
-1. **Bind to `127.0.0.1` only.** Never expose the server on `0.0.0.0` or a LAN address.
-   There is no auth layer; localhost binding *is* the security boundary.
+1. **The localhost boundary is two things, and it needs both.** The API can start a
+   shell (`POST /api/terminal/:tid/input`) and spawn agents with the user's git and
+   `gh` credentials, with no user accounts behind it — so what is allowed to reach it
+   *is* the security model.
+   - **Bind `127.0.0.1` by default** (`bindHost`). The one exception is the opt-in
+     **Remote Access (LAN)** setting, which binds `0.0.0.0` and is then *always*
+     gated by the shared-token middleware (`authorizeRemote`). Never widen the bind
+     without that gate, and never trust a forwardable header (`X-Forwarded-For`, and
+     so on) to decide who is local — `isLocalRequest` reads the raw socket address on
+     purpose.
+   - **Validate the `Host` header** (`isHostAllowed`) in front of everything else.
+     Binding loopback keeps other *machines* out but not other *websites*: under DNS
+     rebinding a page on `evil.com` re-resolves to `127.0.0.1`, so the browser hits
+     our socket while the request stays same-origin — no CORS, no preflight, and the
+     socket address says localhost. The Host header is the only thing that separates
+     a real local client from a rebound one. Allowlist the hosts we actually serve
+     (loopback always; the LAN addresses only while remote access is on).
+
+   Both halves are covered by tests named for this invariant; if you change the
+   middleware order or the bind, keep them passing rather than adjusting them.
 2. **Never use an API key.** Each backend's adapter strips its provider key from every
    spawned task — `ANTHROPIC_API_KEY` for Claude, `OPENAI_API_KEY` for Codex,
    `XAI_API_KEY` for Grok — so runs always use the subscription login (`claude` /

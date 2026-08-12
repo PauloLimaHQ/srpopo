@@ -10,8 +10,11 @@
  *
  * It reaches the same store/runner code paths as the REST API (via server/tasks.ts),
  * so a task queued over MCP is identical to one queued from the board. There is no
- * auth layer — the server binds `127.0.0.1` only, which is the security boundary,
- * exactly as the REST API relies on (see the invariants in CLAUDE.md).
+ * auth layer of its own: it sits behind the same Host allowlist + loopback bind
+ * (+ shared token when remote access is on) that guards /api, which together are
+ * the security boundary — exactly what the REST API relies on. It is mounted on
+ * the same Express app, after that middleware, so it inherits the gate rather than
+ * re-implementing it. See invariant #1 in CLAUDE.md.
  *
  * The transport is deliberately hand-rolled (newline-free JSON-RPC 2.0 over a
  * single POST) to keep Sr. Popo dependency-light. `respond(msg, call)` builds one

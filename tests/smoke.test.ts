@@ -278,6 +278,83 @@ test('index: parseCookies parses a Cookie header by hand; lanAddresses lists IPv
   assert.ok(lan.every((ip: string) => typeof ip === 'string' && !ip.includes(':')), 'entries are IPv4 strings');
 });
 
+test('index: isHostAllowed rejects a rebound host — invariant #1 survives DNS rebinding', () => {
+  const index = require('../server/index');
+  const allowed = (host: string, remote = false, lan: string[] = []) => index._isHostAllowed(host, remote, lan);
+
+  // The hosts our own clients actually use, with and without a port.
+  for (const h of ['localhost:7777', '127.0.0.1:7777', '127.0.0.1', '[::1]:7777', '[::1]', 'LOCALHOST']) {
+    assert.strictEqual(allowed(h), true, `${h} is a real local client`);
+  }
+
+  // The attack: a page on evil.com whose DNS was rebound to 127.0.0.1. The socket
+  // says localhost, so only the Host header can tell it apart.
+  assert.strictEqual(allowed('evil.com'), false, 'invariant #1: a rebound host is refused');
+  assert.strictEqual(allowed('evil.com:7777'), false, 'a rebound host with our port is refused');
+  assert.strictEqual(allowed('127.0.0.1.evil.com'), false, 'a lookalike subdomain is refused');
+  assert.strictEqual(allowed(''), false, 'a missing Host header is refused');
+
+  // LAN addresses are served only when remote access is on (and the token gate
+  // still applies to them) — never while we are bound to loopback.
+  assert.strictEqual(allowed('192.168.1.20', false, ['192.168.1.20']), false, 'no LAN host while remote access is off');
+  assert.strictEqual(allowed('192.168.1.20', true, ['192.168.1.20']), true, 'the paired LAN address is served');
+  assert.strictEqual(allowed('192.168.1.99', true, ['192.168.1.20']), false, 'an unrelated LAN address is refused');
+  assert.strictEqual(allowed('evil.com', true, ['192.168.1.20']), false, 'remote access does not open the host allowlist');
+
+  const self = require('os').hostname().toLowerCase().replace(/\.local$/, '');
+  assert.strictEqual(allowed(`${self}.local`, true, []), true, 'the machine name is typeable in the pairing URL');
+  assert.strictEqual(allowed(`${self}.local`, false, []), false, 'but not while bound to loopback');
+});
+
+test('index: a rebound Host is refused by the live server before it reaches any route', async () => {
+  const store = require('../server/store');
+  const index = require('../server/index');
+  const prevOn = store.db.settings.remoteAccess;
+  store.db.settings.remoteAccess = false;
+  const { server, port } = await index.start(0);
+  // fetch() silently DROPS a Host header (it is a forbidden header name), so it
+  // cannot express this attack at all — go through node:http, which lets us send
+  // the exact bytes a rebound browser would.
+  const raw = (p: string, host: string, method = 'GET', body?: string): Promise<number> =>
+    new Promise((resolve, reject) => {
+      const headers: Record<string, string> = { Host: host };
+      if (body) { headers['Content-Type'] = 'application/json'; headers['Content-Length'] = String(Buffer.byteLength(body)); }
+      const req = require('http').request({ hostname: '127.0.0.1', port, path: p, method, headers },
+        (res: { statusCode: number; resume: () => void }) => { res.resume(); resolve(res.statusCode); });
+      req.on('error', reject);
+      if (body) req.write(body);
+      req.end();
+    });
+  try {
+    // A normal local request is untouched.
+    assert.strictEqual(await raw('/api/health', `127.0.0.1:${port}`), 200, 'localhost still works');
+
+    // The attack: what the browser sends from a page on evil.com whose DNS was
+    // rebound to 127.0.0.1 — our loopback socket, the attacker's origin.
+    assert.strictEqual(await raw('/api/health', 'evil.com'), 403, 'invariant #1: the rebound request is refused');
+
+    // The terminal input route is the sharpest edge (it is a shell), so assert
+    // the gate sits in front of it too — and in front of the static board.
+    assert.strictEqual(
+      await raw('/api/terminal/whatever/input', 'evil.com', 'POST', JSON.stringify({ data: 'echo pwned\n' })),
+      403, 'no shell for a rebound origin');
+    assert.strictEqual(await raw('/', 'evil.com'), 403, 'the static board is behind the gate too');
+  } finally {
+    await new Promise<void>((r) => server.close(() => r()));
+    store.db.settings.remoteAccess = prevOn;
+  }
+});
+
+test('index: strippedTokenUrl keeps the access token out of history and Referer', () => {
+  const index = require('../server/index');
+  assert.strictEqual(index._strippedTokenUrl('/?token=abc123'), '/', 'the pairing URL becomes a bare path');
+  assert.strictEqual(index._strippedTokenUrl('/?token=abc123&view=super'), '/?view=super', 'other params survive');
+  assert.strictEqual(index._strippedTokenUrl('/board?a=1&token=x&b=2'), '/board?a=1&b=2', 'the path survives');
+  assert.strictEqual(index._strippedTokenUrl('/?view=super'), '/?view=super', 'a URL without a token is unchanged');
+  // The redirect must stay on our own origin no matter what arrives.
+  assert.ok(index._strippedTokenUrl('//evil.com/x?token=1').startsWith('/'), 'the redirect target stays relative');
+});
+
 test('git: listBranches/createBranch/checkoutBranch and worktree base off a chosen branch', async () => {
   const git = require('../server/git');
   const { execFileSync } = require('child_process');
