@@ -46,6 +46,7 @@ static with **no build step** (see Conventions).
 | `server/bus.ts` | Server-Sent Events fan-out for the live board + timeline. |
 | `server/addons.ts` | Catalog of opt-in task behaviors (see "Add-ons" below). |
 | `server/personas.ts` | Catalog of expert-persona role preambles. |
+| `server/repoSettings.ts` | Per-workspace (per-repo) defaults: sanitizing them, reading a repo's, and resolving its branch-name template (see "Workspace settings"). |
 | `server/permissions.ts` | In-memory registry of pending tool-approval prompts (see "Interactive permissions"). |
 | `server/permission-mcp.js` | **Stays plain JS.** Standalone MCP stdio bridge `claude` spawns to ask before running a tool — kept JS so it runs without a TS loader in both dev and the packaged app. `tsc` copies it into `dist/` untouched (`allowJs`). |
 | `server/groomer.ts` | Meta-prompt + result parser for "Brief an Idea" (see "Grooming" below). |
@@ -559,6 +560,44 @@ ctrlKey`, because off macOS it is Ctrl+W / Ctrl+D — which a focused shell keep
 (kill-word and EOF) — and the Electron menu carries the same two items with
 `registerAccelerator: false`, so the keystroke reaches the page instead of the system
 menu (which is also why **Close Window** moved to ⇧⌘W).
+
+## Workspace settings (per-repo defaults)
+
+A registered repo can carry its own `settings` (`RepoSettings` in `types.ts`, absent
+until configured — so there is no `db.json` migration). `server/repoSettings.ts` is the
+single source of truth for them: `sanitize` (drop unknown keys and invalid values
+rather than erroring — a stray value must never produce an unrunnable task), `forRepo`,
+`configured`, and `resolveBranchName`. They are edited through **`PATCH /api/repos/:id`**
+with `{ settings }`, which *replaces* rather than deep-merges and **deletes the key**
+when the sanitized result is empty (that's how the modal's "Reset to app defaults"
+works). The UI is its own modal (`#modal-repo-settings`, `public/features/repo-settings.js`),
+opened from the workspace "…" menu and ⌘K.
+
+They are **defaults, not overrides**, and only two things read them:
+
+- **The branch convention.** `branchTemplate` (tokens `{slug}` `{id}` `{date}`) is
+  applied at exactly one call site — `tasks.dispatchTask`, where the worktree is
+  materialized — so every path that dispatches a task (REST, MCP, Autonomous Mode,
+  orchestrator workers, grooming-spawned tasks) gets it for free. Precedence there is
+  **`task.branchName` > the workspace template > `git.addWorktree`'s own
+  `srpopo/<slug>-<id>`**, which stays untouched as the last resort. Uniqueness is not
+  this module's problem: a template without `{id}`/`{slug}` can collide, and `git
+  worktree add` then fails loudly through the existing dispatch error path.
+- **New-task / new-grooming defaults.** `tasks.createTask` and `index.createGrooming`
+  fill a field from the workspace **only when the key is absent from the input**
+  (`'key' in input`, not truthiness — same idiom as `promptPermissions`). The board
+  always sends every field explicitly, so its own prefill is what the user sees; lean
+  callers (MCP `create_task`) omit most keys and inherit. The deliberate paths that set
+  their fields themselves — `spawnGroomedTasks`, the orchestrator, Linear and spec
+  imports — are *not* given repo defaults; they still pick up the branch convention.
+
+In the board, a workspace with anything configured **beats the browser's last-used
+memory** (`localStorage['srpopo.lastTaskSettings']`) outright for that repo, falling
+back to the hardcoded defaults for whatever it leaves unset; a repo with nothing
+configured keeps today's last-used behavior unchanged. The app-wide `Settings`
+(`mergeStrategy`, `minMergeGrade`, `autoResolveConflicts`, `assignPrToSelf`,
+`defaultEditor`, `memory`, `maxParallelSessions`, the autonomous budget) are **not**
+affected by any of this — they stay global.
 
 ## Terminal sessions (drive an agent by hand)
 

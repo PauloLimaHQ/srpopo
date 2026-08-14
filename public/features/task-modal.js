@@ -2,6 +2,7 @@
 import { api, esc, lookup, toast } from '../core/api.js';
 import { $, icon, state } from '../core/state.js';
 import { renderBoard } from './board.js';
+import { repoSettingsFor, wsConfigured, wsTaskDefaults } from './repo-settings.js';
 import { openReposModal } from './repos-modal.js';
 import { currentWorkspaceRepoId } from './workspaces.js';
 
@@ -56,16 +57,21 @@ async function refreshBaseBranchPicker(repoId, selectEl, selected) {
 // The `pull_request` addon gets a sibling segmented control so both PR modes —
 // ready for review or draft — are one click away; it stays inert until the
 // addon itself is on.
-function renderAddonOptions(selected = [], prDraft = false) {
+//
+// The markup is shared with the workspace-settings modal
+// (features/repo-settings.js) so there is one source of it. `prMode` is what
+// adds that segmented control — only the New Task composer wants it; a
+// workspace default has no PR mode of its own.
+function addonChipsHtml(selected = [], prDraft = false, prMode = true) {
   const chosen = new Set(selected);
-  $('#task-addon-list').innerHTML = state.addons.map((a) => {
+  return state.addons.map((a) => {
     const checked = chosen.has(a.id);
     const chip = `
         <label class="opt-chip" title="${esc(a.hint || a.label)}">
           <input type="checkbox" data-addon="${esc(a.id)}" ${checked ? 'checked' : ''} />
           ${icon(a.icon || 'sparkles')}${esc(a.short || a.label)}
         </label>`;
-    if (a.id !== 'pull_request') return chip;
+    if (a.id !== 'pull_request' || !prMode) return chip;
     return chip + `
         <span class="seg pr-mode ${checked ? '' : 'pr-mode-disabled'}" role="radiogroup" aria-label="Pull request mode">
           <label class="seg-opt" title="Open the pull request ready for review">
@@ -76,6 +82,10 @@ function renderAddonOptions(selected = [], prDraft = false) {
           </label>
         </span>`;
   }).join('');
+}
+
+function renderAddonOptions(selected = [], prDraft = false) {
+  $('#task-addon-list').innerHTML = addonChipsHtml(selected, prDraft, true);
   // Enable/disable the ready-vs-draft radios as the PR checkbox is toggled —
   // the choice only means something once "Create a Pull Request" is checked.
   const prCheckbox = document.querySelector('#task-addon-list input[data-addon="pull_request"]');
@@ -365,49 +375,78 @@ async function addFiles(fileList) {
   }
 }
 
+// Seed every run-setting field of the composer. Where the values come from:
+//   - editing a task     — the task's own values, always;
+//   - a configured repo  — the workspace's defaults (features/repo-settings.js),
+//                          which beat the browser's last-used memory outright;
+//   - anything else      — the last task the user created, as before.
+// Whatever the source leaves unset falls back to the hardcoded defaults here,
+// so this is unchanged for a workspace with nothing configured.
+function prefillTaskDefaults(task) {
+  const ws = repoSettingsFor(task ? task.repoId : $('#task-repo').value);
+  const src = task ? {} : (wsConfigured(ws) ? wsTaskDefaults(ws) : loadLastUsed());
+  $('#task-agent').value = task ? (task.agent || 'claude') : (src.agent || 'claude');
+  $('#task-model').value = task ? (task.model || 'default') : (src.model || 'default');
+  // Show only the selected agent's models; drops the selection back to "default"
+  // if the restored model belongs to the other agent. Also toggles the Codex
+  // permissions hint.
+  syncAgentModels();
+  $('#task-perm').value = task ? (task.permissionMode || 'acceptEdits') : (src.permissionMode || 'acceptEdits');
+  $('#task-allowed-tools').value = task ? (task.allowedTools || '') : (src.allowedTools || '');
+  $('#task-worktree').checked = task ? !!task.useWorktree : (src.useWorktree ?? true);
+  $('#task-auto-code-review').checked = task ? !!task.autoCodeReview : !!src.autoCodeReview;
+  renderAddonOptions(task ? (task.addons || []) : (src.addons || []), task ? !!task.prDraft : !!src.prDraft);
+  initPersonaPicker(task ? (task.personas || []) : (src.personas || []));
+  $('#task-auto-persona').checked = task ? !!task.autoPersona : !!src.autoPersona;
+  syncAutoPersona();
+  syncBranchHint(ws);
+}
+
+// The workspace's branch convention is what a new task's branch is actually
+// named when the field below is left blank, so show it as the field's
+// placeholder and say so in its hint.
+function syncBranchHint(ws) {
+  const template = ws.branchTemplate || '';
+  $('#task-branch').placeholder = template || 'e.g. feature/ABC-123, matching your repo\'s convention';
+  $('#task-branch-hint').innerHTML = template
+    ? `— optional, defaults to this workspace's <code>${esc(template)}</code>`
+    : '— optional, defaults to <code>srpopo/&lt;task&gt;-&lt;id&gt;</code>';
+}
+
 function openTaskModal(task = null) {
   editingTaskId = task ? task.id : null;
   releaseStagedPreviews();
   stagedFiles = [];
   savedAttachments = task ? (task.attachments || []).slice() : [];
   renderAttachments();
-  // In create mode, seed the form from the last task the user created.
-  const last = task ? {} : loadLastUsed();
   refreshRepoSelect();
+  // The repo is resolved *first*: which workspace a new task lands in is what
+  // decides where the rest of the form's defaults come from.
+  $('#task-repo-field').classList.toggle('hidden', !!task);
+  if (task) $('#task-repo').value = task.repoId;
+  else {
+    const last = loadLastUsed();
+    if (currentWorkspaceRepoId()) $('#task-repo').value = currentWorkspaceRepoId();
+    // Restore the last-used repo if it still exists in the current list.
+    else if (last.repoId && state.repos.some((r) => r.id === last.repoId)) $('#task-repo').value = last.repoId;
+  }
   $('#task-title').value = task ? task.title : '';
   $('#task-prompt').value = task ? task.prompt : '';
-  $('#task-agent').value = task ? (task.agent || 'claude') : (last.agent || 'claude');
-  $('#task-model').value = task ? (task.model || 'default') : (last.model || 'default');
-  // Show only the selected agent's models; drops the selection back to "default"
-  // if the restored model belongs to the other agent. Also toggles the Codex
-  // permissions hint.
-  syncAgentModels();
-  $('#task-perm').value = task ? (task.permissionMode || 'acceptEdits') : (last.permissionMode || 'acceptEdits');
-  $('#task-allowed-tools').value = task ? (task.allowedTools || '') : (last.allowedTools || '');
-  $('#task-worktree').checked = task ? !!task.useWorktree : (last.useWorktree ?? true);
+  prefillTaskDefaults(task);
   // A materialized worktree can't be toggled off; the repo can't move after creation.
   $('#task-worktree').disabled = !!(task && task.worktreePath);
   $('#task-branch').value = task ? (task.branchName || '') : '';
   // The branch is fixed once the worktree is materialized.
   $('#task-branch').disabled = !!(task && task.worktreePath);
-  $('#task-auto-code-review').checked = task ? !!task.autoCodeReview : !!last.autoCodeReview;
   syncWorktreeFields();
-  renderAddonOptions(task ? (task.addons || []) : (last.addons || []), task ? !!task.prDraft : !!last.prDraft);
-  initPersonaPicker(task ? (task.personas || []) : (last.personas || []));
-  $('#task-auto-persona').checked = task ? !!task.autoPersona : !!last.autoPersona;
-  syncAutoPersona();
   // Advanced starts folded away, and only unfolds when it has something to show.
   $('#task-advanced').open = !!($('#task-branch').value || $('#task-allowed-tools').value);
-  $('#task-repo-field').classList.toggle('hidden', !!task);
-  if (task) $('#task-repo').value = task.repoId;
-  else if (currentWorkspaceRepoId()) $('#task-repo').value = currentWorkspaceRepoId();
-  // Restore the last-used repo if it still exists in the current list.
-  else if (last.repoId && state.repos.some((r) => r.id === last.repoId)) $('#task-repo').value = last.repoId;
   refreshRepoBranchHint($('#task-repo').value, $('#task-repo-branch'));
   // The base branch is fixed once the worktree is materialized.
   const baseLocked = !!(task && task.worktreePath);
   $('#task-new-branch').disabled = baseLocked;
-  refreshBaseBranchPicker($('#task-repo').value, $('#task-base-branch'), task ? task.baseBranch : null)
+  const wsBase = repoSettingsFor($('#task-repo').value).baseBranch || null;
+  refreshBaseBranchPicker($('#task-repo').value, $('#task-base-branch'), task ? task.baseBranch : wsBase)
     .then(() => { if (baseLocked) $('#task-base-branch').disabled = true; });
 
   $('#task-modal-title').innerHTML = `${icon(task ? 'pencil' : 'sparkles')}${task ? 'Edit Task' : 'New Task'}`;
@@ -557,8 +596,14 @@ export function init() {
     openReposModal();
   });
   $('#task-repo').addEventListener('change', () => {
-    refreshRepoBranchHint($('#task-repo').value, $('#task-repo-branch'));
-    refreshBaseBranchPicker($('#task-repo').value, $('#task-base-branch'), null);
+    const repoId = $('#task-repo').value;
+    refreshRepoBranchHint(repoId, $('#task-repo-branch'));
+    // Switching repo mid-compose re-seeds the form from the new workspace — its
+    // defaults are the whole point, and they'd otherwise be a reopen away. Only
+    // in create mode: the picker is hidden while editing an existing task.
+    if (!editingTaskId) prefillTaskDefaults(null);
+    refreshBaseBranchPicker(repoId, $('#task-base-branch'),
+      editingTaskId ? null : (repoSettingsFor(repoId).baseBranch || null));
   });
   // Create a fresh branch (checked out from the repo's current one) and select it.
   $('#task-new-branch').addEventListener('click', async () => {
@@ -577,4 +622,4 @@ export function init() {
 }
 
 
-export { addFiles, editingTaskId, fmtBytes, loadLastUsed, openTaskModal, refreshRepoBranchHint, refreshRepoSelect, renderAttachments, setSavedAttachments, stagedFiles, stagedPreviews };
+export { addFiles, addonChipsHtml, editingTaskId, fmtBytes, loadLastUsed, openTaskModal, refreshRepoBranchHint, refreshRepoSelect, renderAttachments, setSavedAttachments, stagedFiles, stagedPreviews };

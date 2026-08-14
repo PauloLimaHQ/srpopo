@@ -27,6 +27,7 @@ import { readMemory } from './ask';
 import * as github from './github';
 import * as linear from './linear';
 import * as repoSpecs from './repoSpecs';
+import * as repoSettings from './repoSettings';
 import * as plugins from './plugins';
 import * as autonomous from './autonomous';
 import * as conflicts from './conflicts';
@@ -378,6 +379,11 @@ function sanitizeTarget(value: unknown): GroomingTarget {
 // truth for the card's shape, shared by POST /api/groomings and the Linear
 // import path. The caller decides whether to run it right away.
 function createGrooming(repo: Repo, idea: string, body: Record<string, unknown>, extra?: Partial<Grooming>): Grooming {
+  // The workspace's "Brief an Idea" defaults fill in only what the caller left
+  // out — `'key' in body`, not truthiness, so an explicit value always wins.
+  const ws = repoSettings.forRepo(repo.id);
+  const model = 'model' in body ? body.model : ws.groomModel;
+  const target = 'target' in body ? body.target : ws.groomTarget;
   const grooming: Grooming = {
     id: id(),
     title: groomer.deriveTitle(idea),
@@ -385,8 +391,8 @@ function createGrooming(repo: Repo, idea: string, body: Record<string, unknown>,
     repoId: repo.id,
     repoName: repo.name,
     repoPath: repo.path,
-    model: (body.model as string) || 'default',
-    target: sanitizeTarget(body.target),
+    model: (model as string) || 'default',
+    target: sanitizeTarget(target),
     branchName: body.branchName ? String(body.branchName).trim() : null,
     status: 'draft',
     sessionId: null,
@@ -822,6 +828,29 @@ app.post('/api/repos/reorder', (req: Request, res: Response) => {
   save();
   broadcast({ type: 'repos', repos: db.repos });
   res.json({ ok: true, repos: db.repos });
+});
+
+// Per-workspace settings (server/repoSettings.ts): the repo's branch-naming
+// convention and the defaults new tasks / groomings here are prefilled with.
+// Scope is settings only — a repo's name and path stay immutable.
+//
+// The body's `settings` replaces the stored object wholesale rather than being
+// deep-merged, so the modal can turn a field back off simply by omitting it; a
+// sanitized result with nothing in it deletes the key entirely, which is what
+// makes "Reset to app defaults" return the workspace to Sr. Popo's own defaults.
+app.patch('/api/repos/:id', (req: Request, res: Response) => {
+  const repo = db.repos.find((r) => r.id === req.params.id);
+  if (!repo) return err(res, 404, 'Repo not found');
+  const raw = req.body?.settings;
+  if (raw !== undefined && (typeof raw !== 'object' || raw === null || Array.isArray(raw))) {
+    return err(res, 400, 'settings must be an object');
+  }
+  const settings = repoSettings.sanitize(raw);
+  if (repoSettings.configured(settings)) repo.settings = settings;
+  else delete repo.settings;
+  save();
+  broadcast({ type: 'repos', repos: db.repos });
+  res.json(repo);
 });
 
 // Live lookup of the repo's current checked-out branch — refreshed on demand

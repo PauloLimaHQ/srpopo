@@ -83,7 +83,9 @@ const TOOL_DEFS = [
     name: 'create_task',
     description:
       'Queue a new task. Created in backlog by default; pass status "ready" to stage ' +
-      'it for dispatch. Does not run it — call dispatch_task for that.',
+      'it for dispatch. Does not run it — call dispatch_task for that. Any field you ' +
+      'omit falls back to the target workspace\'s configured defaults (and then to ' +
+      'Sr. Popo\'s own), so pass only what this task actually needs to differ on.',
     inputSchema: {
       type: 'object',
       properties: {

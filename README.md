@@ -81,6 +81,11 @@ the background when the window is closed.
   task, so runs always use your subscription login.
 - **Isolated worktrees** — optionally run each task on its own `srpopo/<slug>` branch in
   a dedicated git worktree, so parallel work never collides.
+- **Per-workspace settings** — give a repository its own branch-naming convention
+  (`feat/{slug}-{id}`, with `{date}` too) and the defaults new tasks and ideas there
+  start from: agent, model, permissions, worktree, add-ons, personas. They only
+  prefill — a task's own settings still win, and your app-wide preferences are
+  untouched.
 - **Ask-before-running permissions** — a Claude task can prompt you (Allow / Deny)
   before it runs any tool it wasn't pre-authorized for, instead of silently failing.
   Codex tasks are governed by its sandbox instead (read-only / workspace-write), and

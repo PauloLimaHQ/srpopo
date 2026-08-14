@@ -126,6 +126,13 @@
         <span class="quick-menu-item-hint">Path, branch and live worktrees</span>
       </span>
     </button>
+    <button class="quick-menu-item" role="menuitem" id="workspace-settings">
+      <span class="i" data-icon="settings"></span>
+      <span class="quick-menu-item-body">
+        <span class="quick-menu-item-label">Workspace settings</span>
+        <span class="quick-menu-item-hint">Branch naming and the defaults new tasks start from</span>
+      </span>
+    </button>
   </div>
 
   <!-- Editor picker for the "Open in IDE" quick action. Anchored under whichever
@@ -385,7 +392,9 @@
           <span class="i" data-icon="sliders-horizontal" aria-hidden="true"></span>Advanced
         </summary>
         <div class="task-advanced-body">
-          <label id="task-branch-field">Branch name <span class="field-hint">— optional, defaults to <code>srpopo/&lt;task&gt;-&lt;id&gt;</code></span>
+          <!-- The hint is rewritten by syncBranchHint() to name the workspace's
+               own branch convention when it has one configured. -->
+          <label id="task-branch-field">Branch name <span class="field-hint" id="task-branch-hint">— optional, defaults to <code>srpopo/&lt;task&gt;-&lt;id&gt;</code></span>
             <input id="task-branch" type="text" placeholder="e.g. feature/ABC-123, matching your repo's convention" />
           </label>
           <label>Allowed tools <span class="field-hint">— auto-approved in headless runs, comma-separated</span>
@@ -1075,6 +1084,136 @@
         <span class="field-hint" id="memory-updated-at"></span>
         <button class="btn ghost" id="memory-close">Close</button>
         <button class="btn primary" id="memory-save"><span class="i" data-icon="check"></span>Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Workspace settings modal — this repo's branch-naming convention plus the
+       values new tasks / groomings created here are prefilled with. Everything
+       in it is a *default*: a task's own value still wins, and the app-wide
+       Settings (merge strategy, minimum merge grade, autonomous budget, …) are
+       untouched. A control left on "App default" stays unset, which is what
+       keeps a workspace on Sr. Popo's built-in behavior. -->
+  <div id="modal-repo-settings" class="modal hidden">
+    <div class="modal-box task-box">
+      <h2><span class="i" data-icon="settings"></span>Workspace settings</h2>
+      <p class="field-hint" id="repo-settings-sub"></p>
+
+      <fieldset class="addons">
+        <legend>Branches</legend>
+        <label>Branch name template <span class="field-hint">— for tasks that run on their own worktree</span>
+          <input id="repo-settings-branch-template" type="text" spellcheck="false"
+                 autocomplete="off" placeholder="srpopo/{slug}-{id}" />
+        </label>
+        <p class="addon-hint" id="repo-settings-branch-preview"></p>
+        <p class="addon-hint">Tokens: <code>{slug}</code> (from the task title), <code>{id}</code> (the task's id) and
+          <code>{date}</code> (YYYY-MM-DD). Left blank, branches are named <code>srpopo/&lt;slug&gt;-&lt;id&gt;</code> as
+          before. A task's own <strong>Branch name</strong> under Advanced still wins over this. Careful dropping
+          <code>{id}</code> and <code>{slug}</code>: two tasks can then resolve to the same branch, and the second one
+          fails at dispatch when git refuses to create it.</p>
+        <label>Base branch <span class="field-hint">— what new work is cut from</span>
+          <select id="repo-settings-base-branch"></select>
+        </label>
+        <button class="btn ghost repo-settings-clear" data-clear="branches">Clear this section</button>
+      </fieldset>
+
+      <fieldset class="addons">
+        <legend>New task defaults</legend>
+        <div class="repo-settings-row">
+          <label>Agent
+            <select id="repo-settings-agent">
+              <option value="">App default — Claude Code</option>
+              <option value="codex">OpenAI Codex</option>
+              <option value="grok">xAI Grok</option>
+            </select>
+          </label>
+          <label>Model
+            <select id="repo-settings-model">
+              <option value="">Account default</option>
+              <option value="sonnet" data-agent="claude">Sonnet</option>
+              <option value="opus" data-agent="claude">Opus</option>
+              <option value="haiku" data-agent="claude">Haiku</option>
+              <option value="fable" data-agent="claude">Fable</option>
+              <option value="gpt-5.6-sol" data-agent="codex">GPT-5.6 Sol</option>
+              <option value="gpt-5.6-terra" data-agent="codex">GPT-5.6 Terra</option>
+              <option value="gpt-5.6-luna" data-agent="codex">GPT-5.6 Luna</option>
+              <option value="grok-build" data-agent="grok">Grok Build</option>
+              <option value="grok-4.5" data-agent="grok">Grok 4.5</option>
+            </select>
+          </label>
+          <label>Permissions
+            <select id="repo-settings-perm">
+              <option value="">App default — Accept edits</option>
+              <option value="bypassPermissions">Bypass all (YOLO)</option>
+              <option value="plan">Plan only</option>
+              <option value="default">Ask by default</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="task-options" id="repo-settings-options">
+          <label class="opt-chip" title="Start new tasks here on a dedicated worktree branch">
+            <input type="checkbox" id="repo-settings-worktree" data-bool="useWorktree" />
+            <span class="i" data-icon="git-branch" aria-hidden="true"></span>Worktree
+          </label>
+          <div id="repo-settings-addon-list" class="opt-chip-group"></div>
+          <label class="opt-chip" title="Grade the branch in Code Review when a task here finishes">
+            <input type="checkbox" id="repo-settings-auto-code-review" data-bool="autoCodeReview" />
+            <span class="i" data-icon="search" aria-hidden="true"></span>Code Review
+          </label>
+          <span class="chip-sep" aria-hidden="true"></span>
+          <label class="opt-chip" title="Let each run work out which expert role the task needs">
+            <input type="checkbox" id="repo-settings-auto-persona" data-bool="autoPersona" />
+            <span class="i" data-icon="sparkles" aria-hidden="true"></span>Auto persona
+          </label>
+        </div>
+        <div class="task-options" id="repo-settings-persona-list" aria-label="Default personas"></div>
+        <p class="addon-hint">A toggle you never touch stays on Sr. Popo's own default rather than being pinned to
+          off — use <strong>Clear this section</strong> to un-pin ones you have set. Personas are ignored while
+          <strong>Auto persona</strong> is on.</p>
+
+        <details class="task-advanced" id="repo-settings-advanced">
+          <summary>
+            <span class="i chev" data-icon="chevron-right" aria-hidden="true"></span>
+            <span class="i" data-icon="sliders-horizontal" aria-hidden="true"></span>Advanced
+          </summary>
+          <div class="task-advanced-body">
+            <label>Allowed tools <span class="field-hint">— auto-approved in headless runs, comma-separated</span>
+              <input id="repo-settings-allowed-tools" type="text"
+                     placeholder="Bash(npm run lint:*), Bash(npm test:*)" />
+            </label>
+          </div>
+        </details>
+        <button class="btn ghost repo-settings-clear" data-clear="task">Clear this section</button>
+      </fieldset>
+
+      <fieldset class="addons">
+        <legend>Brief an Idea defaults</legend>
+        <div class="repo-settings-row">
+          <label>Model
+            <select id="repo-settings-groom-model">
+              <option value="">Account default</option>
+              <option value="sonnet">Sonnet</option>
+              <option value="opus">Opus</option>
+              <option value="haiku">Haiku</option>
+              <option value="fable">Fable</option>
+            </select>
+          </label>
+          <label>Groomed tasks land in
+            <select id="repo-settings-groom-target">
+              <option value="">App default — Backlog</option>
+              <option value="auto">Let grooming decide</option>
+              <option value="ready">Ready — dispatchable right away</option>
+            </select>
+          </label>
+        </div>
+        <button class="btn ghost repo-settings-clear" data-clear="groom">Clear this section</button>
+      </fieldset>
+
+      <div class="modal-actions">
+        <button class="btn ghost" id="repo-settings-reset"><span class="i" data-icon="rotate-cw"></span>Reset to app defaults</button>
+        <button class="btn ghost" id="repo-settings-cancel"><span class="i" data-icon="x"></span>Cancel</button>
+        <button class="btn primary" id="repo-settings-save"><span class="i" data-icon="check"></span>Save</button>
       </div>
     </div>
   </div>
