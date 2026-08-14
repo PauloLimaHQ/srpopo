@@ -15,7 +15,8 @@ import * as personas from './personas';
 import * as git from './git';
 import * as runner from './runner';
 import * as framing from './framing';
-import type { Task, TaskAgent } from './types';
+import * as repoSettings from './repoSettings';
+import type { RepoSettings, Task, TaskAgent } from './types';
 
 // Which backends a task may run against (see server/agents/*). Anything else
 // falls back to the default so a stray value can't produce an unrunnable task.
@@ -64,6 +65,10 @@ export function capacityError(): string {
     'Stop a running task or raise the limit in Settings.';
 }
 
+// Fields a workspace can supply a default for. Every one of them exists on both
+// CreateTaskInput and RepoSettings, so the two can be read through one helper.
+type SharedField = keyof RepoSettings & keyof CreateTaskInput;
+
 // Create a task in `backlog` (or `ready`), persist it, and broadcast it to every
 // connected board. Throws a plain Error on invalid input; the caller maps that
 // to a 4xx (REST) or a tool error (MCP).
@@ -76,6 +81,16 @@ export function createTask(input: CreateTaskInput): Task {
   const repo = getRepo(String(input.repoId ?? ''));
   if (!repo) throw new Error('Unknown repo');
 
+  // The workspace's own defaults (server/repoSettings.ts) fill in only the
+  // fields the caller left out — `'key' in input`, not truthiness, mirroring the
+  // `promptPermissions` idiom below. The board always sends every field
+  // explicitly, so its own prefill is what the user sees; lean callers (MCP
+  // create_task and friends) omit most keys and inherit the workspace defaults.
+  // The final fallbacks after `pick` are unchanged from before this existed.
+  const ws = repoSettings.forRepo(repo.id);
+  const pick = (key: SharedField): unknown => (key in input ? input[key] : ws[key]);
+  const baseBranch = pick('baseBranch');
+
   const task: Task = {
     id: id(),
     title,
@@ -83,23 +98,23 @@ export function createTask(input: CreateTaskInput): Task {
     repoId: repo.id,
     repoName: repo.name,
     repoPath: repo.path,
-    agent: sanitizeAgent(input.agent),
-    addons: addons.sanitize(input.addons),
+    agent: sanitizeAgent(pick('agent')),
+    addons: addons.sanitize(pick('addons')),
     prDraft: !!input.prDraft,
     // Opt-in per task (off by default): grade the branch in the Code Review stage
     // when the run finishes, instead of going straight to validation.
-    autoCodeReview: !!input.autoCodeReview,
-    personas: personas.sanitize(input.personas),
-    autoPersona: !!input.autoPersona,
+    autoCodeReview: !!pick('autoCodeReview'),
+    personas: personas.sanitize(pick('personas')),
+    autoPersona: !!pick('autoPersona'),
     attachments: [],
-    useWorktree: !!input.useWorktree,
+    useWorktree: !!pick('useWorktree'),
     worktreePath: null,
     branchName: input.branchName ? String(input.branchName).trim() : null,
-    baseBranch: input.baseBranch ? String(input.baseBranch).trim() : null,
+    baseBranch: baseBranch ? String(baseBranch).trim() : null,
     branch: null,
-    model: (input.model as string) || 'default',
-    permissionMode: (input.permissionMode as string) || 'acceptEdits',
-    allowedTools: runner.normalizeAllowedTools(input.allowedTools),
+    model: (pick('model') as string) || 'default',
+    permissionMode: (pick('permissionMode') as string) || 'acceptEdits',
+    allowedTools: runner.normalizeAllowedTools(pick('allowedTools')),
     // Ask the user to approve otherwise-denied tools instead of silently finishing
     // without running them. Defaults on; opt out for fully-unattended runs.
     promptPermissions: 'promptPermissions' in input ? !!input.promptPermissions : true,
@@ -133,11 +148,21 @@ export function createTask(input: CreateTaskInput): Task {
 // flips the task to `running` and streams the session.
 export async function dispatchTask(task: Task, message?: string | null): Promise<void> {
   if (task.useWorktree && !task.worktreePath) {
+    const slug = framing.slugify(task.title);
+    // Precedence for the branch name: the task's own override, then the
+    // workspace's branch convention, then git.addWorktree's built-in
+    // `srpopo/<slug>-<id>` (left untouched as the last resort). Every path that
+    // dispatches a task — REST, MCP, Autonomous Mode, orchestrator workers,
+    // grooming-spawned tasks — comes through here, so this is the only place
+    // the convention needs applying.
+    const template = repoSettings.forRepo(task.repoId).branchTemplate;
+    const branchName = task.branchName
+      || (template ? repoSettings.resolveBranchName(template, { slug, id: task.id }) : null);
     const { wtPath, branch } = await git.addWorktree(
       task.repoPath,
       task.id,
-      framing.slugify(task.title),
-      task.branchName,
+      slug,
+      branchName,
       task.baseBranch,
     );
     task.worktreePath = wtPath;

@@ -1326,6 +1326,18 @@ a.chip.pr:hover { border-color: currentColor; }
 .modal-actions .btn { display: inline-flex; align-items: center; gap: 6px; }
 .modal-actions .btn .icon { width: 14px; height: 14px; }
 
+/* ── Workspace settings modal ──
+   The Settings modal's fieldset sections, wearing the New Task modal's skin: it
+   reuses .task-box so the chip rows below style themselves, and lays the three
+   pickers of a section out in one row. */
+.repo-settings-row { display: flex; flex-wrap: wrap; gap: 12px; }
+.repo-settings-row > label { flex: 1 1 140px; min-width: 0; }
+.repo-settings-clear { align-self: flex-start; padding: 4px 10px; font-size: 11px; }
+#repo-settings-sub:empty, #repo-settings-branch-preview:empty { display: none; }
+#repo-settings-branch-preview code { word-break: break-all; }
+/* The persona chips only make sense as the manual alternative to Auto persona. */
+#repo-settings-persona-list.hidden { display: none; }
+
 /* Under ~600px tall the context row and title collapse onto fewer lines and the
    prompt gives up height, so the dialog still never needs a scrollbar. */
 @media (max-height: 640px) {
