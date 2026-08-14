@@ -646,6 +646,16 @@ moves *the mount*, not each pane — so every xterm, its scrollback and its stre
 survive a layout switch untouched. Either way a session is also one row in the project
 sidebar's **Sessions** group and searchable in ⌘K.
 
+**Joining a card's session.** Every task card carries a Terminal icon button (and a
+matching `terminal` entry in `taskCoreActions`, so the drawer and the right-click menu
+offer it too). It calls `openTaskTerminal(t)` → `openTerminalAt(t.repoId,
+t.worktreePath)`: a shell on **that task's** checkout — its worktree once one has been
+materialized, the repo root otherwise — and, like the workspace header's button, it
+*joins* the shell already open on that directory rather than stacking a second one on
+it. That's the whole point: sit down next to a run instead of only watching it. It is
+the one card affordance that isn't board state — opening a shell doesn't touch the
+task, so it works while the task is live too.
+
 `Ctrl+\`` shows/hides the docked panel — or, in the tabbed layout, jumps to the
 terminal and back to the tab you came from; `Ctrl+Shift+\`` opens the new-session
 picker on whichever `+` is on screen; `Ctrl+Alt+←/→` cycles sessions in the docked

@@ -882,6 +882,20 @@ body[data-layout="sidebar"] #workspace-back { display: none; }
 .groom-task-link .groom-task-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .groom-task-link svg { flex: none; color: var(--green); }
 .card-title { font-weight: 600; font-size: 13px; margin-bottom: 7px; word-break: break-word; }
+/* The card's head row: the title, plus the quick action that acts on the card's
+   own checkout (a shell on it). Kept dim until the card is hovered or the button
+   is focused, so a column of cards still reads as titles first — but never
+   invisible, since a touch screen has no hover to reveal it with. */
+.card-head { display: flex; align-items: flex-start; gap: 6px; }
+.card-head .card-title { flex: 1; min-width: 0; }
+.card-terminal {
+  flex: none; padding: 3px 5px; margin-top: -2px;
+  background: transparent; border-color: transparent; color: var(--text-dim);
+  opacity: .45; transition: opacity .12s, color .12s, border-color .12s;
+}
+.card-terminal .icon { width: 14px; height: 14px; }
+.card:hover .card-terminal, .card-terminal:focus-visible { opacity: 1; }
+.card-terminal:hover { color: var(--text); background: var(--bg-hover); border-color: var(--border); }
 .card-chips { display: flex; flex-wrap: wrap; gap: 5px; }
 .chip {
   font-size: 10px; font-family: var(--mono); padding: 2px 7px; border-radius: 20px;
