@@ -6,6 +6,7 @@ import { stopTask } from './dnd.js';
 import { openDrawer, openGroomingDrawer, openOrchestrationDrawer } from './drawer.js';
 import { orchestrationCoreActions } from './permissions.js';
 import { prChipHtml, refreshPr } from './pr.js';
+import { openTaskTerminal } from './terminal.js';
 
 
 // The 1-5 mergeable grade the Code Review stage assigned (server/reviewer.ts),
@@ -93,8 +94,19 @@ function renderCard(t) {
     statusRow = `<div class="card-status">last run ${fmtDuration(t.durationMs)} · ${t.numTurns ?? '?'} turns</div>`;
   }
 
+  // Drop into a shell on this card's own checkout — its worktree once one has
+  // been materialized, the repo root otherwise. It joins the session already
+  // open on that directory rather than stacking a second one on it, which is
+  // the point: sit down next to a run instead of watching it from the board.
+  const termWhere = t.worktreePath || t.repoPath || '';
+  const termTitle = `Terminal on this task's ${t.worktreePath ? 'worktree' : 'repo'} — joins the session already open on it${termWhere ? `\n${termWhere}` : ''}`;
+
   el.innerHTML = `
-      <div class="card-title">${esc(t.title)}</div>
+      <div class="card-head">
+        <div class="card-title">${esc(t.title)}</div>
+        <button class="btn icon card-terminal" data-action="terminal"
+                title="${esc(termTitle)}" aria-label="${esc(`Open a terminal session on ${t.title}`)}">${icon('terminal')}</button>
+      </div>
       <div class="card-chips">${chips.join('')}</div>
       ${statusRow}
       ${t.status === 'failed' && t.lastError ? `<div class="card-error">${esc(t.lastError.slice(0, 140))}</div>` : ''}`;
@@ -106,6 +118,7 @@ function renderCard(t) {
   el.addEventListener('dragend', () => el.classList.remove('dragging'));
   el.addEventListener('click', (e) => {
     if (e.target.closest('[data-action="stop"]')) { stopTask(t.id); return; }
+    if (e.target.closest('[data-action="terminal"]')) { openTaskTerminal(t); return; }
     openDrawer(t.id);
   });
   el.addEventListener('contextmenu', (e) => {

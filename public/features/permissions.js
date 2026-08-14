@@ -11,6 +11,7 @@ import { toolInputSummary } from './pr.js';
 import { notificationsOn, showBrowserNotification } from './settings.js';
 import { playSound } from './sounds.js';
 import { openTaskModal } from './task-modal.js';
+import { openTaskTerminal } from './terminal.js';
 
 
 // ---------- interactive permission prompts ----------
@@ -144,6 +145,11 @@ function taskCoreActions(t) {
         if (state.openTaskId === t.id) closeDrawer();
       } });
   }
+  // Available while the task runs too — joining the shell on a live run's
+  // worktree to look around is exactly when you want it.
+  actions.push({ id: 'terminal', label: 'Terminal', icon: 'terminal', cls: 'ghost',
+    title: `Open a shell on this task's ${t.worktreePath ? 'worktree' : 'repo'} — joins the session already open on it`,
+    run: () => { openTaskTerminal(t); } });
   if (t.worktreePath) {
     actions.push({ id: 'copy-wt', label: 'Copy worktree path', cls: 'ghost', title: t.worktreePath,
       run: async () => { await navigator.clipboard.writeText(t.worktreePath); toast('Worktree path copied', 'info'); } });
