@@ -50,9 +50,12 @@ let activeId = null;
 let newMenuFor = null;
 
 const panelOpen = () => !$('#terminal-panel').classList.contains('hidden');
-// The glyph for a session's kind, shared with the work-area tab strip so a
-// claude session looks the same wherever it's listed.
+// The glyph for a session, shared with the work-area tab strip so a claude
+// session looks the same wherever it's listed. A session started from a package
+// script gets the Run button's play glyph rather than a bare terminal, so the
+// tab it opens is recognizable as the thing you just started.
 const sessionKindIcon = (kind) => SESSION_KINDS.find((k) => k.kind === kind)?.icon || 'terminal';
+const sessionIcon = (s) => (s.command ? 'play' : sessionKindIcon(s.kind));
 const repoName = (repoId) => state.repos.find((r) => r.id === repoId)?.name || '';
 const repoPath = (repoId) => state.repos.find((r) => r.id === repoId)?.path || '';
 // The bar has room for the tail of a path, and the tail is the part that says
@@ -349,7 +352,11 @@ async function endSession(id) {
 }
 
 // ---- creating sessions ----
-async function newSession(repoId, kind, wtPath) {
+// Every route to a new session goes through here: `ask(dims)` is the POST that
+// actually requests one (a plain/agent shell below, a package script run in
+// features/scripts.js), and this owns the pane around it — mounting it, sizing
+// it, and putting the previous view back if the server says no.
+async function openSession(repoId, ask) {
   if (!repoId) { toast('Open a workspace first', 'error'); return null; }
   showPanel();
   // Mount the pane first and spawn the shell at that size. An agent CLI reads
@@ -360,12 +367,7 @@ async function newSession(repoId, kind, wtPath) {
   const pane = createPane();
   const dims = pane ? { cols: pane.xterm.cols, rows: pane.xterm.rows } : null;
   try {
-    const s = await api('POST', `/api/repos/${repoId}/terminal`, {
-      path: wtPath || undefined,
-      kind,
-      cols: dims ? dims.cols : undefined,
-      rows: dims ? dims.rows : undefined,
-    });
+    const s = await ask(dims);
     sessions.set(s.id, s);
     if (pane) {
       pane.lastSize = dims;
@@ -383,6 +385,16 @@ async function newSession(repoId, kind, wtPath) {
     else hidePanel();
     return null;
   }
+}
+
+// A plain shell, or one booted straight into an agent CLI, on a checkout.
+function newSession(repoId, kind, wtPath) {
+  return openSession(repoId, (dims) => api('POST', `/api/repos/${repoId}/terminal`, {
+    path: wtPath || undefined,
+    kind,
+    cols: dims ? dims.cols : undefined,
+    rows: dims ? dims.rows : undefined,
+  }));
 }
 
 // The workspace header's Terminal button and the worktree rows: one shell per
@@ -623,6 +635,7 @@ export function init() {
 
 export {
   STATUS_LABEL, allSessions, applyTerminalEvent, availableKinds, endSession, focusSession,
-  loadTerminalSessions, newSession, openNewSessionMenu, openTaskTerminal, openTerminalAt, restoreSessionTab,
-  sessionKindIcon, sessionsForRepo, syncTerminalHost, toggleTerminalPanel, visibleSession,
+  loadTerminalSessions, newSession, openNewSessionMenu, openSession, openTaskTerminal, openTerminalAt,
+  restoreSessionTab, sessionIcon, sessionKindIcon, sessionsForRepo, syncTerminalHost,
+  toggleTerminalPanel, visibleSession,
 };

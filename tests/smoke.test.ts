@@ -3597,6 +3597,129 @@ test('index: POST /api/repos/reorder persists the given order and rejects a mism
   }
 });
 
+test('plugins: the catalog offers Node Scripts and sanitize keeps it', () => {
+  const plugins = require('../server/plugins');
+  const entry = plugins.catalog().find((p: { id: string }) => p.id === 'node-scripts');
+  assert.ok(entry, 'node-scripts is in the marketplace catalog');
+  assert.strictEqual(entry.requiresApiKey, false, 'it needs no API key');
+  assert.strictEqual(entry.icon, 'play', 'it uses an icon, never an emoji');
+  assert.deepStrictEqual(plugins.sanitize(['node-scripts']), ['node-scripts'], 'it survives sanitize');
+});
+
+test('scripts: read() lists a checkout\'s scripts and picks the package manager + primary', () => {
+  const scripts = require('../server/scripts');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'srpopo-scripts-'));
+
+  // No package.json at all — the Run button's "hide yourself" answer, not an error.
+  assert.deepStrictEqual(scripts.read(dir), { manager: null, scripts: [], primary: null });
+
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+    scripts: { build: 'tsc', dev: 'vite', test: 'node --test', bogus: 42 },
+  }));
+  let manifest = scripts.read(dir);
+  assert.deepStrictEqual(manifest.scripts.map((s: { name: string }) => s.name), ['build', 'dev', 'test'],
+    'manifest order is kept and a non-string script is dropped');
+  assert.strictEqual(manifest.manager, 'npm', 'no lockfile and no declaration falls back to npm');
+  assert.strictEqual(manifest.primary, 'dev', 'dev outranks the rest as the "start this project" script');
+
+  // A lockfile is what says which manager this project actually uses…
+  fs.writeFileSync(path.join(dir, 'pnpm-lock.yaml'), '');
+  assert.strictEqual(scripts.read(dir).manager, 'pnpm', 'the lockfile picks the manager');
+  // …and the manifest's own corepack declaration outranks it.
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+    packageManager: 'yarn@4.1.0',
+    scripts: { start: 'node .' },
+  }));
+  manifest = scripts.read(dir);
+  assert.strictEqual(manifest.manager, 'yarn', 'packageManager beats the lockfile');
+  assert.strictEqual(manifest.primary, 'start', 'start is the primary when there is no dev script');
+
+  // Garbage on disk degrades to "no scripts" rather than throwing.
+  fs.writeFileSync(path.join(dir, 'package.json'), '{ not json');
+  assert.deepStrictEqual(scripts.read(dir), { manager: null, scripts: [], primary: null });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('scripts: commandFor is a lookup in the manifest, never a passthrough', () => {
+  const scripts = require('../server/scripts');
+  const manifest = { manager: 'npm', scripts: [{ name: 'dev', command: 'vite' }], primary: 'dev' };
+  assert.strictEqual(scripts.commandFor(manifest, 'dev'), 'npm run dev');
+  assert.strictEqual(scripts.commandFor({ ...manifest, manager: 'pnpm' }, 'dev'), 'pnpm run dev');
+  // `yarn dev` is what a Yarn project's README says.
+  assert.strictEqual(scripts.commandFor({ ...manifest, manager: 'yarn' }, 'dev'), 'yarn dev');
+  // Anything not in the manifest gets no command — which is what keeps a
+  // request body from ever reaching a shell.
+  assert.strictEqual(scripts.commandFor(manifest, 'rm -rf /'), null, 'an unknown name is refused');
+  assert.strictEqual(scripts.commandFor(manifest, 'dev; curl evil.sh'), null, 'so is one with a command glued on');
+  assert.strictEqual(scripts.commandFor(manifest, 42), null, 'so is a non-string');
+  assert.strictEqual(scripts.commandFor({ manager: null, scripts: [], primary: null }, 'dev'), null,
+    'a checkout with no package.json has no runnable script');
+  // A script name that needs quoting gets it, since the command is typed at a prompt.
+  const odd = { manager: 'npm', scripts: [{ name: 'be careful', command: 'echo hi' }], primary: null };
+  assert.strictEqual(scripts.commandFor(odd, 'be careful'), "npm run 'be careful'");
+});
+
+test('index: the package-script routes are plugin-gated and validate repo, path and script', async () => {
+  const store = require('../server/store');
+  const index = require('../server/index');
+  const { server, port } = await index.start(0);
+  const base = `http://127.0.0.1:${port}`;
+  const post = (p: string, body: unknown) => fetch(`${base}${p}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'srpopo-scripts-repo-'));
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ scripts: { dev: 'vite' } }));
+  const repo = { id: store.id(), path: dir, name: 's/scripts', branch: null, addedAt: store.now() };
+  store.db.repos.push(repo);
+  const prevPlugins = store.db.settings.installedPlugins;
+  try {
+    // Uninstalled: neither route says anything about the checkout.
+    store.db.settings.installedPlugins = [];
+    assert.strictEqual((await fetch(`${base}/api/repos/${repo.id}/scripts`)).status, 400, 'gated on the plugin');
+    assert.strictEqual((await post(`/api/repos/${repo.id}/scripts/run`, { script: 'dev' })).status, 400, 'so is running one');
+
+    store.db.settings.installedPlugins = ['node-scripts'];
+    const listed = await (await fetch(`${base}/api/repos/${repo.id}/scripts`)).json();
+    assert.deepStrictEqual(listed.scripts, [{ name: 'dev', command: 'vite' }], 'the checkout\'s scripts are listed');
+    assert.strictEqual(listed.primary, 'dev');
+
+    assert.strictEqual((await fetch(`${base}/api/repos/nope/scripts`)).status, 404, 'an unknown repo 404s');
+    // Same guard the reveal/editor routes use: only the repo root or a live worktree.
+    assert.strictEqual((await fetch(`${base}/api/repos/${repo.id}/scripts?path=/etc`)).status, 404, 'a foreign path 404s');
+    assert.strictEqual((await post(`/api/repos/${repo.id}/scripts/run`, { script: 'dev', path: '/etc' })).status, 404,
+      'and it cannot be run from one either');
+    const unknown = await post(`/api/repos/${repo.id}/scripts/run`, { script: 'nope' });
+    assert.strictEqual(unknown.status, 404, 'a script that is not in the manifest is refused');
+    assert.match((await unknown.json()).error, /No such script/);
+  } finally {
+    await new Promise<void>((r) => server.close(() => r()));
+    store.db.repos = store.db.repos.filter((r: { id: string }) => r.id !== repo.id);
+    store.db.settings.installedPlugins = prevPlugins;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('terminal: a command session types its command at the prompt and keeps a plain shell', () => {
+  const terminal = require('../server/terminal');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'srpopo-term-'));
+  try {
+    const s = terminal.create({ cwd: dir, repoId: 'r1', command: 'npm run dev' });
+    assert.strictEqual(s.kind, 'shell', 'it is a plain shell, so stopping the script leaves the tab alive');
+    assert.strictEqual(s.command, 'npm run dev', 'the command travels to the board for labeling');
+    assert.strictEqual(s.label, 'npm run dev', 'the command is the label');
+    // A second run of the same script in the same repo is numbered, the way a
+    // second Claude session is.
+    const again = terminal.create({ cwd: dir, repoId: 'r1', command: 'npm run dev' });
+    assert.strictEqual(again.label, 'npm run dev 2', 'a second one is numbered');
+    const shell = terminal.create({ cwd: dir, repoId: 'r1' });
+    assert.strictEqual(shell.label, 'Shell', 'plain shells keep their own numbering');
+    assert.strictEqual(shell.command, undefined, 'and carry no command');
+  } finally {
+    terminal.closeAll();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('repoSettings: sanitize drops unknown keys, invalid values and empty strings', () => {
   const repoSettings = require('../server/repoSettings');
 

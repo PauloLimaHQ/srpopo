@@ -10,6 +10,7 @@ import { openMemoryModal } from './memory.js';
 import { openOrchestrateModal } from './orchestrate.js';
 import { openRepoSettingsModal } from './repo-settings.js';
 import { openReposModal } from './repos-modal.js';
+import { scriptCommands } from './scripts.js';
 import { openSettingsModal } from './settings-modal.js';
 import { pluginInstalled } from './settings.js';
 import { openShortcutsModal } from './shortcuts.js';
@@ -62,6 +63,8 @@ function paletteCommands() {
     ...(state.view.repoId
       ? [
         { label: 'Open Terminal', hint: 'A shell on this workspace checkout', icon: 'terminal', run: () => openTerminalAt(state.view.repoId) },
+        // One per package script of the workspace in front (Node Scripts plugin).
+        ...scriptCommands(),
         // One entry per agent CLI installed here, so "new claude session" is a
         // keystroke away instead of a trip through the panel's + menu.
         ...availableKinds().filter((k) => k.kind !== 'shell').map((k) => ({

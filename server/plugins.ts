@@ -50,6 +50,14 @@ const PLUGINS: PluginInfo[] = [
     requiresApiKey: false,
   },
   {
+    id: 'node-scripts',
+    name: 'Node Scripts',
+    description:
+      'Run a repository’s own package.json scripts from its workspace: a Run button that starts the project (dev/start), and every other script one click away. Each run opens an in-app terminal on that checkout, driven by the project’s package manager (npm, pnpm, yarn or bun).',
+    icon: 'play',
+    requiresApiKey: false,
+  },
+  {
     id: 'repo-specs',
     name: 'Repository Specs',
     description:

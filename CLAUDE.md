@@ -39,6 +39,7 @@ static with **no build step** (see Conventions).
 | `server/git.ts` | Worktree lifecycle (`git worktree add/remove`). |
 | `server/terminal.ts` | In-app shell sessions: a pty per session (a python3 relay, no native module), their status, and the resize channel (see "Terminal sessions"). |
 | `server/desktop.ts` | Desktop hand-offs for the workspace quick actions: reveal a checkout in the OS file manager, or open it in the user's IDE (see "Workspace quick actions"). |
+| `server/scripts.ts` | Reads a checkout's `package.json` scripts and the package manager that runs them, and turns a script *name* into a command line (see "Package scripts"). Runs nothing itself. |
 | `server/resources.ts` | Opt-in resource monitor: samples the OS process table and reports what the app and each live agent session cost this machine (see "Resource monitor"). |
 | `server/github.ts` | `gh` CLI integration: read-only lookup of a task's pull request, its merge-safety check, the merge itself, and the `mergeable/<n>` grade label. |
 | `server/reviewer.ts` | Meta-prompt + verdict parser for the **Code Review** stage (see "Code Review" below). |
@@ -507,6 +508,14 @@ workspace, clicking a card opens the same drawer, right-clicking a task opens th
 context menu. Nothing there can change a task's state — no drag-and-drop, no dispatch
 — so the board stays the single place work moves. The one thing the rail *does* create
 is a terminal session, which is not a card and never touches the board.
+
+Every group is capped at `SIDEBAR_MAX_ROWS` (**5**) rows, so one busy project can't
+push the next one off the rail. A truncated card group ends in a **"Show N more"**
+row that **opens that project's board** rather than growing the list — the board is
+where all of them are already laid out, in columns. The Sessions group is the one
+exception: a session has no column and no card, so its overflow row expands in place
+(and collapses again).
+
 It re-renders off `renderBoard()`, the same
 choke point the board uses (a no-op in the classic layout), preserving its scroll
 position and which projects are unfolded. The classic layout is untouched by all of it:
@@ -598,6 +607,41 @@ configured keeps today's last-used behavior unchanged. The app-wide `Settings`
 (`mergeStrategy`, `minMergeGrade`, `autoResolveConflicts`, `assignPrToSelf`,
 `defaultEditor`, `memory`, `maxParallelSessions`, the autonomous budget) are **not**
 affected by any of this — they stay global.
+
+## Package scripts: the workspace's Run button
+
+Sr. Popo is an ops surface for a checkout, not only a task queue — and half of "does
+this work?" is starting the thing. An **installable plugin** (`node-scripts` in
+`server/plugins.ts`) gives a workspace whose checkout has a `package.json` a **Run**
+split button in the header, next to Terminal: the main half starts the project, the
+caret lists every script in the manifest. Nothing surfaces until it's installed, and
+it hides itself again for a checkout with no scripts.
+
+- **`server/scripts.ts`** is the single source of truth and **runs nothing**. `read(cwd)`
+  returns `{ manager, scripts, primary }` — the package manager from the manifest's
+  corepack `packageManager` field, else the lockfile on disk (pnpm/yarn/bun/npm), else
+  npm; and `primary`, the first of `dev`/`start`/`serve`/`develop` present, which is
+  what a bare click on Run starts. No cache: package.json is edited far more often than
+  the board is reloaded. An unreadable or unparsable manifest degrades to "no scripts",
+  never an error.
+- **A run is a terminal session, not a managed process.** `commandFor` builds the
+  command line and `POST /api/repos/:id/scripts/run` hands it to `terminal.create` as
+  its `command` — typed at a fresh shell's prompt exactly like a session's agent CLI
+  is, so Ctrl-C'ing the dev server leaves you at a live prompt instead of killing the
+  tab. The board therefore gets watching, resizing, scrollback and ⌘K search for free,
+  and there is no new lifecycle to babysit. The session is labeled with the command
+  (`npm run dev`, then `npm run dev 2`) and shows the play glyph in the tab strip.
+- **The client sends a script name, never a command.** `commandFor` refuses anything
+  not in that checkout's manifest, which is the only thing between a request body and
+  a shell — keep it a lookup. Both routes resolve their checkout through
+  `resolveRepoTarget` like the reveal/editor ones, so they can't be pointed at an
+  arbitrary directory, and both 400 while the plugin is uninstalled.
+- **The UI** is `public/features/scripts.js`: it owns the split button, the anchored
+  menu, the per-repo manifest cache (refreshed each time the menu opens) and the ⌘K
+  "Run <script>" commands. `renderRunButton()` is called from `renderWorkspaceHeader()`
+  and `renderPluginState()`; the session itself is spawned through `terminal.openSession`,
+  the shared "mount the pane, size it, POST, put the view back on failure" path that
+  `newSession` also uses.
 
 ## Terminal sessions (drive an agent by hand)
 
