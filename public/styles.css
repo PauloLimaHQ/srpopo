@@ -298,6 +298,11 @@ body {
 }
 .split-btn-caret .icon { width: 14px; height: 14px; }
 .split-btn-caret[aria-expanded="true"] { filter: brightness(1.06); }
+/* The same pattern in a header toolbar (the workspace "Run ▾"), where both
+   halves are ghost buttons — the divider has to read against the page, not
+   against a filled primary. */
+.ghost-split .split-btn-caret { border-left-color: var(--border); }
+.ghost-split .split-btn-main { padding-right: 8px; }
 
 /* ── filter bar ── */
 .filterbar {
@@ -660,6 +665,15 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
   letter-spacing: .5px; color: var(--accent);
 }
 .sidebar-empty { padding: 8px 10px; font-size: 12px; color: var(--text-dim); opacity: .7; }
+/* The overflow row of a truncated group — reads as a link, not another card. */
+.sidebar-more {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  padding: 5px 8px; border: 0; border-radius: 6px; background: none; cursor: pointer;
+  font: inherit; font-size: 12px; color: var(--text-dim); text-align: left;
+}
+.sidebar-more:hover { background: var(--bg-hover); color: var(--text); }
+.sidebar-more:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+.sidebar-more .icon { width: 12px; height: 12px; flex: none; opacity: .8; }
 .sidebar-foot {
   display: flex; align-items: flex-start; gap: 6px;
   margin-top: auto; padding: 12px 8px 14px;
@@ -1711,6 +1725,9 @@ a.chip.pr:hover { border-color: currentColor; }
 .quick-menu-item-body { display: flex; flex-direction: column; min-width: 0; flex: 1; gap: 1px; }
 .quick-menu-item-label { font-size: 13px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .quick-menu-item-hint { font-size: 11px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A package script's hint is the command line it runs — monospace, since that
+   is what it is, and it sits under the script's own name. */
+.quick-menu-item-hint.mono { font-family: var(--mono); font-size: 10.5px; }
 .quick-menu-note {
   padding: 8px 10px 4px; margin-top: 4px; border-top: 1px solid var(--border);
   font-size: 11px; line-height: 1.45; color: var(--text-dim);

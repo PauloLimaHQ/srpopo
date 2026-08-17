@@ -6,6 +6,7 @@ import { renderBoard } from './board.js';
 import { defaultEditor } from './desktop.js';
 import { groomingsForRepo, orchestrationsForRepo, tasksForRepo } from './filters.js';
 import { openReposModal, renderRepoList } from './repos-modal.js';
+import { renderRunButton } from './scripts.js';
 import { renderSidebar, sidebarExpanded } from './sidebar.js';
 import { applyPanes, noteRepoTab, noteSuperTab, renderTabStrip } from './tabs.js';
 import { closeWorkspaceMenu } from './workspace-menu.js';
@@ -264,6 +265,9 @@ function renderWorkspaceHeader() {
   if (!repo) return;
   $('#workspace-title').textContent = repo.name;
   refreshRepoBranchCard(repo.id);
+  // The Run button follows the workspace: it reads this checkout's package.json
+  // scripts (and hides itself when there are none, or the plugin is off).
+  renderRunButton();
   const branch = state.repoBranchByRepo.get(repo.id);
   const remoteUrl = state.repoRemoteUrlByRepo.get(repo.id);
   const ab = state.repoAheadBehindByRepo.get(repo.id) || {};

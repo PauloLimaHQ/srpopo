@@ -128,6 +128,10 @@
     </button>
   </div>
 
+  <!-- Package scripts menu, anchored under the workspace Run button's caret.
+       Filled by features/scripts.js from the checkout's package.json. -->
+  <div id="scripts-menu" class="quick-menu hidden" role="menu" aria-label="Package scripts"></div>
+
   <!-- Editor picker for the "Open in IDE" quick action. Anchored under whichever
        button opened it; only shown when no default editor is configured yet (the
        pick is then remembered as the default). -->
@@ -213,6 +217,13 @@
              this checkout) stays a labeled button; the rest live behind a single
              overflow menu where they get real names instead of five bare glyphs. -->
         <div class="workspace-tools">
+          <!-- Run: this checkout's package.json scripts (Node Scripts plugin). The
+               main half starts the project (dev/start); the caret lists every
+               script. Hidden unless the plugin is on and the checkout has any. -->
+          <div class="split-btn ghost-split hidden" id="workspace-run-split">
+            <button class="btn ghost btn-collapsible split-btn-main" id="workspace-run" title="Run a package script" aria-label="Run a package script"><span class="i" data-icon="play"></span><span class="btn-label" id="workspace-run-label">Run</span></button>
+            <button class="btn ghost split-btn-caret" id="workspace-run-caret" title="All package scripts" aria-label="All package scripts" aria-haspopup="menu" aria-expanded="false"><span class="i" data-icon="chevron-down"></span></button>
+          </div>
           <button class="btn ghost btn-collapsible" id="workspace-terminal" title="Open a terminal here" aria-label="Open terminal"><span class="i" data-icon="terminal"></span><span class="btn-label">Terminal</span></button>
           <button class="btn ghost icon" id="workspace-more" title="More workspace actions" aria-label="More workspace actions" aria-haspopup="menu" aria-expanded="false"><span class="i" data-icon="ellipsis"></span></button>
         </div>

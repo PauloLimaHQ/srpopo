@@ -12,9 +12,11 @@ import * as runner from './runner';
 // the only dep). python3 ships on macOS dev machines (Command Line Tools) and
 // virtually all Linux; Windows has no pty here and falls back to a plain pipe.
 //
-// A session can boot straight into an agent CLI (`kind`): the shell starts as
-// usual and the launch command is typed into it, so quitting `claude` leaves
-// you at a live prompt instead of killing the tab.
+// A session can boot straight into an agent CLI (`kind`) or into a command
+// (`command`, e.g. the `npm run dev` behind the workspace's Run button): the
+// shell starts as usual and the line is typed into it, so quitting `claude` —
+// or Ctrl-C'ing the dev server — leaves you at a live prompt instead of killing
+// the tab.
 //
 // Sessions are process-local and never persisted — like interactive permission
 // prompts, they only make sense while this server is up. They die with it; the
@@ -33,6 +35,12 @@ interface Session {
   cwd: string;
   kind: Kind;
   label: string;
+  // The label before its "2"/"3" suffix, so a second session of the same sort
+  // in the same repo can be numbered without re-deriving where it came from.
+  base: string;
+  // The line typed at the fresh prompt for a command session (a package
+  // script), else undefined. Kept so the board can label and re-run it.
+  command?: string;
   child: ChildProcessWithoutNullStreams;
   // The relay's resize channel (fd 3); null on Windows, which has no pty here.
   control: Writable | null;
@@ -54,6 +62,7 @@ interface Summary {
   cwd: string;
   kind: Kind;
   label: string;
+  command?: string;
   status: Status;
   createdAt: string;
 }
@@ -100,7 +109,7 @@ function statusOf(s: Session): Status {
 function summary(s: Session): Summary {
   return {
     id: s.id, repoId: s.repoId, cwd: s.cwd, kind: s.kind,
-    label: s.label, status: statusOf(s), createdAt: s.createdAt,
+    label: s.label, command: s.command, status: statusOf(s), createdAt: s.createdAt,
   };
 }
 
@@ -212,10 +221,11 @@ function ptyCommand(shell: string, cols: number, rows: number): { cmd: string; a
 }
 
 // A second Claude session in the same repo is "Claude 2" — the tabs and the
-// sidebar rows are short, so the number is what tells them apart.
-function labelFor(repoId: string, kind: Kind): string {
-  const base = KIND_LABEL[kind];
-  const n = [...sessions.values()].filter((s) => s.repoId === repoId && s.kind === kind).length + 1;
+// sidebar rows are short, so the number is what tells them apart. A command
+// session is labeled with the command itself ("npm run dev"), numbered the
+// same way.
+function labelFor(repoId: string, base: string): string {
+  const n = [...sessions.values()].filter((s) => s.repoId === repoId && s.base === base).length + 1;
   return n > 1 ? `${base} ${n}` : base;
 }
 
@@ -227,10 +237,15 @@ function trimExited(): void {
 }
 
 // Spawns a new shell session rooted at `cwd`. Returns its summary. Throws if
-// the shell process can't be spawned.
-function create(opts: { cwd: string; repoId: string; kind?: Kind; cols?: number; rows?: number }): Summary {
+// the shell process can't be spawned. `command` types one line at the fresh
+// prompt (a package script — server/scripts.ts builds it); it is a plain shell
+// either way, so the session outlives whatever it started.
+function create(opts: {
+  cwd: string; repoId: string; kind?: Kind; command?: string; cols?: number; rows?: number;
+}): Summary {
   const { cwd, repoId } = opts;
   const kind: Kind = isKind(opts.kind) ? opts.kind : 'shell';
+  const command = typeof opts.command === 'string' && opts.command.trim() ? opts.command.trim() : undefined;
   const sid = id();
   const shell = process.env.SHELL || '/bin/bash';
   const { cmd, args } = ptyCommand(shell, opts.cols || 80, opts.rows || 24);
@@ -244,12 +259,15 @@ function create(opts: { cwd: string; repoId: string; kind?: Kind; cols?: number;
   }) as ChildProcessWithoutNullStreams;
   const control = (child.stdio[3] as Writable | undefined) ?? null;
 
+  const base = command || KIND_LABEL[kind];
   const session: Session = {
     id: sid,
     repoId,
     cwd,
     kind,
-    label: labelFor(repoId, kind),
+    label: labelFor(repoId, base),
+    base,
+    command,
     child,
     control,
     buffer: [],
@@ -285,10 +303,12 @@ function create(opts: { cwd: string; repoId: string; kind?: Kind; cols?: number;
   child.on('exit', onDead);
   child.on('error', onDead);
 
-  // Type the agent CLI at the fresh prompt rather than exec'ing it, so the tab
-  // survives quitting the agent. The pty buffers this until the shell reads it.
+  // Type the agent CLI (or the package script) at the fresh prompt rather than
+  // exec'ing it, so the tab survives quitting the agent / stopping the script.
+  // The pty buffers this until the shell reads it.
   const bin = launchBin(kind);
-  if (bin) child.stdin.write(`${shQuote(bin)}\n`);
+  const startup = command || (bin ? shQuote(bin) : null);
+  if (startup) child.stdin.write(`${startup}\n`);
 
   syncSweep();
   bus.broadcast({ type: 'terminal', session: summary(session) });

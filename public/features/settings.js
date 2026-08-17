@@ -2,6 +2,7 @@
 import { toast } from '../core/api.js';
 import { $, isElectron, state } from '../core/state.js';
 import { renderAutonomous } from './autonomous.js';
+import { renderRunButton } from './scripts.js';
 import { playSound } from './sounds.js';
 
 
@@ -145,6 +146,10 @@ function renderPluginState() {
   $('#btn-orchestrate').classList.toggle('hidden', !pluginInstalled('orchestration'));
   $('#btn-linear').classList.toggle('hidden', !pluginInstalled('linear'));
   $('#btn-specs').classList.toggle('hidden', !pluginInstalled('repo-specs'));
+  // The workspace Run button also depends on the checkout having scripts, so
+  // its own render decides — this just makes installing/removing the plugin
+  // show up without a reload.
+  renderRunButton();
   renderAutonomous();
 }
 

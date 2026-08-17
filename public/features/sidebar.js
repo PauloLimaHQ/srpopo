@@ -31,6 +31,16 @@ const sidebarOrgCollapsed = new Set();
 // project again isn't undone by the next SSE tick.
 let sidebarSeeded = false;
 
+// How many rows a group shows before it truncates. A busy project has dozens of
+// cards; listing them all turns the rail into a second board you have to scroll
+// past to reach the next project. The overflow row is the way out: for cards it
+// opens that project's board (where everything is visible, in columns), which is
+// the surface that's actually built for reading them.
+const SIDEBAR_MAX_ROWS = 5;
+// Sessions have no column and no board, so theirs expands in place instead.
+// Per repo, in memory like `sidebarExpanded`.
+const sidebarSessionsExpanded = new Set();
+
 const sidebarOn = () => currentLayout() === 'sidebar';
 
 // The organization a repo belongs to, read off its `origin` remote — the owner
@@ -95,6 +105,9 @@ function sidebarSessionsHtml(repoId) {
         <span class="sidebar-card-title">${esc(s.label)}</span>
         ${s.status === 'exited' ? '<span class="sidebar-card-badge">closed</span>' : ''}
       </button>`);
+  const all = sidebarSessionsExpanded.has(repoId);
+  const shown = all ? rows : rows.slice(0, SIDEBAR_MAX_ROWS);
+  const hidden = rows.length - shown.length;
   return `
       <div class="sidebar-group">
         <div class="sidebar-group-head">
@@ -104,7 +117,13 @@ function sidebarSessionsHtml(repoId) {
           <button class="sidebar-group-add" data-new-session="${esc(repoId)}"
                   title="New terminal session" aria-label="New terminal session">${icon('plus')}</button>
         </div>
-        ${rows.join('') || '<div class="sidebar-empty">no sessions</div>'}
+        ${shown.join('') || '<div class="sidebar-empty">no sessions</div>'}
+        ${rows.length > SIDEBAR_MAX_ROWS
+        ? `<button class="sidebar-more" data-more-sessions="${esc(repoId)}">
+             ${icon(all ? 'chevron-up' : 'chevron-down')}
+             <span>${all ? 'Show less' : `Show ${hidden} more`}</span>
+           </button>`
+        : ''}
       </div>`;
 }
 
@@ -148,6 +167,9 @@ function sidebarGroupsHtml(repoId) {
   if (!groups.length) {
     return `<div class="sidebar-empty">${filtersActive() ? 'no matches' : 'no cards yet'}</div>`;
   }
+  // Truncated at SIDEBAR_MAX_ROWS: the overflow row opens the project's board
+  // rather than growing the rail, since that's where every card is already laid
+  // out in full — the rail stays a way in, not a place to read a backlog.
   return groups.map(({ col, rows }) => `
       <div class="sidebar-group">
         <div class="sidebar-group-head">
@@ -155,7 +177,14 @@ function sidebarGroupsHtml(repoId) {
           <span class="sidebar-group-label">${esc(col.label)}</span>
           <span class="count">${rows.length}</span>
         </div>
-        ${rows.join('')}
+        ${rows.slice(0, SIDEBAR_MAX_ROWS).join('')}
+        ${rows.length > SIDEBAR_MAX_ROWS
+        ? `<button class="sidebar-more" data-more-board="${esc(repoId)}"
+                   title="Open this project's board to see all ${rows.length} cards">
+             ${icon('layout-grid')}
+             <span>Show ${rows.length - SIDEBAR_MAX_ROWS} more</span>
+           </button>`
+        : ''}
       </div>`).join('');
 }
 
@@ -271,6 +300,17 @@ export function init() {
     // live inside the same expanded project.
     const addSession = e.target.closest('[data-new-session]');
     if (addSession) { openNewSessionMenu(addSession.dataset.newSession, addSession); return; }
+    // Overflow rows, checked before the card/project rows they sit among.
+    const moreSessions = e.target.closest('[data-more-sessions]');
+    if (moreSessions) {
+      const id = moreSessions.dataset.moreSessions;
+      if (sidebarSessionsExpanded.has(id)) sidebarSessionsExpanded.delete(id);
+      else sidebarSessionsExpanded.add(id);
+      renderSidebar();
+      return;
+    }
+    const moreBoard = e.target.closest('[data-more-board]');
+    if (moreBoard) { enterWorkspace(moreBoard.dataset.moreBoard); return; }
     const sessionBtn = e.target.closest('[data-session]');
     if (sessionBtn) { focusSession(sessionBtn.dataset.session); return; }
     const orgBtn = e.target.closest('[data-org]');

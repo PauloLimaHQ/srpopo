@@ -34,6 +34,7 @@ import * as prRefresh from './pr-refresh';
 import * as framing from './framing';
 import * as terminal from './terminal';
 import * as desktop from './desktop';
+import * as scripts from './scripts';
 import * as usage from './usage';
 import * as resources from './resources';
 import * as taskService from './tasks';
@@ -883,6 +884,43 @@ app.post('/api/repos/:id/terminal', async (req: Request, res: Response) => {
   const rows = Number(req.body?.rows) || 24;
   try {
     res.json(terminal.create({ cwd: target, repoId: repo.id, kind, cols, rows }));
+  } catch (e) {
+    err(res, 500, (e as Error).message);
+  }
+});
+
+// ---------- package scripts (the checkout's own npm/pnpm run targets) ----------
+
+// What the workspace's Run button offers: this checkout's package.json scripts
+// and the package manager that runs them. Gated on the Node Scripts plugin, and
+// answers `{ manager: null, scripts: [] }` (not an error) for a checkout with no
+// package.json — that's what keeps the button hidden for a non-Node repo.
+app.get('/api/repos/:id/scripts', async (req: Request, res: Response) => {
+  if (!pluginInstalled('node-scripts')) return err(res, 400, 'Install the Node Scripts plugin first');
+  const repo = db.repos.find((r) => r.id === req.params.id);
+  if (!repo) return err(res, 404, 'Repo not found');
+  const target = await resolveRepoTarget(repo, req.query.path);
+  if (!target) return err(res, 404, 'Path not found');
+  res.json({ path: target, ...scripts.read(target) });
+});
+
+// Runs one of them in a new in-app terminal session on that checkout. The body
+// names a *script*; the command is looked up in the checkout's manifest here
+// (scripts.commandFor), so this route can't be handed a command line to run.
+// The session is a plain shell with the command typed at its prompt, so
+// stopping the script leaves the tab alive.
+app.post('/api/repos/:id/scripts/run', async (req: Request, res: Response) => {
+  if (!pluginInstalled('node-scripts')) return err(res, 400, 'Install the Node Scripts plugin first');
+  const repo = db.repos.find((r) => r.id === req.params.id);
+  if (!repo) return err(res, 404, 'Repo not found');
+  const target = await resolveRepoTarget(repo, req.body?.path);
+  if (!target) return err(res, 404, 'Path not found');
+  const command = scripts.commandFor(scripts.read(target), req.body?.script);
+  if (!command) return err(res, 404, 'No such script in this checkout');
+  const cols = Number(req.body?.cols) || 80;
+  const rows = Number(req.body?.rows) || 24;
+  try {
+    res.json(terminal.create({ cwd: target, repoId: repo.id, command, cols, rows }));
   } catch (e) {
     err(res, 500, (e as Error).message);
   }

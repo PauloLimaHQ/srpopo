@@ -2,7 +2,7 @@
 import { esc, toast } from '../core/api.js';
 import { $, IS_MAC, icon, isGroomingLive, isLive, isOrchestrationLive, state } from '../core/state.js';
 import { groomingsForRepo, orchestrationsForRepo, tasksForRepo } from './filters.js';
-import { STATUS_LABEL, allSessions, endSession, focusSession, newSession, openNewSessionMenu, restoreSessionTab, sessionKindIcon, visibleSession } from './terminal.js';
+import { STATUS_LABEL, allSessions, endSession, focusSession, newSession, openNewSessionMenu, restoreSessionTab, sessionIcon, visibleSession } from './terminal.js';
 import { currentLayout } from './theme.js';
 import { enterWorkspace, exitWorkspace, githubAvatarUrl } from './workspaces.js';
 
@@ -258,7 +258,7 @@ function sessionTabHtml(t, key) {
     key,
     label: s.label,
     tip: `${s.label} — ${STATUS_LABEL[s.status]}\n${repo ? `${repo.name} · ` : ''}${s.cwd}`,
-    lead: `<span class="tab-icon">${icon(sessionKindIcon(s.kind))}</span><span class="term-dot ${esc(s.status)}"></span>`,
+    lead: `<span class="tab-icon">${icon(sessionIcon(s))}</span><span class="term-dot ${esc(s.status)}"></span>`,
     trail: repo ? `<span class="tab-sub">${esc(repo.name)}</span>` : '',
     closeLabel: `End ${s.label}`,
     closeTip: 'End this session',
