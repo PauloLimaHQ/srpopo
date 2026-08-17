@@ -8,6 +8,7 @@ import { openBriefModal } from './grooming.js';
 import { openLinearModal } from './linear.js';
 import { openMemoryModal } from './memory.js';
 import { openOrchestrateModal } from './orchestrate.js';
+import { openRepoSettingsModal } from './repo-settings.js';
 import { openReposModal } from './repos-modal.js';
 import { scriptCommands } from './scripts.js';
 import { openSettingsModal } from './settings-modal.js';
@@ -76,6 +77,7 @@ function paletteCommands() {
         { label: defaultEditor() ? `Open in ${defaultEditor().label}` : 'Open in IDE', hint: 'Open the checkout in your editor', icon: 'code', run: () => openInIde(state.view.repoId, null, $('#workspace-more')) },
         { label: 'Project Memory', hint: 'Notes every agent reads for this repo', icon: 'brain', run: () => openMemoryModal(state.view.repoId) },
         { label: 'Workspace Details', hint: 'Path, branch and live worktrees', icon: 'info', run: () => openWorkspacePopover() },
+        { label: 'Workspace Settings', hint: 'Branch naming and the defaults new tasks start from', icon: 'settings', run: () => openRepoSettingsModal(state.view.repoId) },
       ]
       : []),
     { label: 'Settings', hint: 'Notifications, sounds, Linear key', icon: 'settings', kbd: `${MOD},`, run: () => openSettingsModal() },

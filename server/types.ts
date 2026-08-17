@@ -151,12 +151,56 @@ export interface PluginInfo {
   requiresApiKey: boolean;
 }
 
+// Per-workspace (per-repo) settings: a branch-naming convention plus the values
+// new tasks / groomings in this repo are prefilled with. Sanitized and applied
+// by server/repoSettings.ts, which is the single source of truth for them.
+//
+// **Every field is optional, and an absent key means "no opinion — use Sr. Popo's
+// built-in default"**. That is what makes "is this workspace configured?" a plain
+// `Object.keys(...).length > 0` test, and what lets old db.json files load with
+// no migration at all. These are *defaults*, never overrides: a task's own value
+// always wins, and the app-wide `Settings` (merge strategy, minimum merge grade,
+// autonomous budget, …) are untouched by them.
+export interface RepoSettings {
+  // Branch naming for worktree tasks in this repo. Tokens: {slug} {id} {date}.
+  // Absent -> git.addWorktree's own `srpopo/<slug>-<id>`.
+  branchTemplate?: string;
+  // Default base branch new work is cut from. Absent -> the repo's current HEAD.
+  baseBranch?: string;
+  // Which CLI backend new tasks default to (see TaskAgent).
+  agent?: TaskAgent;
+  // Default model for new tasks ('default' = the agent's account default).
+  model?: string;
+  // Default permission mode for new tasks (acceptEdits / bypassPermissions /
+  // plan / default).
+  permissionMode?: string;
+  // Whether new tasks run isolated on their own worktree branch.
+  useWorktree?: boolean;
+  // Whether new tasks flow through the Code Review stage when they finish.
+  autoCodeReview?: boolean;
+  // Add-on ids (server/addons.ts) new tasks start with selected.
+  addons?: string[];
+  // Persona ids (server/personas.ts) new tasks start with selected.
+  personas?: string[];
+  // Whether new tasks let the run pick its own expert persona.
+  autoPersona?: boolean;
+  // Comma-separated `--allowedTools` patterns new tasks start with.
+  allowedTools?: string;
+  // "Brief an Idea" defaults for this repo: the grooming session's model, and
+  // where the tasks it spawns land.
+  groomModel?: string;
+  groomTarget?: GroomingTarget;
+}
+
 export interface Repo {
   id: string;
   path: string;
   name: string;
   branch: string | null;
   addedAt: string;
+  // Per-workspace defaults, absent until the user configures any (see
+  // RepoSettings). Edited only through PATCH /api/repos/:id.
+  settings?: RepoSettings;
 }
 
 // A live worktree on disk for a repo, as reported by `git worktree list`

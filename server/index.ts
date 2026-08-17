@@ -27,6 +27,7 @@ import { readMemory } from './ask';
 import * as github from './github';
 import * as linear from './linear';
 import * as repoSpecs from './repoSpecs';
+import * as repoSettings from './repoSettings';
 import * as plugins from './plugins';
 import * as autonomous from './autonomous';
 import * as conflicts from './conflicts';
@@ -137,6 +138,19 @@ function tokenPromptPage(): string {
 </form></body></html>`;
 }
 
+// Drop the `token` query parameter from a URL, preserving everything else (and
+// returning a bare path when it was the only parameter). The base passed to URL
+// is a throwaway — only the path + remaining query are used, so the redirect
+// stays relative and can't be pointed off-origin.
+function strippedTokenUrl(originalUrl: string): string {
+  let u: URL;
+  try { u = new URL(originalUrl, 'http://localhost'); }
+  catch { return '/'; }
+  u.searchParams.delete('token');
+  const qs = u.searchParams.toString();
+  return u.pathname + (qs ? `?${qs}` : '');
+}
+
 // The remote-access authorization decision, split out from the middleware so it
 // is unit-testable without spoofing socket addresses. Reads the configured token
 // from db.settings; every request-derived value is passed in. Returns whether to
@@ -176,6 +190,48 @@ function authorizeRemote(input: {
   return { allow: false };
 }
 
+// ---------- DNS-rebinding defense (invariant #1) ----------
+//
+// Binding 127.0.0.1 stops other machines from reaching us, but it does NOT stop
+// a web page the user happens to visit. In a DNS-rebinding attack `evil.com`
+// re-resolves to 127.0.0.1 with a short TTL: the browser then connects to our
+// loopback socket while the page's origin is still `evil.com`, so the request is
+// same-origin — no CORS, no preflight, and the page can read every response.
+// isLocalRequest() sees 127.0.0.1 and waves it through, which hands an arbitrary
+// website the whole API (POST /api/terminal/:tid/input alone is a shell).
+//
+// The socket address can't distinguish the two, but the Host header can: a real
+// local client sends `localhost` / `127.0.0.1` / `[::1]`, a rebound one sends the
+// attacker's domain. So we allowlist the hosts we actually serve on, and only
+// those. This is the second half of the localhost boundary — keep it in front of
+// the token gate, the body parser and the static handler.
+function isHostAllowed(rawHost: string, remote: boolean, lanIps: string[]): boolean {
+  // Strip the port, then the brackets IPv6 literals carry (`[::1]:7777` → `::1`).
+  const host = rawHost.replace(/:\d+$/, '').replace(/^\[|\]$/g, '').toLowerCase();
+  // No Host at all (HTTP/1.0) is not something a browser or our own clients do.
+  if (!host) return false;
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '::ffff:127.0.0.1') return true;
+  // The LAN addresses are only served when remote access is on — and a request
+  // arriving on one is still subject to the token gate below. A hostname is
+  // allowed there too, since the pairing URL is easier to type as `mac.local`
+  // than a raw IP, and an attacker can't register the user's own machine name.
+  if (!remote) return false;
+  if (lanIps.includes(host)) return true;
+  const self = os.hostname().toLowerCase().replace(/\.local$/, '');
+  return host === self || host === `${self}.local`;
+}
+
+function hostAllowed(req: Request): boolean {
+  return isHostAllowed(req.headers.host || '', !!db.settings.remoteAccess, lanAddresses());
+}
+
+app.use((req: Request, res: Response, next: NextFunction) => {
+  if (hostAllowed(req)) return next();
+  // 403, not 401: no token can make a wrong Host right, so there is nothing to
+  // prompt for. Deliberately terse — don't echo the attacker's host back.
+  return err(res, 403, 'Invalid Host header');
+});
+
 // Gate every request when remote access is on. Registered before the body
 // parser and the static handler so unauthorized LAN clients can't reach either.
 app.use((req: Request, res: Response, next: NextFunction) => {
@@ -190,6 +246,16 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 
   if (decision.allow) {
     if (decision.setCookie) res.setHeader('Set-Cookie', decision.setCookie);
+    // The pairing hand-off puts the token in the query string (tokenPromptPage
+    // navigates to /?token=…), which then sticks in browser history, in the
+    // address bar and in the Referer of any outbound link — a credential that
+    // grants shell access to the host machine, left lying around on whatever
+    // phone did the pairing. Now that it's a cookie, bounce to the same URL
+    // without it. Only for top-level navigations: an API caller passing ?token=
+    // wants its response, not a redirect.
+    if (decision.setCookie && typeof req.query.token === 'string' && req.method === 'GET' && !req.path.startsWith('/api/')) {
+      return res.redirect(302, strippedTokenUrl(req.originalUrl));
+    }
     return next();
   }
 
@@ -314,6 +380,11 @@ function sanitizeTarget(value: unknown): GroomingTarget {
 // truth for the card's shape, shared by POST /api/groomings and the Linear
 // import path. The caller decides whether to run it right away.
 function createGrooming(repo: Repo, idea: string, body: Record<string, unknown>, extra?: Partial<Grooming>): Grooming {
+  // The workspace's "Brief an Idea" defaults fill in only what the caller left
+  // out — `'key' in body`, not truthiness, so an explicit value always wins.
+  const ws = repoSettings.forRepo(repo.id);
+  const model = 'model' in body ? body.model : ws.groomModel;
+  const target = 'target' in body ? body.target : ws.groomTarget;
   const grooming: Grooming = {
     id: id(),
     title: groomer.deriveTitle(idea),
@@ -321,8 +392,8 @@ function createGrooming(repo: Repo, idea: string, body: Record<string, unknown>,
     repoId: repo.id,
     repoName: repo.name,
     repoPath: repo.path,
-    model: (body.model as string) || 'default',
-    target: sanitizeTarget(body.target),
+    model: (model as string) || 'default',
+    target: sanitizeTarget(target),
     branchName: body.branchName ? String(body.branchName).trim() : null,
     status: 'draft',
     sessionId: null,
@@ -758,6 +829,29 @@ app.post('/api/repos/reorder', (req: Request, res: Response) => {
   save();
   broadcast({ type: 'repos', repos: db.repos });
   res.json({ ok: true, repos: db.repos });
+});
+
+// Per-workspace settings (server/repoSettings.ts): the repo's branch-naming
+// convention and the defaults new tasks / groomings here are prefilled with.
+// Scope is settings only — a repo's name and path stay immutable.
+//
+// The body's `settings` replaces the stored object wholesale rather than being
+// deep-merged, so the modal can turn a field back off simply by omitting it; a
+// sanitized result with nothing in it deletes the key entirely, which is what
+// makes "Reset to app defaults" return the workspace to Sr. Popo's own defaults.
+app.patch('/api/repos/:id', (req: Request, res: Response) => {
+  const repo = db.repos.find((r) => r.id === req.params.id);
+  if (!repo) return err(res, 404, 'Repo not found');
+  const raw = req.body?.settings;
+  if (raw !== undefined && (typeof raw !== 'object' || raw === null || Array.isArray(raw))) {
+    return err(res, 400, 'settings must be an object');
+  }
+  const settings = repoSettings.sanitize(raw);
+  if (repoSettings.configured(settings)) repo.settings = settings;
+  else delete repo.settings;
+  save();
+  broadcast({ type: 'repos', repos: db.repos });
+  res.json(repo);
 });
 
 // Live lookup of the repo's current checked-out branch — refreshed on demand
@@ -2080,6 +2174,7 @@ function start(port: string | number = process.env.PORT || 7777): Promise<{ serv
 export { app, start, runner, terminal };
 // Test-only exports for the remote-access gate (see tests/smoke.test.ts).
 export { authorizeRemote as _authorizeRemote, parseCookies as _parseCookies, lanAddresses as _lanAddresses };
+export { isHostAllowed as _isHostAllowed, strippedTokenUrl as _strippedTokenUrl };
 
 // When run directly (`node server/index.js` / `tsx server/index.ts`), boot as a
 // standalone server.

@@ -17,8 +17,9 @@ import { activePane, activateTab, activeTabKey, applyPanes, cycleTab, noteSessio
 // difference is only where `#terminal-mount` is parented — every pane, its
 // scrollback and its stream survive a switch between them.
 //
-// Reachable from: the workspace header's Terminal button, the project
-// sidebar's Sessions group, either tab strip, ⌘K, and the hotkeys below.
+// Reachable from: the workspace header's Terminal button, a task card's own
+// Terminal button (openTaskTerminal — the checkout that card works in), the
+// project sidebar's Sessions group, either tab strip, ⌘K, and the hotkeys below.
 
 // Server-side status → the bullet every surface shows. Green: alive and
 // printing. Amber: alive but quiet for a while — sitting at a prompt, probably
@@ -407,6 +408,15 @@ function openTerminalAt(repoId, wtPath) {
   newSession(repoId, 'shell', wtPath);
 }
 
+// A task card's Terminal button: the same "join the shell on this checkout, or
+// open one" behavior, aimed at the checkout that *task* works in — its worktree
+// once one has been materialized, the repo root otherwise. So two cards on the
+// same worktree land in the same session instead of each spawning their own.
+function openTaskTerminal(t) {
+  if (!t || !t.repoId) { toast('This card has no checkout to open', 'error'); return; }
+  openTerminalAt(t.repoId, t.worktreePath || undefined);
+}
+
 // ---- new-session menu (anchored on a + button or a sidebar row) ----
 function newSessionMenuOpen() { return !$('#terminal-menu').classList.contains('hidden'); }
 
@@ -625,6 +635,7 @@ export function init() {
 
 export {
   STATUS_LABEL, allSessions, applyTerminalEvent, availableKinds, endSession, focusSession,
-  loadTerminalSessions, newSession, openNewSessionMenu, openSession, openTerminalAt, restoreSessionTab,
-  sessionIcon, sessionKindIcon, sessionsForRepo, syncTerminalHost, toggleTerminalPanel, visibleSession,
+  loadTerminalSessions, newSession, openNewSessionMenu, openSession, openTaskTerminal, openTerminalAt,
+  restoreSessionTab, sessionIcon, sessionKindIcon, sessionsForRepo, syncTerminalHost,
+  toggleTerminalPanel, visibleSession,
 };

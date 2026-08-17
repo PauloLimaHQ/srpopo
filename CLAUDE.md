@@ -47,6 +47,7 @@ static with **no build step** (see Conventions).
 | `server/bus.ts` | Server-Sent Events fan-out for the live board + timeline. |
 | `server/addons.ts` | Catalog of opt-in task behaviors (see "Add-ons" below). |
 | `server/personas.ts` | Catalog of expert-persona role preambles. |
+| `server/repoSettings.ts` | Per-workspace (per-repo) defaults: sanitizing them, reading a repo's, and resolving its branch-name template (see "Workspace settings"). |
 | `server/permissions.ts` | In-memory registry of pending tool-approval prompts (see "Interactive permissions"). |
 | `server/permission-mcp.js` | **Stays plain JS.** Standalone MCP stdio bridge `claude` spawns to ask before running a tool — kept JS so it runs without a TS loader in both dev and the packaged app. `tsc` copies it into `dist/` untouched (`allowJs`). |
 | `server/groomer.ts` | Meta-prompt + result parser for "Brief an Idea" (see "Grooming" below). |
@@ -245,8 +246,26 @@ parsing, re-verify against a signed-in run.
 Breaking any of these is a security or trust regression — call it out loudly if a task
 would require it.
 
-1. **Bind to `127.0.0.1` only.** Never expose the server on `0.0.0.0` or a LAN address.
-   There is no auth layer; localhost binding *is* the security boundary.
+1. **The localhost boundary is two things, and it needs both.** The API can start a
+   shell (`POST /api/terminal/:tid/input`) and spawn agents with the user's git and
+   `gh` credentials, with no user accounts behind it — so what is allowed to reach it
+   *is* the security model.
+   - **Bind `127.0.0.1` by default** (`bindHost`). The one exception is the opt-in
+     **Remote Access (LAN)** setting, which binds `0.0.0.0` and is then *always*
+     gated by the shared-token middleware (`authorizeRemote`). Never widen the bind
+     without that gate, and never trust a forwardable header (`X-Forwarded-For`, and
+     so on) to decide who is local — `isLocalRequest` reads the raw socket address on
+     purpose.
+   - **Validate the `Host` header** (`isHostAllowed`) in front of everything else.
+     Binding loopback keeps other *machines* out but not other *websites*: under DNS
+     rebinding a page on `evil.com` re-resolves to `127.0.0.1`, so the browser hits
+     our socket while the request stays same-origin — no CORS, no preflight, and the
+     socket address says localhost. The Host header is the only thing that separates
+     a real local client from a rebound one. Allowlist the hosts we actually serve
+     (loopback always; the LAN addresses only while remote access is on).
+
+   Both halves are covered by tests named for this invariant; if you change the
+   middleware order or the bind, keep them passing rather than adjusting them.
 2. **Never use an API key.** Each backend's adapter strips its provider key from every
    spawned task — `ANTHROPIC_API_KEY` for Claude, `OPENAI_API_KEY` for Codex,
    `XAI_API_KEY` for Grok — so runs always use the subscription login (`claude` /
@@ -551,6 +570,44 @@ ctrlKey`, because off macOS it is Ctrl+W / Ctrl+D — which a focused shell keep
 `registerAccelerator: false`, so the keystroke reaches the page instead of the system
 menu (which is also why **Close Window** moved to ⇧⌘W).
 
+## Workspace settings (per-repo defaults)
+
+A registered repo can carry its own `settings` (`RepoSettings` in `types.ts`, absent
+until configured — so there is no `db.json` migration). `server/repoSettings.ts` is the
+single source of truth for them: `sanitize` (drop unknown keys and invalid values
+rather than erroring — a stray value must never produce an unrunnable task), `forRepo`,
+`configured`, and `resolveBranchName`. They are edited through **`PATCH /api/repos/:id`**
+with `{ settings }`, which *replaces* rather than deep-merges and **deletes the key**
+when the sanitized result is empty (that's how the modal's "Reset to app defaults"
+works). The UI is its own modal (`#modal-repo-settings`, `public/features/repo-settings.js`),
+opened from the workspace "…" menu and ⌘K.
+
+They are **defaults, not overrides**, and only two things read them:
+
+- **The branch convention.** `branchTemplate` (tokens `{slug}` `{id}` `{date}`) is
+  applied at exactly one call site — `tasks.dispatchTask`, where the worktree is
+  materialized — so every path that dispatches a task (REST, MCP, Autonomous Mode,
+  orchestrator workers, grooming-spawned tasks) gets it for free. Precedence there is
+  **`task.branchName` > the workspace template > `git.addWorktree`'s own
+  `srpopo/<slug>-<id>`**, which stays untouched as the last resort. Uniqueness is not
+  this module's problem: a template without `{id}`/`{slug}` can collide, and `git
+  worktree add` then fails loudly through the existing dispatch error path.
+- **New-task / new-grooming defaults.** `tasks.createTask` and `index.createGrooming`
+  fill a field from the workspace **only when the key is absent from the input**
+  (`'key' in input`, not truthiness — same idiom as `promptPermissions`). The board
+  always sends every field explicitly, so its own prefill is what the user sees; lean
+  callers (MCP `create_task`) omit most keys and inherit. The deliberate paths that set
+  their fields themselves — `spawnGroomedTasks`, the orchestrator, Linear and spec
+  imports — are *not* given repo defaults; they still pick up the branch convention.
+
+In the board, a workspace with anything configured **beats the browser's last-used
+memory** (`localStorage['srpopo.lastTaskSettings']`) outright for that repo, falling
+back to the hardcoded defaults for whatever it leaves unset; a repo with nothing
+configured keeps today's last-used behavior unchanged. The app-wide `Settings`
+(`mergeStrategy`, `minMergeGrade`, `autoResolveConflicts`, `assignPrToSelf`,
+`defaultEditor`, `memory`, `maxParallelSessions`, the autonomous budget) are **not**
+affected by any of this — they stay global.
+
 ## Package scripts: the workspace's Run button
 
 Sr. Popo is an ops surface for a checkout, not only a task queue — and half of "does
@@ -632,6 +689,16 @@ difference is only where `#terminal-mount` is parented, and `syncTerminalHost()`
 moves *the mount*, not each pane — so every xterm, its scrollback and its stream
 survive a layout switch untouched. Either way a session is also one row in the project
 sidebar's **Sessions** group and searchable in ⌘K.
+
+**Joining a card's session.** Every task card carries a Terminal icon button (and a
+matching `terminal` entry in `taskCoreActions`, so the drawer and the right-click menu
+offer it too). It calls `openTaskTerminal(t)` → `openTerminalAt(t.repoId,
+t.worktreePath)`: a shell on **that task's** checkout — its worktree once one has been
+materialized, the repo root otherwise — and, like the workspace header's button, it
+*joins* the shell already open on that directory rather than stacking a second one on
+it. That's the whole point: sit down next to a run instead of only watching it. It is
+the one card affordance that isn't board state — opening a shell doesn't touch the
+task, so it works while the task is live too.
 
 `Ctrl+\`` shows/hides the docked panel — or, in the tabbed layout, jumps to the
 terminal and back to the tab you came from; `Ctrl+Shift+\`` opens the new-session

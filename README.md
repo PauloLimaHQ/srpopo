@@ -81,6 +81,11 @@ the background when the window is closed.
   task, so runs always use your subscription login.
 - **Isolated worktrees** — optionally run each task on its own `srpopo/<slug>` branch in
   a dedicated git worktree, so parallel work never collides.
+- **Per-workspace settings** — give a repository its own branch-naming convention
+  (`feat/{slug}-{id}`, with `{date}` too) and the defaults new tasks and ideas there
+  start from: agent, model, permissions, worktree, add-ons, personas. They only
+  prefill — a task's own settings still win, and your app-wide preferences are
+  untouched.
 - **Ask-before-running permissions** — a Claude task can prompt you (Allow / Deny)
   before it runs any tool it wasn't pre-authorized for, instead of silently failing.
   Codex tasks are governed by its sandbox instead (read-only / workspace-write), and
@@ -136,8 +141,8 @@ claude mcp add --transport http srpopo http://127.0.0.1:7777/mcp
 ```
 
 Tools: `list_repos`, `list_tasks`, `get_task`, `create_task`, `dispatch_task`,
-`stop_task`. Like the rest of the app it has no auth and binds `127.0.0.1` only —
-that localhost binding is the security boundary, so keep it local.
+`stop_task`. Like the rest of the app it has no auth of its own — it sits behind
+the same localhost boundary as the REST API (below), so keep it local.
 
 ## Develop
 
@@ -193,8 +198,17 @@ is exactly what the [Download](#download) links above point to).
 - **macOS** — `~/Library/Application Support/Sr. Popo/data` (`db.json` + `logs/`)
 - Per-task worktrees — `~/.srpopo/worktrees/`
 
-Nothing leaves your machine. There is no auth layer because the server binds to
-localhost only — that binding *is* the security boundary.
+Nothing leaves your machine. There are no user accounts; instead the server binds
+`127.0.0.1` and only answers requests whose `Host` header is one it actually serves
+— together those *are* the security boundary. (The `Host` check is what stops a
+website you visit from reaching the API through DNS rebinding, which the loopback
+bind alone does not prevent.)
+
+Turning on **Remote Access (LAN)** in Settings deliberately relaxes the first half:
+the server binds `0.0.0.0` so a phone on the same network can reach the board, and
+every non-localhost request must then present a shared access token. It is plain
+HTTP with one token and no accounts — fine for a home or office network you trust,
+not for shared or public wifi.
 
 ## Architecture
 

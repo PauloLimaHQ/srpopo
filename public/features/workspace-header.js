@@ -4,6 +4,7 @@ import { $, state } from '../core/state.js';
 import { autonomousForWorkspace, openAutonomousModal, startAutonomous, stopAutonomous } from './autonomous.js';
 import { closeIdeMenu, ideMenuOpen, openInIde, revealPath } from './desktop.js';
 import { openDrawer } from './drawer.js';
+import { openRepoSettingsModal } from './repo-settings.js';
 import { openTerminalAt } from './terminal.js';
 import { closeWorkspaceMenu } from './workspace-menu.js';
 import { exitWorkspace, openWorkspacePopover, refreshRepoWorktreesCard } from './workspaces.js';
@@ -32,6 +33,11 @@ export function init() {
   $('#workspace-info').addEventListener('click', () => {
     closeWorkspaceMenu();
     openWorkspacePopover();
+  });
+  $('#workspace-settings').addEventListener('click', () => {
+    closeWorkspaceMenu();
+    const repoId = state.view.repoId;
+    if (repoId) openRepoSettingsModal(repoId);
   });
   // Autonomous Mode: the header button starts a session (opens the budget modal)
   // or stops the one running for this workspace.

@@ -3,6 +3,7 @@ import { api, esc, toast } from '../core/api.js';
 import { $, icon, state } from '../core/state.js';
 import { renderBoard } from './board.js';
 import { openGroomingDrawer } from './drawer.js';
+import { repoSettingsFor, wsConfigured, wsGroomDefaults } from './repo-settings.js';
 import { openReposModal } from './repos-modal.js';
 import { loadLastUsed, refreshRepoBranchHint } from './task-modal.js';
 import { currentWorkspaceRepoId } from './workspaces.js';
@@ -19,21 +20,33 @@ function refreshBriefRepoSelect() {
 // null => new grooming; a grooming card => edit that draft (or failed card).
 let briefEditingId = null;
 
+// Seed the model + target chips. Like the New Task composer: a workspace with
+// anything configured (features/repo-settings.js) supplies them and beats the
+// browser's last-used memory; anything it leaves unset keeps today's defaults.
+function prefillBriefDefaults(grooming) {
+  const ws = repoSettingsFor(grooming ? grooming.repoId : $('#brief-repo').value);
+  const src = grooming ? {} : (wsConfigured(ws) ? wsGroomDefaults(ws) : loadLastUsed());
+  $('#brief-target').value = grooming ? (grooming.target || 'backlog') : (src.target || 'backlog');
+  $('#brief-model').value = grooming ? (grooming.model || 'default') : (src.model || 'default');
+}
+
 function openBriefModal(grooming = null) {
   // Guard: the header button passes its click event here — treat it as "new".
   if (!grooming || !grooming.id) grooming = null;
   briefEditingId = grooming ? grooming.id : null;
   refreshBriefRepoSelect();
-  const last = loadLastUsed();
   $('#brief-text').value = grooming ? grooming.idea : '';
   $('#brief-branch').value = grooming ? (grooming.branchName || '') : '';
-  $('#brief-target').value = grooming ? (grooming.target || 'backlog') : 'backlog';
-  $('#brief-model').value = grooming ? (grooming.model || 'default') : (last.model || 'default');
-  // The repo is fixed once the card exists — hide the picker in edit mode.
+  // The repo is resolved first (it decides the defaults), and is fixed once the
+  // card exists — so the picker is hidden in edit mode.
   $('#brief-repo-field').classList.toggle('hidden', !!grooming);
   if (grooming) $('#brief-repo').value = grooming.repoId;
-  else if (currentWorkspaceRepoId()) $('#brief-repo').value = currentWorkspaceRepoId();
-  else if (last.repoId && state.repos.some((r) => r.id === last.repoId)) $('#brief-repo').value = last.repoId;
+  else {
+    const last = loadLastUsed();
+    if (currentWorkspaceRepoId()) $('#brief-repo').value = currentWorkspaceRepoId();
+    else if (last.repoId && state.repos.some((r) => r.id === last.repoId)) $('#brief-repo').value = last.repoId;
+  }
+  prefillBriefDefaults(grooming);
   refreshRepoBranchHint($('#brief-repo').value, $('#brief-repo-branch'));
   $('#brief-modal-title').innerHTML = `${icon('lightbulb')}${grooming ? 'Edit Draft' : 'Brief an Idea'}`;
   $('#brief-draft').textContent = grooming ? 'Save Draft' : 'Save as Draft';
@@ -90,6 +103,9 @@ export function init() {
   });
   $('#brief-repo').addEventListener('change', () => {
     refreshRepoBranchHint($('#brief-repo').value, $('#brief-repo-branch'));
+    // Re-seed from the newly picked workspace (create mode only — the picker is
+    // hidden while editing an existing card).
+    if (!briefEditingId) prefillBriefDefaults(null);
   });
 }
 

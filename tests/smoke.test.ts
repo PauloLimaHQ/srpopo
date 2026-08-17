@@ -278,6 +278,83 @@ test('index: parseCookies parses a Cookie header by hand; lanAddresses lists IPv
   assert.ok(lan.every((ip: string) => typeof ip === 'string' && !ip.includes(':')), 'entries are IPv4 strings');
 });
 
+test('index: isHostAllowed rejects a rebound host — invariant #1 survives DNS rebinding', () => {
+  const index = require('../server/index');
+  const allowed = (host: string, remote = false, lan: string[] = []) => index._isHostAllowed(host, remote, lan);
+
+  // The hosts our own clients actually use, with and without a port.
+  for (const h of ['localhost:7777', '127.0.0.1:7777', '127.0.0.1', '[::1]:7777', '[::1]', 'LOCALHOST']) {
+    assert.strictEqual(allowed(h), true, `${h} is a real local client`);
+  }
+
+  // The attack: a page on evil.com whose DNS was rebound to 127.0.0.1. The socket
+  // says localhost, so only the Host header can tell it apart.
+  assert.strictEqual(allowed('evil.com'), false, 'invariant #1: a rebound host is refused');
+  assert.strictEqual(allowed('evil.com:7777'), false, 'a rebound host with our port is refused');
+  assert.strictEqual(allowed('127.0.0.1.evil.com'), false, 'a lookalike subdomain is refused');
+  assert.strictEqual(allowed(''), false, 'a missing Host header is refused');
+
+  // LAN addresses are served only when remote access is on (and the token gate
+  // still applies to them) — never while we are bound to loopback.
+  assert.strictEqual(allowed('192.168.1.20', false, ['192.168.1.20']), false, 'no LAN host while remote access is off');
+  assert.strictEqual(allowed('192.168.1.20', true, ['192.168.1.20']), true, 'the paired LAN address is served');
+  assert.strictEqual(allowed('192.168.1.99', true, ['192.168.1.20']), false, 'an unrelated LAN address is refused');
+  assert.strictEqual(allowed('evil.com', true, ['192.168.1.20']), false, 'remote access does not open the host allowlist');
+
+  const self = require('os').hostname().toLowerCase().replace(/\.local$/, '');
+  assert.strictEqual(allowed(`${self}.local`, true, []), true, 'the machine name is typeable in the pairing URL');
+  assert.strictEqual(allowed(`${self}.local`, false, []), false, 'but not while bound to loopback');
+});
+
+test('index: a rebound Host is refused by the live server before it reaches any route', async () => {
+  const store = require('../server/store');
+  const index = require('../server/index');
+  const prevOn = store.db.settings.remoteAccess;
+  store.db.settings.remoteAccess = false;
+  const { server, port } = await index.start(0);
+  // fetch() silently DROPS a Host header (it is a forbidden header name), so it
+  // cannot express this attack at all — go through node:http, which lets us send
+  // the exact bytes a rebound browser would.
+  const raw = (p: string, host: string, method = 'GET', body?: string): Promise<number> =>
+    new Promise((resolve, reject) => {
+      const headers: Record<string, string> = { Host: host };
+      if (body) { headers['Content-Type'] = 'application/json'; headers['Content-Length'] = String(Buffer.byteLength(body)); }
+      const req = require('http').request({ hostname: '127.0.0.1', port, path: p, method, headers },
+        (res: { statusCode: number; resume: () => void }) => { res.resume(); resolve(res.statusCode); });
+      req.on('error', reject);
+      if (body) req.write(body);
+      req.end();
+    });
+  try {
+    // A normal local request is untouched.
+    assert.strictEqual(await raw('/api/health', `127.0.0.1:${port}`), 200, 'localhost still works');
+
+    // The attack: what the browser sends from a page on evil.com whose DNS was
+    // rebound to 127.0.0.1 — our loopback socket, the attacker's origin.
+    assert.strictEqual(await raw('/api/health', 'evil.com'), 403, 'invariant #1: the rebound request is refused');
+
+    // The terminal input route is the sharpest edge (it is a shell), so assert
+    // the gate sits in front of it too — and in front of the static board.
+    assert.strictEqual(
+      await raw('/api/terminal/whatever/input', 'evil.com', 'POST', JSON.stringify({ data: 'echo pwned\n' })),
+      403, 'no shell for a rebound origin');
+    assert.strictEqual(await raw('/', 'evil.com'), 403, 'the static board is behind the gate too');
+  } finally {
+    await new Promise<void>((r) => server.close(() => r()));
+    store.db.settings.remoteAccess = prevOn;
+  }
+});
+
+test('index: strippedTokenUrl keeps the access token out of history and Referer', () => {
+  const index = require('../server/index');
+  assert.strictEqual(index._strippedTokenUrl('/?token=abc123'), '/', 'the pairing URL becomes a bare path');
+  assert.strictEqual(index._strippedTokenUrl('/?token=abc123&view=super'), '/?view=super', 'other params survive');
+  assert.strictEqual(index._strippedTokenUrl('/board?a=1&token=x&b=2'), '/board?a=1&b=2', 'the path survives');
+  assert.strictEqual(index._strippedTokenUrl('/?view=super'), '/?view=super', 'a URL without a token is unchanged');
+  // The redirect must stay on our own origin no matter what arrives.
+  assert.ok(index._strippedTokenUrl('//evil.com/x?token=1').startsWith('/'), 'the redirect target stays relative');
+});
+
 test('git: listBranches/createBranch/checkoutBranch and worktree base off a chosen branch', async () => {
   const git = require('../server/git');
   const { execFileSync } = require('child_process');
@@ -3640,5 +3717,138 @@ test('terminal: a command session types its command at the prompt and keeps a pl
   } finally {
     terminal.closeAll();
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('repoSettings: sanitize drops unknown keys, invalid values and empty strings', () => {
+  const repoSettings = require('../server/repoSettings');
+
+  assert.deepStrictEqual(repoSettings.sanitize(undefined), {}, 'junk input yields {}');
+  assert.deepStrictEqual(repoSettings.sanitize('nope'), {}, 'a string yields {}');
+  assert.deepStrictEqual(repoSettings.sanitize([1, 2]), {}, 'an array yields {}');
+  assert.deepStrictEqual(repoSettings.sanitize({}), {}, 'an empty body yields {}');
+
+  assert.deepStrictEqual(
+    repoSettings.sanitize({ branchTemplate: '  ', baseBranch: '', model: null, allowedTools: '\t' }),
+    {}, 'absent/blank/null values are omitted, not stored as empty');
+
+  assert.deepStrictEqual(
+    repoSettings.sanitize({ agent: 'nope', permissionMode: 'nope', groomTarget: 'nope' }),
+    {}, 'invalid enum values are dropped rather than erroring');
+
+  const clean = repoSettings.sanitize({
+    branchTemplate: '  feat/{slug}  ',
+    agent: 'codex',
+    permissionMode: 'plan',
+    groomTarget: 'ready',
+    useWorktree: true,
+    autoCodeReview: false,
+    addons: ['pull_request', 'bogus'],
+    personas: ['not-a-persona'],
+    nothingToSeeHere: 'dropped',
+  });
+  assert.strictEqual(clean.branchTemplate, 'feat/{slug}', 'strings are trimmed');
+  assert.strictEqual(clean.agent, 'codex', 'a known agent is kept');
+  assert.strictEqual(clean.permissionMode, 'plan', 'a known permission mode is kept');
+  assert.strictEqual(clean.groomTarget, 'ready', 'a known grooming target is kept');
+  assert.strictEqual(clean.useWorktree, true, 'an explicit true is kept');
+  assert.strictEqual(clean.autoCodeReview, false, 'an explicit false is kept (the key was present)');
+  assert.deepStrictEqual(clean.addons, ['pull_request'], 'add-ons go through addons.sanitize');
+  assert.ok(!('personas' in clean), 'a personas list that sanitizes to nothing drops the key');
+  assert.ok(!('nothingToSeeHere' in clean), 'unknown keys are dropped');
+  assert.ok(!('model' in clean), 'a key that was never sent stays absent');
+});
+
+test('repoSettings: configured() is just "is anything set?"', () => {
+  const repoSettings = require('../server/repoSettings');
+  assert.strictEqual(repoSettings.configured({}), false, 'an empty object is unconfigured');
+  assert.strictEqual(repoSettings.configured({ model: 'opus' }), true, 'one field is enough');
+  assert.strictEqual(repoSettings.configured({ useWorktree: false }), true, 'even a falsy value counts');
+});
+
+test('repoSettings: resolveBranchName substitutes tokens and sanitizes into a legal ref', () => {
+  const repoSettings = require('../server/repoSettings');
+  const ctx = { slug: 'dark-mode', id: 'abc123' };
+
+  assert.strictEqual(repoSettings.resolveBranchName('feat/{slug}-{id}', ctx), 'feat/dark-mode-abc123',
+    '{slug} and {id} are substituted');
+  const dated = repoSettings.resolveBranchName('{date}/{slug}', ctx);
+  assert.match(dated, /^\d{4}-\d{2}-\d{2}\/dark-mode$/, '{date} resolves to YYYY-MM-DD');
+
+  assert.strictEqual(
+    repoSettings.resolveBranchName('/feat me/~bad^name:-{slug}../', ctx),
+    'feat-me/badname-dark-mode',
+    'spaces, illegal characters, `..` and leading/trailing slashes are cleaned up');
+  assert.strictEqual(repoSettings.resolveBranchName('wip/{slug}.lock', ctx), 'wip/dark-mode',
+    'a reserved trailing .lock is stripped');
+
+  assert.strictEqual(repoSettings.resolveBranchName('', ctx), null, 'a blank template falls back');
+  assert.strictEqual(repoSettings.resolveBranchName('   ', ctx), null, 'whitespace only falls back');
+  assert.strictEqual(repoSettings.resolveBranchName('~^:?', ctx), null,
+    'a template that sanitizes down to nothing falls back');
+});
+
+test('tasks: a new task inherits the workspace defaults only for the fields it omits', () => {
+  const store = require('../server/store');
+  const tasks = require('../server/tasks');
+  const repo = {
+    id: store.id(), path: '/tmp/ws-defaults', name: 'ws/defaults', branch: null, addedAt: store.now(),
+    settings: { agent: 'codex', model: 'gpt-5.6-sol', useWorktree: true, addons: ['pull_request'], autoCodeReview: true },
+  };
+  store.db.repos.push(repo);
+  try {
+    const inherited = tasks.createTask({ repoId: repo.id, prompt: 'p' });
+    assert.strictEqual(inherited.agent, 'codex', 'agent comes from the workspace');
+    assert.strictEqual(inherited.model, 'gpt-5.6-sol', 'model comes from the workspace');
+    assert.strictEqual(inherited.useWorktree, true, 'useWorktree comes from the workspace');
+    assert.deepStrictEqual(inherited.addons, ['pull_request'], 'add-ons come from the workspace');
+    assert.strictEqual(inherited.autoCodeReview, true, 'autoCodeReview comes from the workspace');
+    assert.strictEqual(inherited.permissionMode, 'acceptEdits', 'a field the workspace leaves unset keeps its built-in default');
+
+    const explicit = tasks.createTask({
+      repoId: repo.id, prompt: 'p', agent: 'claude', model: 'opus', useWorktree: false, addons: [],
+    });
+    assert.strictEqual(explicit.agent, 'claude', 'an explicit agent beats the workspace default');
+    assert.strictEqual(explicit.model, 'opus', 'an explicit model beats the workspace default');
+    assert.strictEqual(explicit.useWorktree, false, 'an explicit false beats a workspace `true`');
+    assert.deepStrictEqual(explicit.addons, [], 'an explicit empty add-on list beats the workspace default');
+  } finally {
+    store.db.tasks = store.db.tasks.filter((t: { repoId: string }) => t.repoId !== repo.id);
+    store.db.repos.splice(store.db.repos.indexOf(repo), 1);
+  }
+});
+
+test('index: PATCH /api/repos/:id stores workspace settings and clears them when empty', async () => {
+  const store = require('../server/store');
+  const index = require('../server/index');
+  const repo = { id: store.id(), path: '/tmp/ws-patch', name: 'ws/patch', branch: null, addedAt: store.now() };
+  store.db.repos.push(repo);
+  const { server, port } = await index.start(0);
+  const base = `http://127.0.0.1:${port}`;
+  const patch = (id: string, body: unknown) => fetch(`${base}/api/repos/${id}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  try {
+    let res = await patch(repo.id, { settings: { branchTemplate: ' feat/{slug} ', model: 'opus', bogus: 1 } });
+    assert.strictEqual(res.status, 200, 'a valid settings body is accepted');
+    let body = await res.json();
+    assert.deepStrictEqual(body.settings, { branchTemplate: 'feat/{slug}', model: 'opus' },
+      'the stored settings are the sanitized ones');
+
+    // Replaces rather than deep-merges, so omitting a field turns it back off.
+    body = await (await patch(repo.id, { settings: { model: 'opus' } })).json();
+    assert.deepStrictEqual(body.settings, { model: 'opus' }, 'an omitted field is dropped, not merged');
+
+    // "Reset to app defaults": an empty result deletes the key entirely.
+    body = await (await patch(repo.id, { settings: {} })).json();
+    assert.ok(!('settings' in body), 'an empty settings object leaves the repo unconfigured');
+
+    res = await patch(repo.id, { settings: 'nope' });
+    assert.strictEqual(res.status, 400, 'a non-object settings body is rejected');
+    res = await patch('nosuchrepo', { settings: {} });
+    assert.strictEqual(res.status, 404, 'an unknown repo id is a 404');
+  } finally {
+    store.db.repos.splice(store.db.repos.indexOf(repo), 1);
+    await new Promise<void>((r) => server.close(() => r()));
   }
 });
