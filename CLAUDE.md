@@ -488,13 +488,25 @@ change one).
 
 - **Theme** — `srpopo.theme`: System / Light / Dark, read by an inline `<head>`
   script so the first paint already matches.
-- **Layout** — `srpopo.layout`: `classic` (the default: the Super View grid plus
-  one repo's board, and a terminal docked at the bottom of the window) or
-  `sidebar`, an **experimental** integrated shell — a persistent project rail on
-  the left, and a **tabbed work area** to its right. Applied by `applyLayout()` in
-  `public/features/theme.js`, which sets `body[data-layout]`, shows/empties
-  `#sidebar`, re-parents the terminal mount (`syncTerminalHost()`) and re-renders;
-  `toggleLayout()` backs the ⌘K "Toggle Layout" command.
+- **Layout** — `srpopo.layout`: `sidebar` (**the default**) is the integrated
+  shell — a persistent project rail on the left, and a **tabbed work area** to
+  its right; `classic` is the older shape, the Super View grid plus one repo's
+  board with a terminal docked at the bottom of the window. Applied by
+  `applyLayout()` in `public/features/theme.js`, which sets `body[data-layout]`,
+  shows/empties `#sidebar`, re-parents the terminal mount (`syncTerminalHost()`)
+  and re-renders; `toggleLayout()` backs the ⌘K "Toggle Layout" command. The key
+  is written for **both** values, the default included — clearing it for the
+  default would hand a user's choice back to whatever the next release defaults to.
+
+**Every one of these preferences is keyed to the page's origin, so the port has
+to be stable.** Theme, layout, the open tabs, the workspace you were on, the
+terminal height and the task modal's last-used settings are all `localStorage`
+under `http://127.0.0.1:<port>`. The packaged app used to boot on an OS-assigned
+free port, which meant a fresh empty origin — and a silently forgotten setup —
+on every launch. `startServer()` in `electron/main.ts` walks a fixed ladder
+(`PREFERRED_PORTS`, 7777…7782) and takes the first free one instead, falling back
+to an OS-assigned port only if the whole ladder is busy. Don't hand `0` back to
+`server.start()` as the normal path.
 
 The **project sidebar** (`renderSidebar` and friends in `public/features/sidebar.js`) lists every
 repository — repos whose `origin` remote shares an owner (`anplabs/intranet`,

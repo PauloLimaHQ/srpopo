@@ -82,7 +82,7 @@ function paletteCommands() {
       : []),
     { label: 'Settings', hint: 'Notifications, sounds, Linear key', icon: 'settings', kbd: `${MOD},`, run: () => openSettingsModal() },
     { label: 'Toggle Theme', hint: `Currently ${THEME_LABEL[currentTheme()]} — set it in Settings → Appearance`, icon: 'sun-moon', run: () => cycleTheme() },
-    { label: 'Toggle Layout', hint: `Currently ${LAYOUT_LABEL[currentLayout()]} — the project sidebar is experimental`, icon: 'panel-left', run: () => toggleLayout() },
+    { label: 'Toggle Layout', hint: `Currently ${LAYOUT_LABEL[currentLayout()]} — switch between the project sidebar and the classic board`, icon: 'panel-left', run: () => toggleLayout() },
     { label: 'Filter Tasks', hint: 'Jump to the filter box', icon: 'search', kbd: '/', run: () => $('#filter-search').focus() },
     { label: 'Keyboard Shortcuts', hint: 'See all shortcuts', icon: 'keyboard', kbd: '?', run: () => openShortcutsModal() },
   ];

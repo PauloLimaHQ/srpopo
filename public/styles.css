@@ -547,7 +547,7 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
    the row is a dense list — but not so small they're hard to hit. */
 .worktree-row .btn { flex: none; padding: 5px 9px; font-size: 11px; min-height: 26px; }
 
-/* ── project sidebar (experimental "sidebar" layout) ──
+/* ── project sidebar ("sidebar" layout) ──
    Settings → General → Appearance → Layout. A persistent rail of every
    repository with its cards grouped by board column, sitting left of the same
    Super View / board the classic layout shows. Styled after a shadcn sidebar:
@@ -556,7 +556,7 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
 .sidebar {
   flex: none; width: 264px; min-width: 264px;
   display: flex; flex-direction: column; gap: 2px;
-  padding: 10px 10px 0;
+  padding: 10px 10px 12px;
   background: var(--bg-raised); border-right: 1px solid var(--border);
   overflow-y: auto;
 }
@@ -674,12 +674,6 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
 .sidebar-more:hover { background: var(--bg-hover); color: var(--text); }
 .sidebar-more:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
 .sidebar-more .icon { width: 12px; height: 12px; flex: none; opacity: .8; }
-.sidebar-foot {
-  display: flex; align-items: flex-start; gap: 6px;
-  margin-top: auto; padding: 12px 8px 14px;
-  font-size: 10.5px; line-height: 1.4; color: var(--text-dim); opacity: .75;
-}
-.sidebar-foot .icon { width: 12px; height: 12px; margin-top: 2px; }
 
 /* A narrow window has no room for both the rail and a Kanban column — the
    board wins, and the classic navigation (header switcher, ⌘K) still works. */

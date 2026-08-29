@@ -184,9 +184,9 @@
   </div>
 
   <main>
-    <!-- Experimental "sidebar" layout (Settings → General → Appearance → Layout):
-         a persistent project rail listing every repo with its cards grouped by
-         board column. Empty and hidden entirely in the classic layout. -->
+    <!-- The "sidebar" layout's project rail (Settings → General → Appearance →
+         Layout), on by default: a persistent list of every repo with its cards
+         grouped by board column. Empty and hidden entirely in the classic layout. -->
     <aside id="sidebar" class="sidebar hidden" aria-label="Projects"></aside>
 
     <!-- The work area: everything that belongs to whatever is currently open.
@@ -774,14 +774,15 @@
               </label>
               <label>Layout <span class="field-hint">— how the board is framed</span>
                 <select id="setting-layout">
+                  <option value="sidebar">Project sidebar</option>
                   <option value="classic">Classic board</option>
-                  <option value="sidebar">Project sidebar (experimental)</option>
                 </select>
               </label>
-              <p class="addon-hint"><strong>Classic board</strong> is the Super View grid you land on today, with one
-                repo's Kanban board at a time. <strong>Project sidebar</strong> keeps every repository in a left rail
-                with its cards grouped by column underneath, so you can jump between projects and tasks without
-                leaving the board. Experimental — the board itself is unchanged.</p>
+              <p class="addon-hint"><strong>Project sidebar</strong> is the default: every repository sits in a left rail
+                with its cards grouped by column underneath, and projects and shell sessions open as tabs beside it, so
+                you can jump between them without leaving the board. <strong>Classic board</strong> is the older shape —
+                the Super View grid plus one repo's Kanban board at a time, with the terminal docked at the bottom. The
+                board itself is the same either way.</p>
               <p class="addon-hint">Both are remembered on this device (in the browser, not in <code>db.json</code>), so
                 the desktop app and a phone on the LAN can each use their own.</p>
             </fieldset>

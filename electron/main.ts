@@ -24,8 +24,6 @@ const server = require('../server/index') as typeof import('../server/index');
 const store = require('../server/store') as typeof import('../server/store'); // read live task state for the tray
 const bus = require('../server/bus') as typeof import('../server/bus'); // task/log events → refresh the tray menu
 
-const isDev = !app.isPackaged;
-
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let httpUrl = '';
@@ -498,6 +496,27 @@ function createTray(): void {
   });
 }
 
+// Boot the local server on a *stable* port. The window loads it over HTTP, so
+// the port is part of the page's origin — and every device-local preference
+// (theme, layout, open tabs, the workspace you were on, terminal height, the
+// task modal's last-used settings) lives in that origin's localStorage. An
+// OS-assigned port therefore meant a brand-new, empty origin on every launch:
+// the app silently forgot all of it. So walk a fixed ladder of ports instead
+// and take the first free one — the same machine lands on the same port, and a
+// second instance (or a `npm run server` already on 7777) just moves one along.
+// The OS-assigned port stays as a last resort: losing preferences beats not
+// starting at all.
+const PREFERRED_PORTS = [7777, 7778, 7779, 7780, 7781, 7782];
+
+async function startServer(): Promise<{ port: number; url: string }> {
+  for (const port of PREFERRED_PORTS) {
+    try {
+      return await server.start(port);
+    } catch (_e) { /* taken — try the next one */ }
+  }
+  return server.start(0);
+}
+
 app.whenReady().then(async () => {
   // Native "About Sr. Popo" panel (Sr. Popo ▸ About Sr. Popo) — otherwise macOS
   // shows a generic Electron entry with no icon or version.
@@ -511,14 +530,7 @@ app.whenReady().then(async () => {
   });
   buildAppMenu();
 
-  try {
-    const started = await server.start(isDev ? 7777 : 0); // fixed port in dev, free port when packaged
-    httpUrl = started.url;
-  } catch (_e) {
-    // Fall back to an OS-assigned port if the preferred one is taken.
-    const started = await server.start(0);
-    httpUrl = started.url;
-  }
+  httpUrl = (await startServer()).url;
 
   createTray();
   createWindow();

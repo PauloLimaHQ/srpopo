@@ -14,7 +14,7 @@ import { renderSuperView } from './workspaces.js';
 // workspace there's no board to draw — refresh the Super View instead so its
 // per-repo stats (graph, live badge, task count) stay live.
 function renderBoard() {
-  // The experimental project sidebar lists the same cards, and each work-area
+  // The project sidebar lists the same cards, and each work-area
   // tab carries its project's live count — both refresh off this same choke
   // point (a no-op in the classic layout).
   renderSidebar();

@@ -47,27 +47,31 @@ function initTheme() {
 
 // ---------- layout (appearance) ----------
 // Two shells for the same board, chosen in Settings → General → Appearance:
-// 'classic' is the Super View grid plus one repo's board and a terminal docked
-// at the bottom, unchanged; 'sidebar' (experimental) is the integrated shell —
-// a persistent project rail on the left, and a tabbed work area to its right
-// where each open project and each shell session is a tab. Device-local in
-// localStorage like the theme, so the desktop app and a phone on the LAN can
-// each pick their own — it never reaches db.json.
+// 'sidebar' — the default — is the integrated shell: a persistent project rail
+// on the left, and a tabbed work area to its right where each open project and
+// each shell session is a tab. 'classic' is the older shape, kept for anyone
+// who prefers it: the Super View grid plus one repo's board, with a terminal
+// docked at the bottom of the window. Device-local in localStorage like the
+// theme, so the desktop app and a phone on the LAN can each pick their own —
+// it never reaches db.json.
 const LAYOUT_KEY = 'srpopo.layout';
-const LAYOUTS = ['classic', 'sidebar'];
+const LAYOUTS = ['sidebar', 'classic'];
+const DEFAULT_LAYOUT = 'sidebar';
 const LAYOUT_LABEL = { classic: 'Classic board', sidebar: 'Project sidebar' };
 
 function currentLayout() {
   try {
-    return LAYOUTS.includes(localStorage.getItem(LAYOUT_KEY)) ? localStorage.getItem(LAYOUT_KEY) : 'classic';
-  } catch { return 'classic'; }
+    const stored = localStorage.getItem(LAYOUT_KEY);
+    return LAYOUTS.includes(stored) ? stored : DEFAULT_LAYOUT;
+  } catch { return DEFAULT_LAYOUT; }
 }
 function applyLayout(mode) {
-  const layout = LAYOUTS.includes(mode) ? mode : 'classic';
+  const layout = LAYOUTS.includes(mode) ? mode : DEFAULT_LAYOUT;
   document.body.dataset.layout = layout;
   try {
-    if (layout === 'classic') localStorage.removeItem(LAYOUT_KEY);
-    else localStorage.setItem(LAYOUT_KEY, layout);
+    // Always written, the default included: clearing the key would hand the
+    // choice back to whatever the default happens to be in the next release.
+    localStorage.setItem(LAYOUT_KEY, layout);
   } catch { /* storage unavailable — non-fatal */ }
   const sidebar = $('#sidebar');
   sidebar.classList.toggle('hidden', layout !== 'sidebar');
