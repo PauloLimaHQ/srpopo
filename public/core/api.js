@@ -282,4 +282,21 @@ function elapsedSince(iso) {
   return fmtDuration(Date.now() - new Date(iso).getTime());
 }
 
-export { agentBadge, api, elapsedSince, esc, fmtDuration, fmtTokens, hasPermissionBridge, lookup, mdInline, mdToHtml, modelClass, showUpdateBanner, showUpdateDownloading, showUpdateInstallFailed, toast, tokensOnly, totalTokens };
+// Coarse "N time-unit(s) ago" label for a timestamp — good enough for a browse
+// list (the specs picker, Home's recent tasks); no need for anything fancier.
+function relativeTime(iso) {
+  const ts = Date.parse(iso);
+  if (Number.isNaN(ts)) return '';
+  const mins = Math.round((Date.now() - ts) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  const months = Math.round(days / 30);
+  if (months < 12) return `${months}mo ago`;
+  return `${Math.round(months / 12)}y ago`;
+}
+
+export { agentBadge, api, elapsedSince, esc, fmtDuration, fmtTokens, hasPermissionBridge, lookup, mdInline, mdToHtml, modelClass, relativeTime, showUpdateBanner, showUpdateDownloading, showUpdateInstallFailed, toast, tokensOnly, totalTokens };

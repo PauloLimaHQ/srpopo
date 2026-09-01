@@ -2270,6 +2270,10 @@ test('index: GET /api/health probes every agent backend, not just Claude', async
     // ok means "at least one backend is available" — a Grok-only install is healthy.
     assert.strictEqual(body.ok, !!(body.claude || body.codex || body.grok), 'ok is true iff some agent CLI answered');
     if (!body.ok) assert.match(body.error, /No agent CLI found/, 'the error names no agent, not just claude');
+    // The home screen greets the developer by name; a machine with no git
+    // identity configured reports null rather than failing the probe.
+    assert.ok('user' in body, "the developer's git name is reported (null when unset)");
+    assert.ok(body.user === null || typeof body.user === 'string', 'user is a string or null');
   } finally {
     await new Promise<void>((r) => server.close(() => r()));
     if (prevClaude === undefined) delete process.env.CLAUDE_BIN; else process.env.CLAUDE_BIN = prevClaude;

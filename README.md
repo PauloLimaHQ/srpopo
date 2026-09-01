@@ -71,6 +71,9 @@ the background when the window is closed.
 
 - **Kanban board** — `Backlog → Ready → Running → Code Review → Validation → Done`,
   drag a card to Running to dispatch.
+- **A home screen you can start from** — the All-projects view opens on a centered
+  composer: describe a task, pick the project, and create-and-run it without opening
+  a dialog, with your last five tasks across every project listed underneath.
 - **Pick the agent per task** — **Claude Code** (default), **OpenAI Codex** or **xAI
   Grok**; each task carries its own backend and model, streamed to the same board.
 - **Live session stream** — every prompt, assistant message, and tool call with

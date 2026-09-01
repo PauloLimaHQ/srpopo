@@ -1,5 +1,5 @@
 /* Sr. Popo — specs. No build step: native ES module. */
-import { api, esc, toast } from '../core/api.js';
+import { api, esc, relativeTime, toast } from '../core/api.js';
 import { $, state } from '../core/state.js';
 import { openReposModal } from './repos-modal.js';
 import { loadLastUsed } from './task-modal.js';
@@ -25,23 +25,6 @@ const specIsActionable = (f) => specsActionableStatuses.includes(f.status);
 // actually has specs to show.
 const specsHaveStatus = () => specsFiles.length > 0;
 const statusSlug = (status) => String(status).toLowerCase().replace(/[^a-z0-9]+/g, '-');
-
-// Coarse "N time-unit(s) ago" label for a spec's mtime — good enough for a
-// browse list; no need for anything fancier here.
-function relativeTime(iso) {
-  const ts = Date.parse(iso);
-  if (Number.isNaN(ts)) return '';
-  const mins = Math.round((Date.now() - ts) / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.round(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.round(hours / 24);
-  if (days < 30) return `${days}d ago`;
-  const months = Math.round(days / 30);
-  if (months < 12) return `${months}mo ago`;
-  return `${Math.round(months / 12)}y ago`;
-}
 
 const specRoot = (specPath) => (specPath.startsWith('.specs/') ? '.specs' : 'specs');
 

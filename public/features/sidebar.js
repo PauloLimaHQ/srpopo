@@ -10,7 +10,7 @@ import { currentLayout } from './theme.js';
 import { enterWorkspace, exitWorkspace, githubAvatarUrl, refreshRepoBranchCard } from './workspaces.js';
 
 
-// ---------- project sidebar (experimental "sidebar" layout) ----------
+// ---------- project sidebar ("sidebar" layout) ----------
 // The alternate shell chosen in Settings → General → Appearance → Layout: a
 // persistent left rail listing every repository with its cards grouped by
 // board column, next to the same Super View / board the classic layout shows.
@@ -276,8 +276,7 @@ function renderSidebar() {
         ${state.repos.length
         ? sidebarOrgEntries(state.repos).map(sidebarOrgHtml).join('')
         : '<div class="sidebar-empty">No repositories yet.</div>'}
-      </div>
-      <div class="sidebar-foot">${icon('panel-left')} Experimental layout — projects and sessions open as tabs. Switch back in Settings → Appearance</div>`;
+      </div>`;
   el.scrollTop = scroll;
   // Avatars come from the same per-repo branch lookup the Super View uses.
   for (const r of state.repos) refreshRepoBranchCard(r.id);

@@ -548,10 +548,11 @@ function probeAgentBin(bin: string): Promise<string | null> {
 // run a task, so `ok` means "at least one backend is available" — a Codex-only or
 // Grok-only install is healthy.
 app.get('/api/health', async (req: Request, res: Response) => {
-  const [claudeVersion, codexVersion, grokVersion] = await Promise.all([
+  const [claudeVersion, codexVersion, grokVersion, user] = await Promise.all([
     probeAgentBin(runner.CLAUDE_BIN),
     probeAgentBin(runner.CODEX_BIN),
     probeAgentBin(runner.GROK_BIN),
+    git.userName(),
   ]);
   const ok = !!(claudeVersion || codexVersion || grokVersion);
   res.json({
@@ -562,6 +563,9 @@ app.get('/api/health', async (req: Request, res: Response) => {
     error: ok ? null : `No agent CLI found (${runner.CLAUDE_BIN}, ${runner.CODEX_BIN}, ${runner.GROK_BIN})`,
     node: process.version,
     version: appVersion,
+    // Only so the home screen can say hello by name (git config user.name).
+    // Local, already on this machine, and never sent anywhere.
+    user,
   });
 });
 

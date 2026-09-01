@@ -13,6 +13,7 @@ import { loadFilters } from './features/filters.js';
 import { connectSSE } from './features/live.js';
 import { syncCustomModelOptions } from './features/models.js';
 import { syncResourceMonitor } from './features/resources.js';
+import { renderHome } from './features/home.js';
 import { renderPluginState } from './features/settings.js';
 import { restoreActiveTab } from './features/tabs.js';
 import { loadTerminalSessions } from './features/terminal.js';
@@ -35,6 +36,7 @@ import { init as initPermissions } from './features/permissions.js';
 import { init as initContextMenu } from './features/context-menu.js';
 import { init as initFollowup } from './features/followup.js';
 import { init as initTaskModal } from './features/task-modal.js';
+import { init as initHome } from './features/home.js';
 import { init as initAttachments } from './features/attachments.js';
 import { init as initAsk } from './features/ask.js';
 import { init as initGrooming } from './features/grooming.js';
@@ -111,6 +113,9 @@ async function boot() {
     // Which CLIs exist here also decides what the terminal's new-session
     // picker can offer.
     state.health = h;
+    // It also carries the developer's git name, which is what the home screen
+    // greets — so refresh it now that we have one.
+    renderHome();
     const chip = $('#health');
     // Any one backend is enough to run a task; the header only shows the
     // status dot — CLI versions live in Settings → About instead.
@@ -148,6 +153,7 @@ initPermissions();
 initContextMenu();
 initFollowup();
 initTaskModal();
+initHome();
 initAttachments();
 initAsk();
 initGrooming();

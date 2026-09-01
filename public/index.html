@@ -184,9 +184,9 @@
   </div>
 
   <main>
-    <!-- Experimental "sidebar" layout (Settings → General → Appearance → Layout):
-         a persistent project rail listing every repo with its cards grouped by
-         board column. Empty and hidden entirely in the classic layout. -->
+    <!-- The "sidebar" layout's project rail (Settings → General → Appearance →
+         Layout), on by default: a persistent list of every repo with its cards
+         grouped by board column. Empty and hidden entirely in the classic layout. -->
     <aside id="sidebar" class="sidebar hidden" aria-label="Projects"></aside>
 
     <!-- The work area: everything that belongs to whatever is currently open.
@@ -245,7 +245,78 @@
         <span class="filter-count" id="filter-count"></span>
       </div>
 
-      <div id="super-view" class="super-view"></div>
+      <!-- The Super View, a.k.a. Home. Three stacked blocks: a centered composer
+           that queues a task into any project without opening a dialog, the last
+           few tasks across every project, and the workspace grid. The markup is
+           static (not rendered from JS) on purpose — the Super View re-renders on
+           every SSE tick, and a rebuilt composer would wipe what you are typing;
+           features/home.js only refills the parts that actually change. -->
+      <div id="super-view" class="super-view">
+        <div class="home">
+          <section class="home-hero hidden" id="home-hero">
+            <h1 class="home-greeting">
+              <span class="i" data-icon="sparkles" aria-hidden="true"></span>
+              <span id="home-greeting-text"></span>
+            </h1>
+            <div class="composer-box home-composer" id="home-composer">
+              <textarea id="home-prompt" rows="3" aria-label="Task prompt"
+                        placeholder="Describe a task exactly as you would tell the agent…"></textarea>
+              <div class="composer-bar">
+                <span class="sel-chip" title="Project this task runs in">
+                  <span class="i" data-icon="folder" aria-hidden="true"></span>
+                  <select id="home-repo" aria-label="Project"></select>
+                  <span class="i chev" data-icon="chevron-down" aria-hidden="true"></span>
+                </span>
+                <span class="sel-chip" title="Agent backend">
+                  <span class="i" data-icon="bot" aria-hidden="true"></span>
+                  <select id="home-agent" aria-label="Agent">
+                    <option value="claude">Claude Code</option>
+                    <option value="codex">OpenAI Codex</option>
+                    <option value="grok">xAI Grok</option>
+                  </select>
+                  <span class="i chev" data-icon="chevron-down" aria-hidden="true"></span>
+                </span>
+                <span class="sel-chip" title="Model">
+                  <span class="i" data-icon="cpu" aria-hidden="true"></span>
+                  <select id="home-model" aria-label="Model">
+                    <option value="default">Account default</option>
+                    <option value="sonnet" data-agent="claude">Sonnet</option>
+                    <option value="opus" data-agent="claude">Opus</option>
+                    <option value="haiku" data-agent="claude">Haiku</option>
+                    <option value="fable" data-agent="claude">Fable</option>
+                    <option value="gpt-5.6-sol" data-agent="codex">GPT-5.6 Sol</option>
+                    <option value="gpt-5.6-terra" data-agent="codex">GPT-5.6 Terra</option>
+                    <option value="gpt-5.6-luna" data-agent="codex">GPT-5.6 Luna</option>
+                    <option value="grok-build" data-agent="grok">Grok Build</option>
+                    <option value="grok-4.5" data-agent="grok">Grok 4.5</option>
+                  </select>
+                  <span class="i chev" data-icon="chevron-down" aria-hidden="true"></span>
+                </span>
+                <label class="opt-chip" title="Work on a dedicated branch instead of the repo's current one">
+                  <input type="checkbox" id="home-worktree" checked />
+                  <span class="i" data-icon="git-branch" aria-hidden="true"></span>Worktree
+                </label>
+                <span class="composer-actions">
+                  <button class="btn ghost" id="home-more" title="Open the full New Task dialog with what you have typed"><span class="i" data-icon="sliders-horizontal"></span>More options</button>
+                  <button class="btn ghost" id="home-backlog" title="Create it in Backlog, without running it"><span class="i" data-icon="inbox"></span>Backlog</button>
+                  <button class="btn primary" id="home-run" title="Create the task and dispatch it"><span class="i" data-icon="play"></span>Create &amp; Run</button>
+                </span>
+              </div>
+            </div>
+            <div class="home-hint" id="home-hint"></div>
+          </section>
+
+          <section class="home-section hidden" id="home-recent-section">
+            <h2 class="home-section-head"><span class="i" data-icon="activity" aria-hidden="true"></span>Recent tasks</h2>
+            <div class="home-recent" id="home-recent"></div>
+          </section>
+
+          <section class="home-section" id="home-projects-section">
+            <h2 class="home-section-head hidden" id="home-projects-head"><span class="i" data-icon="layout-grid" aria-hidden="true"></span>Projects</h2>
+            <div id="super-view-grid"></div>
+          </section>
+        </div>
+      </div>
       <div id="board" class="board hidden"></div>
       <!-- #terminal-mount is moved in here by features/terminal.js while the
            tabbed layout is on, and back into the docked panel otherwise. -->
@@ -774,14 +845,15 @@
               </label>
               <label>Layout <span class="field-hint">— how the board is framed</span>
                 <select id="setting-layout">
+                  <option value="sidebar">Project sidebar</option>
                   <option value="classic">Classic board</option>
-                  <option value="sidebar">Project sidebar (experimental)</option>
                 </select>
               </label>
-              <p class="addon-hint"><strong>Classic board</strong> is the Super View grid you land on today, with one
-                repo's Kanban board at a time. <strong>Project sidebar</strong> keeps every repository in a left rail
-                with its cards grouped by column underneath, so you can jump between projects and tasks without
-                leaving the board. Experimental — the board itself is unchanged.</p>
+              <p class="addon-hint"><strong>Project sidebar</strong> is the default: every repository sits in a left rail
+                with its cards grouped by column underneath, and projects and shell sessions open as tabs beside it, so
+                you can jump between them without leaving the board. <strong>Classic board</strong> is the older shape —
+                the Super View grid plus one repo's Kanban board at a time, with the terminal docked at the bottom. The
+                board itself is the same either way.</p>
               <p class="addon-hint">Both are remembered on this device (in the browser, not in <code>db.json</code>), so
                 the desktop app and a phone on the LAN can each use their own.</p>
             </fieldset>
