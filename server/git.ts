@@ -14,6 +14,18 @@ function git(repoPath: string, args: string[]): Promise<string> {
   });
 }
 
+// The developer's name from their git config — the one piece of identity the
+// app already has locally, used only to address them by name on the home
+// screen. Read from the home directory so it resolves the global config even
+// when the app's cwd isn't a repo, and never fatal: no config, no name.
+async function userName(): Promise<string | null> {
+  try {
+    return (await git(os.homedir(), ['config', '--get', 'user.name'])) || null;
+  } catch {
+    return null;
+  }
+}
+
 async function isGitRepo(dir: string): Promise<boolean> {
   try {
     return (await git(dir, ['rev-parse', '--is-inside-work-tree'])) === 'true';
@@ -330,6 +342,7 @@ async function listWorktrees(repoPath: string): Promise<{ path: string; branch: 
 
 export {
   isGitRepo,
+  userName,
   currentBranch,
   listBranches,
   createBranch,

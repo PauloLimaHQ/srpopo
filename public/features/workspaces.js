@@ -5,6 +5,7 @@ import { renderAutonomous } from './autonomous.js';
 import { renderBoard } from './board.js';
 import { defaultEditor } from './desktop.js';
 import { groomingsForRepo, orchestrationsForRepo, tasksForRepo } from './filters.js';
+import { renderHome } from './home.js';
 import { openReposModal, renderRepoList } from './repos-modal.js';
 import { renderRunButton } from './scripts.js';
 import { renderSidebar, sidebarExpanded } from './sidebar.js';
@@ -239,8 +240,13 @@ async function reorderRepos(order) {
   }
 }
 
+// The Super View is Home: the composer and the recent-task list above
+// (features/home.js) plus this grid of workspaces. Only the grid is rendered
+// from here — everything above it is static markup that must survive an SSE
+// tick with what the user was typing intact.
 function renderSuperView() {
-  const el = $('#super-view');
+  renderHome();
+  const el = $('#super-view-grid');
   if (!state.repos.length) {
     el.innerHTML = `
         <div class="workspace-empty">

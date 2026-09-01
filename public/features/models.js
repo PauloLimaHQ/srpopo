@@ -11,12 +11,12 @@ import { playSound } from './sounds.js';
 // ---------- custom models ----------
 const customModels = () => state.settings.customModels || [];
 
-// Rebuild the custom-model <option>s in every model picker (New Task, Brief,
-// Linear import, and the workspace-settings defaults for both). The built-in
+// Rebuild the custom-model <option>s in every model picker (New Task, the Home
+// composer, Brief, Linear import, and the workspace-settings defaults for both). The built-in
 // options stay in the HTML; we only manage the ones we tag data-custom, and
 // preserve the current selection across a rebuild.
 function syncCustomModelOptions() {
-  for (const sel of document.querySelectorAll('#task-model, #brief-model, #linear-model, #repo-settings-model, #repo-settings-groom-model')) {
+  for (const sel of document.querySelectorAll('#task-model, #home-model, #brief-model, #linear-model, #repo-settings-model, #repo-settings-groom-model')) {
     const keep = sel.value;
     for (const opt of [...sel.querySelectorAll('option[data-custom]')]) opt.remove();
     for (const m of customModels()) {

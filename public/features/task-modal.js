@@ -460,6 +460,27 @@ function openTaskModal(task = null) {
   (task ? $('#task-title') : $('#task-prompt')).focus();
 }
 
+// Open the full dialog seeded with what the Home composer already has, so
+// "More options" is a continuation of what you were typing rather than a
+// restart. The repo is applied first (it decides where the rest of the
+// defaults come from), then the composer's own picks are laid on top.
+function openTaskModalWith(seed = {}) {
+  openTaskModal();
+  if (seed.repoId) {
+    $('#task-repo').value = seed.repoId;
+    prefillTaskDefaults(null);
+    refreshRepoBranchHint(seed.repoId, $('#task-repo-branch'));
+    refreshBaseBranchPicker(seed.repoId, $('#task-base-branch'), repoSettingsFor(seed.repoId).baseBranch || null);
+  }
+  if (seed.agent) $('#task-agent').value = seed.agent;
+  syncAgentModels();
+  if (seed.model) $('#task-model').value = seed.model;
+  if (typeof seed.useWorktree === 'boolean') $('#task-worktree').checked = seed.useWorktree;
+  syncWorktreeFields();
+  $('#task-prompt').value = seed.prompt || '';
+  $('#task-prompt').focus();
+}
+
 async function saveTask(run) {
   const title = $('#task-title').value.trim();
   const prompt = $('#task-prompt').value.trim();
@@ -622,4 +643,4 @@ export function init() {
 }
 
 
-export { addFiles, addonChipsHtml, editingTaskId, fmtBytes, loadLastUsed, openTaskModal, refreshRepoBranchHint, refreshRepoSelect, renderAttachments, setSavedAttachments, stagedFiles, stagedPreviews };
+export { addFiles, addonChipsHtml, editingTaskId, fmtBytes, loadLastUsed, openTaskModal, openTaskModalWith, refreshRepoBranchHint, refreshRepoSelect, renderAttachments, saveLastUsed, setSavedAttachments, stagedFiles, stagedPreviews };

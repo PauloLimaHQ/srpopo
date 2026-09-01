@@ -62,6 +62,7 @@ static with **no build step** (see Conventions).
 | `public/app.js` | UI **entry only**: imports the feature modules, calls each one's `init()` in a fixed order, then `boot()`. Don't grow it — new behavior belongs in a feature module. |
 | `public/core/` | What every feature needs: `state.js` (the shared board state, `$`, `icon`, column constants) and `api.js` (`api()`, `toast()`, `esc()`, `lookup()`). Imports nothing from `features/` — it is the bottom of the graph. |
 | `public/features/` | One module per feature (`board.js`, `task-modal.js`, `drawer.js`, `pr.js`, `autonomous.js`, …). A feature change should touch one file here. |
+| `public/features/home.js` | The Super View's front door: the centered New-Task composer and the recent-tasks list (see "Home: the Super View's composer"). The workspace grid below them stays in `workspaces.js`. |
 | `public/features/tabs.js` | The work area's tab strip in the sidebar layout — one tab per open project board and per shell session, plus the pinned Super View tab. Owns `#workarea`'s pane visibility (`applyPanes`), so `renderView()` and `focusSession()` both defer to it. No-op in the classic layout (see "The tabbed work area"). |
 | `public/icons.js` | Inline-SVG icon set (Lucide) + a tiny renderer/hydrator. Loaded as a **classic script before the module graph**, so it publishes `window.srpopoIcons` rather than exporting. The only source of UI glyphs — no emojis. |
 | `tests/smoke.test.ts` | `node:test` smoke suite, run via `tsx`. |
@@ -581,6 +582,36 @@ ctrlKey`, because off macOS it is Ctrl+W / Ctrl+D — which a focused shell keep
 (kill-word and EOF) — and the Electron menu carries the same two items with
 `registerAccelerator: false`, so the keystroke reaches the page instead of the system
 menu (which is also why **Close Window** moved to ⇧⌘W).
+
+## Home: the Super View's composer
+
+The Super View is the app's home screen, and queueing work is what you come to it for
+— so it leads with a **centered composer** (`public/features/home.js`) instead of only
+a grid of projects: a greeting, a prompt box, and one row of chips (project, agent,
+model, worktree) ending in **More options / Backlog / Create & Run**. Below it sit the
+**last five tasks across every project**, most recently touched first, each opening the
+same drawer a card does; the workspace grid follows under a "Projects" heading.
+
+Three things keep it honest:
+
+- **It is the short form of the New Task dialog, not a second one.** Only the five
+  fields above are shown. Everything else — permissions, allowed tools, add-ons,
+  personas, code review, PR mode — comes from exactly where the dialog would take it:
+  the **workspace's settings** when that repo has any, the browser's **last-used**
+  memory otherwise (see "Workspace settings"), and the line under the composer says
+  which of the two is in force. `saveLastUsed` is called on create, so the two
+  surfaces share one memory. **More options** hands what you've typed to the real
+  dialog (`openTaskModalWith`) rather than making you start over — that is also the
+  route to attachments, a base branch, or a branch-name override.
+- **The markup is static in `index.html`.** `renderSuperView()` runs on every SSE
+  tick; a composer rendered from JS would wipe whatever was being typed on each one.
+  `renderHome()` therefore only refills what changes (greeting, the recent list, the
+  hint) and rebuilds the project `<select>` **only when the repo set itself changed**,
+  so a tick can't collapse an open picker. `renderSuperView()` owns just the grid,
+  which it draws into `#super-view-grid`.
+- **Create & Run opens the drawer, not a board.** The task it just started streams in
+  the drawer over Home, so closing it lands you back where you were instead of inside
+  a workspace you didn't ask to open. "Backlog" creates and stays put.
 
 ## Workspace settings (per-repo defaults)
 

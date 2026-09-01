@@ -394,6 +394,68 @@ main { flex: 1; min-height: 0; overflow: hidden; display: flex; }
   height: 100%; color: var(--text-dim); text-align: center;
 }
 
+/* ── home (the Super View's front door) ──
+   The composer that queues a task into any project without opening a dialog,
+   the last few tasks across every project, and the workspace grid underneath.
+   The markup is static (index.html) — see features/home.js for why. */
+.home {
+  max-width: 880px; margin: 0 auto;
+  display: flex; flex-direction: column; gap: 30px; padding: 8px 0 32px;
+}
+.home-hero { display: flex; flex-direction: column; gap: 10px; }
+.home-greeting {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  margin: 22px 0 10px; font-size: 26px; font-weight: 500; letter-spacing: -.02em;
+}
+.home-greeting .icon { width: 22px; height: 22px; color: var(--accent); }
+/* Taller type than the dialog's composer, and no resize handle: the box grows
+   with what you type (autoGrow) up to a ceiling, then scrolls. */
+/* Both classes on purpose: the base .composer-box textarea rule (and its
+   mobile override) live further down the file, so this needs to outrank them
+   on specificity rather than on order. */
+.composer-box.home-composer textarea {
+  min-height: 86px; resize: none; font-size: 14px; padding: 14px 15px 10px;
+}
+/* The three actions travel together: `margin-left: auto` holds them against the
+   right edge of the bar, and they wrap as one group rather than leaving Backlog
+   and Create & Run stranded on a line of their own. */
+.composer-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+/* The bar's buttons sit next to chip-sized controls, so they shed a little of
+   the standard button's height rather than towering over them. */
+.home-composer .composer-bar .btn { padding: 6px 12px; font-size: 12px; }
+.home-composer .composer-bar .btn .icon { width: 14px; height: 14px; }
+.home-hint { font-size: 11px; color: var(--text-dim); text-align: center; padding: 0 8px; }
+.home-hint .kbd { margin: 0 1px; }
+
+.home-section { display: flex; flex-direction: column; gap: 10px; }
+.home-section-head {
+  display: flex; align-items: center; gap: 7px; margin: 0;
+  font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--text-dim);
+}
+.home-section-head .icon { width: 14px; height: 14px; }
+.home-recent {
+  display: flex; flex-direction: column; overflow: hidden;
+  border: 1px solid var(--border); border-radius: 12px; background: var(--bg-card);
+}
+.home-recent-row {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  padding: 10px 12px; border: none; border-top: 1px solid var(--border);
+  background: transparent; color: var(--text); cursor: pointer;
+}
+.home-recent-row:first-child { border-top: none; }
+.home-recent-row:hover { background: var(--bg-hover); }
+.home-recent-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.home-recent-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.home-recent-title { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home-recent-meta { font-size: 11px; color: var(--text-dim); }
+.home-recent-time { font-size: 11px; color: var(--text-dim); font-family: var(--mono); flex: none; }
+.home-recent-row .spinner { width: 10px; height: 10px; border-width: 1.5px; flex: none; }
+.home-recent-empty { padding: 16px; font-size: 12px; color: var(--text-dim); text-align: center; }
+/* The "no repositories yet" block now sits inside the Projects section rather
+   than filling the whole screen, so it can't stretch to 100% of it. */
+#super-view-grid .workspace-empty { height: auto; padding: 28px 0; }
+
 /* ── workspace header (per-repo board) ── */
 .workspace-header {
   display: flex; align-items: center; gap: 12px;
@@ -1295,23 +1357,23 @@ a.chip.pr:hover { border-color: currentColor; }
 .opt-chip-group { display: contents; }
 /* Scoped to .task-box so these beat `.modal-box label`, which would otherwise
    stack each chip's icon above its text. */
-.task-box .opt-chip {
+.task-box .opt-chip, .home-composer .opt-chip {
   position: relative;
   display: inline-flex; flex-direction: row; align-items: center; gap: 6px;
   border: 1px solid var(--border); border-radius: 20px; background: var(--bg-card);
   padding: 5px 12px; font-size: 12px; color: var(--text-dim); cursor: pointer;
   transition: background .15s, border-color .15s, color .15s;
 }
-.task-box .opt-chip:hover { border-color: var(--accent); color: var(--text); }
-.task-box .opt-chip .icon { width: 14px; height: 14px; flex: none; }
+.task-box .opt-chip:hover, .home-composer .opt-chip:hover { border-color: var(--accent); color: var(--text); }
+.task-box .opt-chip .icon, .home-composer .opt-chip .icon { width: 14px; height: 14px; flex: none; }
 /* The checkbox itself holds the state; the chip is just its skin. */
-.task-box .opt-chip input { position: absolute; opacity: 0; width: 0; height: 0; margin: 0; }
-.task-box .opt-chip:has(input:checked) {
+.task-box .opt-chip input, .home-composer .opt-chip input { position: absolute; opacity: 0; width: 0; height: 0; margin: 0; }
+.task-box .opt-chip:has(input:checked), .home-composer .opt-chip:has(input:checked) {
   background: var(--accent-soft); border-color: var(--accent); color: var(--text);
 }
-.task-box .opt-chip:has(input:checked) .icon { color: var(--accent); }
-.task-box .opt-chip:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; }
-.task-box .opt-chip:has(input:disabled) { opacity: .5; cursor: not-allowed; }
+.task-box .opt-chip:has(input:checked) .icon, .home-composer .opt-chip:has(input:checked) .icon { color: var(--accent); }
+.task-box .opt-chip:has(input:focus-visible), .home-composer .opt-chip:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 1px; }
+.task-box .opt-chip:has(input:disabled), .home-composer .opt-chip:has(input:disabled) { opacity: .5; cursor: not-allowed; }
 
 /* Segmented ready/draft switch that rides alongside the Pull Request chip. */
 .seg {
